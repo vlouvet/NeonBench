@@ -1,6 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, parseDoc, type DesignDoc, type DesignVersion, type Project } from '../api';
+import {
+  api,
+  parseDoc,
+  parseReport,
+  type DesignDoc,
+  type DesignVersion,
+  type Project,
+  type ValidationReport,
+} from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import { defaultDirection } from '../lib/runArcs';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
@@ -20,6 +28,9 @@ export default function EditorPage() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [label, setLabel] = useState('');
+  const [report, setReport] = useState<ValidationReport | null>(null);
+  const [validating, setValidating] = useState(false);
+  const validateAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     Promise.all([api.getProject(projectId), api.getDesignVersion(projectId, versionId)])
@@ -27,9 +38,42 @@ export default function EditorPage() {
         setProject(p);
         setVersion(v);
         setDoc(parseDoc(v));
+        setReport(parseReport(v));
       })
       .catch((e: Error) => setError(e.message));
   }, [projectId, versionId]);
+
+  // Debounced live validation: every meaningful edit kicks a 500ms timer;
+  // when it fires we submit the current doc to the server. In-flight calls
+  // are aborted on the next tick so the user only ever sees the result of
+  // their latest state. Skipped when the doc is clean (the saved report is
+  // already authoritative).
+  useEffect(() => {
+    if (!doc || !dirty) return;
+    const handle = window.setTimeout(() => {
+      validateAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      validateAbortRef.current = ctrl;
+      setValidating(true);
+      api
+        .validateDoc(projectId, doc, ctrl.signal)
+        .then((rep) => {
+          if (!ctrl.signal.aborted) setReport(rep);
+        })
+        .catch((e: Error) => {
+          if (!ctrl.signal.aborted) {
+            // Surface but don't crash the editor — validation is advisory.
+            setError(`live validate: ${e.message}`);
+          }
+        })
+        .finally(() => {
+          if (!ctrl.signal.aborted) setValidating(false);
+        });
+    }, 500);
+    return () => {
+      window.clearTimeout(handle);
+    };
+  }, [doc, dirty, projectId]);
 
   if (error) return <p className="error">{error}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
@@ -311,6 +355,7 @@ export default function EditorPage() {
         <p className="meta">
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
+        <ValidationBadge report={report} validating={validating} />
       </header>
       <div className="editor-layout">
         <EditorCanvas
@@ -466,5 +511,34 @@ export default function EditorPage() {
         </aside>
       </div>
     </section>
+  );
+}
+
+function ValidationBadge({
+  report,
+  validating,
+}: {
+  report: ValidationReport | null;
+  validating: boolean;
+}) {
+  if (!report) {
+    return (
+      <p className="meta validation-badge">
+        {validating ? 'Validating…' : 'No validation report yet — edit to trigger live validation.'}
+      </p>
+    );
+  }
+  const errors = report.issues.filter((i) => i.severity === 'error').length;
+  const warnings = report.issues.filter((i) => i.severity === 'warning').length;
+  const cls = errors > 0 ? 'err' : warnings > 0 ? 'warn' : 'ok';
+  const summary =
+    errors === 0 && warnings === 0
+      ? 'All rules pass'
+      : `${errors} error${errors === 1 ? '' : 's'} · ${warnings} warning${warnings === 1 ? '' : 's'}`;
+  return (
+    <p className={`meta validation-badge ${cls}`}>
+      {validating ? 'Re-validating… ' : ''}
+      {summary} · {report.tube_runs} runs · {(report.total_length_mm / 1000).toFixed(2)}m total tube
+    </p>
   );
 }

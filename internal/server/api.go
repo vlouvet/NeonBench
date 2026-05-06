@@ -30,6 +30,7 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 
 	mux.HandleFunc("POST /api/projects/{id}/vectorize", s.handleVectorize)
 	mux.HandleFunc("POST /api/projects/{id}/design_versions", s.handleCreateDesignVersion)
+	mux.HandleFunc("POST /api/projects/{id}/validate_doc", s.handleValidateDoc)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions", s.handleListDesignVersions)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/latest", s.handleLatestDesignVersion)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}", s.handleGetDesignVersion)

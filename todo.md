@@ -113,13 +113,13 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 - [x] **Electrodes:** click-to-place markers on any run; closed runs with 2 electrodes auto-pick the longer arc as live and expose a "Switch live arc" button (slice 2 + 3a)
 - [x] **Blockout marking:** click two points on a run to mark a stretch as block-out paint; rendered dashed in editor and emitted as `data-kind="blockout"` in the saved SVG (slice 3b — backend 866ffde, frontend this slice). Validation spacing exemption for blockouts still TODO.
-- [ ] Double-back hairpin **annotation** (the validation exemption already exists — this is about letting the user explicitly mark intent rather than relying on geometric detection)
-- [ ] **Jumps / supports:** mark where tube crosses without connecting (jump-over) vs structural supports
+- [x] **Double-back hairpin annotation:** click-to-place at a hairpin apex; rides through the SVG as `data-doubleback-mm` and suppresses bend-radius errors within max(2D, 10mm) of the marked point. Geometric `isDoubleBackHairpin` heuristic still runs as auto-detect alongside.
+- [x] **Jumps / supports:** click-to-place point annotations on the live arc; rendered as half-arch (jump) and downward triangle (support) glyphs. Informational only — bend-list export is a follow-up.
 - [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run transformer/voltage notes still TODO.
 - [x] **Per-run color (gas/phosphor):** sidebar dropdown + run-row swatch; canvas tints the live arc with the selected gas color while blockouts stay neutral. PDF stays B&W on purpose (1:1 trace pattern). (slice 3c)
-- [x] **Per-run tube-diameter override:** sidebar number input on the selected run, round-trips through the design doc. Validation still uses the project tube spec — wiring per-run diameter into validate is a follow-up. (slice 3d)
+- [x] **Per-run tube-diameter override:** sidebar number input on the selected run, round-trips through the design doc. Wired into validation: bend-radius limit scales linearly with the override per the wall-thinning derivation; spacing rule stays project-wide for now.
 - [ ] **Bend planning:** mark each bend point; auto-suggest based on curvature; export bend list as part of pattern
-- [ ] Live re-validation on edit (debounced)
+- [x] **Live re-validation on edit:** 500ms debounce; in-flight requests are aborted on the next tick so the user only sees results for their latest state. Status badge in the editor header summarizes errors / warnings / total tube length.
 - [ ] Annotation layer: text notes, dimensions, color/gas labels per run
 
 ### Phase 2 export

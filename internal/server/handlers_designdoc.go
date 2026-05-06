@@ -6,12 +6,60 @@ import (
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/storage"
+	"github.com/vlouvet/neonbench/internal/validate"
 )
 
 type createDesignVersionFromDocReq struct {
 	BasedOnVID int64          `json:"based_on_vid,omitempty"`
 	Label      string         `json:"label,omitempty"`
 	Doc        designdoc.Doc  `json:"design_doc"`
+}
+
+type validateDocReq struct {
+	Doc designdoc.Doc `json:"design_doc"`
+}
+
+// handleValidateDoc validates an in-flight design doc without writing a
+// design version. The editor uses this to live-validate edits while the
+// user is working: render SVG → run validation → return the report.
+func (s *apiServer) handleValidateDoc(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	project, err := storage.GetProject(r.Context(), s.db, pid)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	spec, err := storage.GetTubeSpec(r.Context(), s.db, project.TubeSpecID)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+
+	var req validateDocReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Doc.Version == 0 || len(req.Doc.Runs) == 0 {
+		writeError(w, http.StatusBadRequest, "design_doc is required")
+		return
+	}
+
+	svg := designdoc.ToSVG(&req.Doc)
+	report, err := validate.ValidateSVG(svg, validate.Limits{
+		DiameterMM:         spec.DiameterMM,
+		MinBendRadiusMM:    spec.MinBendRadiusMM,
+		MaxSegmentLengthMM: spec.MaxSegmentLengthMM,
+		MinSpacingMM:       spec.MinSpacingMM,
+	})
+	if err != nil {
+		writeError(w, http.StatusUnprocessableEntity, "validate: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
 }
 
 // handleCreateDesignVersion accepts an edited design doc, renders SVG from

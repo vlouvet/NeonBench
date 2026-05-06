@@ -178,6 +178,13 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  validateDoc: (projectId: number, doc: DesignDoc, signal?: AbortSignal) =>
+    req<ValidationReport>(`/api/projects/${projectId}/validate_doc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ design_doc: doc }),
+      signal,
+    }),
   printPDFURL: (
     projectId: number,
     versionId: number,

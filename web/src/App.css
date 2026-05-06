@@ -591,6 +591,26 @@
   opacity: 0.7;
 }
 
+.validation-badge {
+  margin-top: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: inline-block;
+}
+.validation-badge.ok {
+  border-color: #2ea043;
+  background: rgba(46, 160, 67, 0.08);
+}
+.validation-badge.warn {
+  border-color: #d29922;
+  background: rgba(210, 153, 34, 0.08);
+}
+.validation-badge.err {
+  border-color: #f85149;
+  background: rgba(248, 81, 73, 0.08);
+}
+
 .dirty-dot {
   display: inline-block;
   width: 0.5rem;
