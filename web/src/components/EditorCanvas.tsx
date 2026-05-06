@@ -15,7 +15,8 @@ export type EditorTool =
   | 'doubleback'
   | 'bend'
   | 'label'
-  | 'dimension';
+  | 'dimension'
+  | 'node';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -40,6 +41,8 @@ export default function EditorCanvas({
   onPlaceDimension,
   onDeleteLabel,
   onDeleteDimension,
+  onMoveVertex,
+  onDeleteVertex,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -56,6 +59,8 @@ export default function EditorCanvas({
   onPlaceDimension: (x1: number, y1: number, x2: number, y2: number) => void;
   onDeleteLabel: (index: number) => void;
   onDeleteDimension: (index: number) => void;
+  onMoveVertex: (runId: string, pointIndex: number, x: number, y: number) => void;
+  onDeleteVertex: (runId: string, pointIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
@@ -444,6 +449,22 @@ export default function EditorCanvas({
                 />
               ));
             })()}
+          {tool === 'node' && selectedRunId &&
+            (() => {
+              const run = doc.runs.find((r) => r.id === selectedRunId);
+              if (!run) return null;
+              return run.polyline.points.map((p, pi) => (
+                <NodeHandle
+                  key={`node-${selectedRunId}-${pi}`}
+                  x={p[0]}
+                  y={p[1]}
+                  k={transform.k}
+                  onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
+                  onShiftClick={() => onDeleteVertex(run.id, pi)}
+                  clientToWorld={clientToWorld}
+                />
+              ));
+            })()}
           {doc.runs.flatMap((run) => {
             const arcs = runArcs(run);
             return (run.annotations ?? []).map((a, ai) => {
@@ -497,6 +518,13 @@ export default function EditorCanvas({
             {stagedDim ? 'Click the second endpoint to draw the dimension' : 'Click the first endpoint of the dimension'}
           </span>
         )}
+        {tool === 'node' && (
+          <span className="meta hint">
+            {selectedRunId
+              ? 'Drag a vertex to reshape · shift-click a vertex to delete'
+              : 'Select a run first, then drag its vertices'}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -523,6 +551,64 @@ function ElectrodeMarker({
       strokeWidth={r * 0.15}
       onClick={onClick}
       style={{ cursor: 'pointer' }}
+    />
+  );
+}
+
+function NodeHandle({
+  x,
+  y,
+  k,
+  onMove,
+  onShiftClick,
+  clientToWorld,
+}: {
+  x: number;
+  y: number;
+  k: number;
+  onMove: (x: number, y: number) => void;
+  onShiftClick: () => void;
+  clientToWorld: (cx: number, cy: number) => [number, number] | null;
+}) {
+  const dragging = useRef(false);
+  const handlePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
+    e.stopPropagation();
+    if (e.shiftKey || e.altKey) {
+      onShiftClick();
+      return;
+    }
+    dragging.current = true;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  };
+  const handlePointerMove = (e: React.PointerEvent<SVGCircleElement>) => {
+    if (!dragging.current) return;
+    e.stopPropagation();
+    const w = clientToWorld(e.clientX, e.clientY);
+    if (w) onMove(w[0], w[1]);
+  };
+  const handlePointerUp = (e: React.PointerEvent<SVGCircleElement>) => {
+    if (!dragging.current) return;
+    dragging.current = false;
+    e.stopPropagation();
+    try {
+      (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+    } catch {
+      // pointer might already be released
+    }
+  };
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={3 / k}
+      fill="#fff"
+      stroke="#1f6feb"
+      strokeWidth={1 / k}
+      style={{ cursor: 'grab' }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
     />
   );
 }

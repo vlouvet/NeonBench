@@ -432,6 +432,46 @@ export default function EditorPage() {
     }));
   }
 
+  function moveVertex(runId: string, pointIndex: number, x: number, y: number) {
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const points = run.polyline.points.slice();
+        if (pointIndex < 0 || pointIndex >= points.length) return run;
+        if (points[pointIndex][0] === x && points[pointIndex][1] === y) return run;
+        points[pointIndex] = [x, y];
+        return { ...run, polyline: { ...run.polyline, points } };
+      }),
+    }));
+  }
+
+  function deleteVertex(runId: string, pointIndex: number) {
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        // Closed polylines need at least 3 points to remain meaningful;
+        // open polylines need at least 2.
+        const minPts = run.polyline.closed ? 3 : 2;
+        if (run.polyline.points.length <= minPts) return run;
+        const points = run.polyline.points.filter((_, i) => i !== pointIndex);
+        // Electrodes / blockouts / annotations / bends reference indices
+        // that may have shifted. Drop entries that pointed at the deleted
+        // vertex, and decrement any that pointed past it.
+        const shift = (i: number) => (i > pointIndex ? i - 1 : i);
+        const electrodes = (run.electrodes ?? [])
+          .filter((e) => e.point_index !== pointIndex)
+          .map((e) => ({ ...e, point_index: shift(e.point_index) }));
+        return {
+          ...run,
+          polyline: { ...run.polyline, points },
+          electrodes,
+        };
+      }),
+    }));
+  }
+
   function setRunNotes(runId: string, notes: string) {
     editDoc((prev) => ({
       ...prev,
@@ -569,6 +609,12 @@ export default function EditorPage() {
               onClick={() => setTool('dimension')}
               title="Measure a distance between two points (click two points)"
             >Dimension</button>
+            <button
+              type="button"
+              className={tool === 'node' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('node')}
+              title="Edit polyline vertices on the selected run (drag to move, shift-click to delete)"
+            >Node edit</button>
           </div>
         </div>
         <p className="meta">
@@ -593,6 +639,8 @@ export default function EditorPage() {
           onPlaceDimension={placeDimension}
           onDeleteLabel={deleteLabel}
           onDeleteDimension={deleteDimension}
+          onMoveVertex={moveVertex}
+          onDeleteVertex={deleteVertex}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>
