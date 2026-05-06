@@ -116,8 +116,8 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [ ] Double-back hairpin **annotation** (the validation exemption already exists — this is about letting the user explicitly mark intent rather than relying on geometric detection)
 - [ ] **Jumps / supports:** mark where tube crosses without connecting (jump-over) vs structural supports
 - [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run transformer/voltage notes still TODO.
-- [ ] **Per-run color (gas/phosphor):** sidebar dropdown driving canvas + PDF tint (slice 3c)
-- [ ] **Per-run tube-diameter override:** sidebar number input (slice 3d)
+- [x] **Per-run color (gas/phosphor):** sidebar dropdown + run-row swatch; canvas tints the live arc with the selected gas color while blockouts stay neutral. PDF stays B&W on purpose (1:1 trace pattern). (slice 3c)
+- [x] **Per-run tube-diameter override:** sidebar number input on the selected run, round-trips through the design doc. Validation still uses the project tube spec — wiring per-run diameter into validate is a follow-up. (slice 3d)
 - [ ] **Bend planning:** mark each bend point; auto-suggest based on curvature; export bend list as part of pattern
 - [ ] Live re-validation on edit (debounced)
 - [ ] Annotation layer: text notes, dimensions, color/gas labels per run

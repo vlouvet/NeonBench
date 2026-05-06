@@ -576,6 +576,20 @@
 .color-picker select {
   flex: 1;
 }
+.diameter-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.875rem;
+}
+.diameter-picker input {
+  width: 6rem;
+}
+.hint-line {
+  margin: 0;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
 
 .dirty-dot {
   display: inline-block;

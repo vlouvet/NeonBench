@@ -179,6 +179,22 @@ export default function EditorPage() {
     setDirty(true);
   }
 
+  function setRunDiameter(runId: string, diameterMM: number | null) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        if (diameterMM == null || Number.isNaN(diameterMM) || diameterMM <= 0) {
+          const { tube_diameter_mm: _drop, ...rest } = run;
+          return rest;
+        }
+        return { ...run, tube_diameter_mm: diameterMM };
+      });
+      return { ...prev, runs };
+    });
+    setDirty(true);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -300,6 +316,23 @@ export default function EditorPage() {
                   style={{ background: colorHex(selectedRun.color) }}
                 />
               </label>
+              <label className="diameter-picker">
+                Diameter (mm)
+                <input
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  value={selectedRun.tube_diameter_mm ?? ''}
+                  placeholder="project default"
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    setRunDiameter(selectedRun.id, raw === '' ? null : Number(raw));
+                  }}
+                />
+              </label>
+              <p className="meta hint-line">
+                Editor-only override. Validation still uses the project tube spec.
+              </p>
               {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
                 <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
                   Switch live arc ({selectedRun.direction ?? 'forward'})
