@@ -9,11 +9,14 @@
 *.out
 coverage.*
 
-# Stray test inputs left in the repo root (PNG/JPG/SVG dropped in for quick checks)
+# Stray test inputs left in the repo root (PNG/JPG/SVG/screen recordings)
 /*.png
 /*.jpg
 /*.jpeg
 /*.svg
+/*.mov
+/*.mp4
+/*.webm
 
 # Node
 /web/node_modules/
