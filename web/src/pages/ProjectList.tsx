@@ -1,0 +1,133 @@
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
+import { api, type Project, type TubeSpec } from '../api';
+
+export default function ProjectList() {
+  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [tubeSpecs, setTubeSpecs] = useState<TubeSpec[] | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([api.listProjects(), api.listTubeSpecs()])
+      .then(([p, t]) => {
+        setProjects(p);
+        setTubeSpecs(t);
+      })
+      .catch((e: Error) => setError(e.message));
+  }, []);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!projects || !tubeSpecs) return <p className="meta">Loading…</p>;
+
+  const tubeSpecById = new Map(tubeSpecs.map((t) => [t.id, t]));
+
+  return (
+    <section>
+      <div className="row">
+        <h1>Projects</h1>
+        <button onClick={() => setCreating(true)}>New project</button>
+      </div>
+      {projects.length === 0 ? (
+        <p className="empty">No projects yet. Create one to start.</p>
+      ) : (
+        <ul className="project-list">
+          {projects.map((p) => (
+            <li key={p.id}>
+              <Link to={`/projects/${p.id}`}>
+                <strong>{p.name}</strong>
+                <span className="meta">
+                  {tubeSpecById.get(p.tube_spec_id)?.name ?? `tube #${p.tube_spec_id}`}
+                  {' · updated '}
+                  {new Date(p.updated_at).toLocaleString()}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {creating && (
+        <NewProjectModal
+          tubeSpecs={tubeSpecs}
+          onCancel={() => setCreating(false)}
+          onCreated={(p) => {
+            setCreating(false);
+            setProjects((prev) => (prev ? [p, ...prev] : [p]));
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function NewProjectModal({
+  tubeSpecs,
+  onCancel,
+  onCreated,
+}: {
+  tubeSpecs: TubeSpec[];
+  onCancel: () => void;
+  onCreated: (p: Project) => void;
+}) {
+  const defaultSpec = tubeSpecs.find((t) => t.is_default) ?? tubeSpecs[0];
+  const [name, setName] = useState('');
+  const [tubeSpecId, setTubeSpecId] = useState<number>(defaultSpec?.id ?? 0);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      const p = await api.createProject({ name: name.trim(), tube_spec_id: tubeSpecId });
+      onCreated(p);
+    } catch (err) {
+      setError((err as Error).message);
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <h2>New project</h2>
+        <form onSubmit={submit}>
+          <label>
+            Name
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+              minLength={1}
+            />
+          </label>
+          <label>
+            Tube spec
+            <select
+              value={tubeSpecId}
+              onChange={(e) => setTubeSpecId(Number(e.target.value))}
+            >
+              {tubeSpecs.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                  {t.is_default ? ' (default)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {error && <p className="error">{error}</p>}
+          <div className="actions">
+            <button type="button" onClick={onCancel} disabled={submitting}>
+              Cancel
+            </button>
+            <button type="submit" disabled={submitting || !name.trim()}>
+              {submitting ? 'Creating…' : 'Create'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

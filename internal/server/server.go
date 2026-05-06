@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -23,6 +24,7 @@ type Config struct {
 	Dev         bool
 	OpenBrowser bool
 	DB          *sql.DB
+	DataDir     string
 }
 
 const viteDevURL = "http://localhost:5173"
@@ -37,10 +39,7 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("server listening", "url", addr, "dev", cfg.Dev)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("content-type", "application/json")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+	registerAPI(mux, cfg.DB, cfg.DataDir)
 
 	if cfg.Dev {
 		proxy, err := newViteProxy()
@@ -102,19 +101,25 @@ func newViteProxy() (http.Handler, error) {
 	return httputil.NewSingleHostReverseProxy(target), nil
 }
 
-// spaHandler serves files from distFS, falling back to index.html for any
-// path that doesn't match a real file. This enables client-side routing.
+// spaHandler serves files from distFS. Missing paths with no file extension
+// fall back to index.html so client-side routing works; missing paths that
+// look like assets (e.g. /assets/foo.js) return 404 so broken bundle
+// references surface instead of silently serving HTML.
 func spaHandler(distFS fs.FS) http.Handler {
 	fileServer := http.FileServerFS(distFS)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := strings.TrimPrefix(r.URL.Path, "/")
-		if path == "" {
+		p := strings.TrimPrefix(r.URL.Path, "/")
+		if p == "" {
 			fileServer.ServeHTTP(w, r)
 			return
 		}
-		if f, err := distFS.Open(path); err == nil {
+		if f, err := distFS.Open(p); err == nil {
 			f.Close()
 			fileServer.ServeHTTP(w, r)
+			return
+		}
+		if path.Ext(p) != "" {
+			http.NotFound(w, r)
 			return
 		}
 		r2 := r.Clone(r.Context())

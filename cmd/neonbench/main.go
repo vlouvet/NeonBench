@@ -61,6 +61,7 @@ func main() {
 		Dev:         *dev,
 		OpenBrowser: !*noOpen,
 		DB:          db,
+		DataDir:     dir,
 	}
 	if err := server.Run(ctx, cfg); err != nil {
 		logger.Error("server exited", "err", err)
