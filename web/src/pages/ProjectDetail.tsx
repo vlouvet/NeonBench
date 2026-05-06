@@ -9,7 +9,7 @@ export default function ProjectDetail() {
   const { id } = useParams();
   const projectId = Number(id);
   const [project, setProject] = useState<Project | null>(null);
-  const [tubeSpec, setTubeSpec] = useState<TubeSpec | null>(null);
+  const [allSpecs, setAllSpecs] = useState<TubeSpec[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
   const [versions, setVersions] = useState<DesignVersion[]>([]);
   const [latest, setLatest] = useState<DesignVersion | null>(null);
@@ -28,7 +28,7 @@ export default function ProjectDetail() {
       ]);
       setProject(p);
       setAssets(a);
-      setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
+      setAllSpecs(specs);
       setVersions(vs);
       setLatest(lat);
     } catch (e) {
@@ -92,16 +92,33 @@ export default function ProjectDetail() {
           Export bundle
         </a>
       </div>
-      <p className="meta">
-        Tube spec:{' '}
-        {tubeSpec
-          ? `${tubeSpec.name} (Ø ${tubeSpec.diameter_mm}mm, min bend ${tubeSpec.min_bend_radius_mm}mm)`
-          : `#${project.tube_spec_id}`}
+      <div className="meta project-settings">
+        <label>
+          Tube spec:{' '}
+          <select
+            value={project.tube_spec_id}
+            onChange={async (e) => {
+              const next = Number(e.target.value);
+              try {
+                const updated = await api.updateProject(projectId, { tube_spec_id: next });
+                setProject(updated);
+              } catch (err) {
+                setError((err as Error).message);
+              }
+            }}
+          >
+            {allSpecs.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} — Ø{s.diameter_mm}mm, min bend {s.min_bend_radius_mm}mm
+              </option>
+            ))}
+          </select>
+        </label>
         {' · Units: '}
         {project.units}
         {' · Created '}
         {new Date(project.created_at).toLocaleString()}
-      </p>
+      </div>
 
       <h2>Source image</h2>
       {sourceAssets.length === 0 ? (

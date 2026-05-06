@@ -22,6 +22,7 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)
 	mux.HandleFunc("GET /api/projects/{id}", s.handleGetProject)
+	mux.HandleFunc("PATCH /api/projects/{id}", s.handleUpdateProject)
 	mux.HandleFunc("DELETE /api/projects/{id}", s.handleDeleteProject)
 
 	mux.HandleFunc("GET /api/projects/{id}/assets", s.handleListAssets)

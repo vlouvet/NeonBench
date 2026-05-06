@@ -167,6 +167,15 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteProject: (id: number) => req<void>(`/api/projects/${id}`, { method: 'DELETE' }),
+  updateProject: (
+    id: number,
+    body: { name?: string; tube_spec_id?: number; units?: 'mm' | 'in' },
+  ) =>
+    req<Project>(`/api/projects/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   listAssets: (projectId: number) => req<Asset[]>(`/api/projects/${projectId}/assets`),
   uploadAsset: (projectId: number, file: File) => {
     const fd = new FormData();

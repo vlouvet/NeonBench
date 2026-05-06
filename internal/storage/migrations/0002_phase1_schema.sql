@@ -42,11 +42,15 @@ CREATE TABLE design_versions (
 );
 CREATE INDEX idx_design_versions_project ON design_versions(project_id);
 
+-- Bend radii follow the wall-thinning derivation in
+-- docs/neon-rules/bend-radius.md (r ≥ 2.25 × diameter, rounded to a
+-- conservative trade-friendly mm value). 0004 backfills these onto
+-- installs that ran 0002 before the values were tightened.
 INSERT INTO tube_specs (name, diameter_mm, min_bend_radius_mm, max_segment_length_mm, min_spacing_mm, is_default) VALUES
-    ('8mm clear',  8,  16, 2500, 10, 0),
-    ('10mm clear', 10, 20, 2500, 12, 0),
-    ('12mm clear', 12, 25, 2500, 14, 1),
-    ('15mm clear', 15, 30, 3000, 18, 0);
+    ('8mm clear',  8,  18, 2500, 10, 0),
+    ('10mm clear', 10, 22, 2500, 12, 0),
+    ('12mm clear', 12, 27, 2500, 14, 1),
+    ('15mm clear', 15, 34, 3000, 18, 0);
 
 -- +goose Down
 DROP INDEX IF EXISTS idx_design_versions_project;

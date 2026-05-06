@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -63,6 +64,47 @@ func GetProject(ctx context.Context, db *sql.DB, id int64) (Project, error) {
 		return Project{}, fmt.Errorf("get project: %w", err)
 	}
 	return p, nil
+}
+
+// UpdateProjectParams describes a partial update to a project. Only the
+// non-zero fields are written; everything else stays as-is.
+type UpdateProjectParams struct {
+	Name       *string
+	TubeSpecID *int64
+	Units      *string
+}
+
+// UpdateProject applies a partial update and bumps updated_at.
+func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectParams) (Project, error) {
+	if p.Name == nil && p.TubeSpecID == nil && p.Units == nil {
+		return GetProject(ctx, db, id)
+	}
+	sets := []string{}
+	args := []any{}
+	if p.Name != nil {
+		sets = append(sets, "name = ?")
+		args = append(args, *p.Name)
+	}
+	if p.TubeSpecID != nil {
+		sets = append(sets, "tube_spec_id = ?")
+		args = append(args, *p.TubeSpecID)
+	}
+	if p.Units != nil {
+		sets = append(sets, "units = ?")
+		args = append(args, *p.Units)
+	}
+	sets = append(sets, `updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
+	q := `UPDATE projects SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`
+	args = append(args, id)
+	res, err := db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return Project{}, fmt.Errorf("update project: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return Project{}, ErrNotFound
+	}
+	return GetProject(ctx, db, id)
 }
 
 func DeleteProject(ctx context.Context, db *sql.DB, id int64) error {

@@ -104,8 +104,8 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 - [x] Canvas: raw SVG + custom pointer/wheel pan-zoom (lighter than Konva/Fabric, good enough for this scope)
 - [x] Node-level polyline editing: drag any vertex to reshape; shift-click to delete; electrode references shift correctly. Bezier-aware control-handle editing and segment-click insert are follow-ups.
-- [ ] Path operations: split, join, reverse direction, simplify
-- [ ] Snap to grid, snap to angle, snap to existing geometry
+- [x] Path operations: simplify (Douglas-Peucker, ε configurable in sidebar) and reverse (flips polyline order, rewrites electrode anchors). Split/join still TODO.
+- [x] Snap to grid (toolbar toggle + mm spacing input). Affects label/dimension placement and vertex drag; pan/zoom and run-path picks stay un-snapped. Snap-to-angle and snap-to-geometry still TODO.
 - [ ] Multi-select, group, layers
 - [x] Cross-session checkpoints: every Save writes a new `design_versions` row (history list lets you switch back). In-session undo/redo with coalescing still TODO.
 
@@ -125,7 +125,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Phase 2 export
 
 - [x] PDF includes: numbered bend apex markers per run on the tile pages, electrode markers (open circle + cross), blockout segments dashed, doc-level dimension lines + text labels, and a final "Bend list" page summarizing each run's geometry, color, diameter, notes, and bend table. Total-length-per-run and gas-color callouts are still future polish.
-- [ ] Export project as a `.neonbench` bundle (zip of SVG + metadata + version history) for sharing between installs
+- [x] Export project as a `.neonbench` bundle (zip of SVG + design doc + validation report per version, plus a manifest with project metadata and tube-spec snapshot). Import path is still TODO.
 
 ---
 

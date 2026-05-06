@@ -73,6 +73,48 @@ func (s *apiServer) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, p)
 }
 
+type updateProjectReq struct {
+	Name       *string `json:"name,omitempty"`
+	TubeSpecID *int64  `json:"tube_spec_id,omitempty"`
+	Units      *string `json:"units,omitempty"`
+}
+
+func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	var req updateProjectReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.TubeSpecID != nil {
+		if _, err := storage.GetTubeSpec(r.Context(), s.db, *req.TubeSpecID); err != nil {
+			writeError(w, http.StatusBadRequest, "tube_spec_id does not exist")
+			return
+		}
+	}
+	if req.Units != nil && *req.Units != "mm" && *req.Units != "in" {
+		writeError(w, http.StatusBadRequest, "units must be \"mm\" or \"in\"")
+		return
+	}
+	if req.Name != nil && *req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name cannot be empty")
+		return
+	}
+	out, err := storage.UpdateProject(r.Context(), s.db, id, storage.UpdateProjectParams{
+		Name:       req.Name,
+		TubeSpecID: req.TubeSpecID,
+		Units:      req.Units,
+	})
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func (s *apiServer) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathID(w, r, "id")
 	if !ok {
