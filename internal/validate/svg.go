@@ -100,6 +100,7 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 			if t.Name.Local == "path" {
 				dAttr := ""
 				var diameterMM float64
+				var dbMarks []Point
 				for _, a := range t.Attr {
 					switch a.Name.Local {
 					case "d":
@@ -108,6 +109,8 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 						if v, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64); err == nil && v > 0 {
 							diameterMM = v
 						}
+					case "data-doubleback-mm":
+						dbMarks = parseDoublebackMarks(a.Value)
 					}
 				}
 				if dAttr == "" {
@@ -117,6 +120,11 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 				if diameterMM > 0 {
 					for i := range ps {
 						ps[i].DiameterMM = diameterMM
+					}
+				}
+				if len(dbMarks) > 0 {
+					for i := range ps {
+						ps[i].DoublebackMarks = dbMarks
 					}
 				}
 				polylines = append(polylines, ps...)
@@ -147,6 +155,27 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 		bbox = [4]float64{0, 0, 0, 0}
 	}
 	return polylines, bbox, issues, nil
+}
+
+// parseDoublebackMarks pulls the space-separated "x,y x,y …" pairs out of
+// the data-doubleback-mm attribute. Bad pairs are silently dropped — this
+// is editor metadata, not a parse-critical attribute.
+func parseDoublebackMarks(s string) []Point {
+	var out []Point
+	for _, pair := range strings.Fields(s) {
+		comma := strings.IndexByte(pair, ',')
+		if comma <= 0 || comma == len(pair)-1 {
+			continue
+		}
+		xs, ys := pair[:comma], pair[comma+1:]
+		x, errX := strconv.ParseFloat(xs, 64)
+		y, errY := strconv.ParseFloat(ys, 64)
+		if errX != nil || errY != nil {
+			continue
+		}
+		out = append(out, Point{X: x, Y: y})
+	}
+	return out
 }
 
 // rootSVGMatrix builds the user-space-to-mm matrix from the root <svg>

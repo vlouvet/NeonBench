@@ -5,7 +5,15 @@ import { colorHex } from '../lib/neonColors';
 
 type Transform = { tx: number; ty: number; k: number };
 
-export type EditorTool = 'select' | 'electrode' | 'blockout' | 'jump' | 'support';
+export type EditorTool =
+  | 'select'
+  | 'electrode'
+  | 'blockout'
+  | 'jump'
+  | 'support'
+  | 'doubleback';
+
+export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
 type StagedBlockout = { runId: string; liveIndex: number };
 
@@ -30,7 +38,7 @@ export default function EditorCanvas({
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
-  onPlaceAnnotation: (runId: string, kind: 'jump' | 'support', liveIndex: number) => void;
+  onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -167,7 +175,7 @@ export default function EditorCanvas({
       setStaged(null);
       return;
     }
-    if (tool === 'jump' || tool === 'support') {
+    if (tool === 'jump' || tool === 'support' || tool === 'doubleback') {
       const world = clientToWorld(e.clientX, e.clientY);
       if (!world) return;
       const arcs = runArcs(run);
@@ -236,9 +244,7 @@ export default function EditorCanvas({
             const liveStroke = colorHex(run.color);
             const liveWidth = (selected ? 1.6 : 0.8) / transform.k;
             const cursor =
-              tool === 'electrode' || tool === 'blockout' || tool === 'jump' || tool === 'support'
-                ? 'crosshair'
-                : 'pointer';
+              tool === 'select' ? 'pointer' : 'crosshair';
             // When a colored run is selected we still want a clear selection
             // signal, so draw a wider semi-transparent pink halo underneath.
             const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
@@ -376,6 +382,9 @@ export default function EditorCanvas({
         {tool === 'support' && (
           <span className="meta hint">Click on a path to mark a support point</span>
         )}
+        {tool === 'doubleback' && (
+          <span className="meta hint">Click the apex of a hairpin to mark it as an intentional double-back</span>
+        )}
       </div>
     </div>
   );
@@ -413,7 +422,7 @@ function AnnotationMarker({
   sizeMM,
   onClick,
 }: {
-  kind: 'jump' | 'support';
+  kind: AnnotationKind;
   x: number;
   y: number;
   sizeMM: number;
@@ -428,6 +437,18 @@ function AnnotationMarker({
       <g onClick={onClick} style={{ cursor: 'pointer' }}>
         <circle cx={x} cy={y} r={r} fill="#fff" stroke="#0096ff" strokeWidth={r * 0.15} />
         <path d={d} fill="none" stroke="#0096ff" strokeWidth={r * 0.3} strokeLinecap="round" />
+      </g>
+    );
+  }
+  if (kind === 'doubleback') {
+    // Tight U-arrow — visualizes the intent: the tube doubles back on
+    // itself here and the bend-radius rule should treat it as legitimate.
+    const u = r * 0.55;
+    const d = `M${x - u},${y + u} L${x - u},${y - u * 0.4} A${u},${u} 0 0 1 ${x + u},${y - u * 0.4} L${x + u},${y + u}`;
+    return (
+      <g onClick={onClick} style={{ cursor: 'pointer' }}>
+        <circle cx={x} cy={y} r={r} fill="#fff" stroke="#1aa37a" strokeWidth={r * 0.15} />
+        <path d={d} fill="none" stroke="#1aa37a" strokeWidth={r * 0.25} strokeLinecap="round" />
       </g>
     );
   }

@@ -53,7 +53,7 @@ export type Blockout = {
 };
 
 export type Annotation = {
-  kind: 'jump' | 'support';
+  kind: 'jump' | 'support' | 'doubleback';
   live_index: number;
 };
 

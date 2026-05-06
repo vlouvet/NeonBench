@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/vlouvet/neonbench/internal/validate"
 )
@@ -67,8 +68,9 @@ func ToSVG(doc *Doc) []byte {
 		}
 		liveIndices, closed := liveArcIndices(run)
 		segments := splitByBlockouts(liveIndices, run.Blockouts, closed)
+		dbPoints := doublebackWorldPoints(run, liveIndices)
 		for _, seg := range segments {
-			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM)
+			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM, dbPoints)
 		}
 	}
 	buf.WriteString(`</svg>`)
@@ -153,7 +155,34 @@ func clampLiveIndex(i, n int) int {
 	return i
 }
 
-func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64) {
+// doublebackWorldPoints resolves a run's "doubleback" annotations to world
+// (mm) coordinates so the validator can suppress bend-radius issues at
+// those points without re-deriving live-arc index ↔ polyline index mapping.
+func doublebackWorldPoints(run Run, liveIndices []int) []string {
+	if len(run.Annotations) == 0 || len(liveIndices) == 0 {
+		return nil
+	}
+	n := len(liveIndices)
+	var pairs []string
+	for _, a := range run.Annotations {
+		if a.Kind != "doubleback" {
+			continue
+		}
+		li := a.LiveIndex
+		if li < 0 || li >= n {
+			continue
+		}
+		idx := liveIndices[li]
+		if idx < 0 || idx >= len(run.Polyline.Points) {
+			continue
+		}
+		p := run.Polyline.Points[idx]
+		pairs = append(pairs, fmt.Sprintf("%s,%s", fmtFloat(p[0]), fmtFloat(p[1])))
+	}
+	return pairs
+}
+
+func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64, dbPoints []string) {
 	if len(indices) < 2 {
 		return
 	}
@@ -161,10 +190,15 @@ func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isB
 	if diameterMM > 0 {
 		diameterAttr = fmt.Sprintf(` data-tube-diameter-mm="%s"`, fmtFloat(diameterMM))
 	}
+	dbAttr := ""
+	if len(dbPoints) > 0 {
+		// Space-separated x,y pairs so the validator can split cheaply.
+		dbAttr = fmt.Sprintf(` data-doubleback-mm="%s"`, strings.Join(dbPoints, " "))
+	}
 	if isBlockout {
-		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s d="`, diameterAttr)
+		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s%s d="`, diameterAttr, dbAttr)
 	} else {
-		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s d="`, diameterAttr)
+		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s%s d="`, diameterAttr, dbAttr)
 	}
 	for j, idx := range indices {
 		cmd := "L"
@@ -270,3 +304,4 @@ func arcLengthOf(indices []int, points [][2]float64) float64 {
 func fmtFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
+

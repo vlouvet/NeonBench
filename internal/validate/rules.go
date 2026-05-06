@@ -119,6 +119,11 @@ func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
 					// Legitimate 180° construction; not a bend-radius failure.
 					continue
 				}
+				if hasUserDoubleback(pts[i], pl.DoublebackMarks, hairpinD) {
+					// User explicitly marked this region as a double-back —
+					// trust their intent over the geometric heuristic.
+					continue
+				}
 				emitted[i] = true
 				suffix := ""
 				if pl.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
@@ -135,6 +140,23 @@ func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
 		}
 	}
 	return issues
+}
+
+// hasUserDoubleback returns true if the vertex p is within an exemption
+// radius of any user-marked double-back apex. The radius scales with the
+// run's diameter so the user's click doesn't have to be pixel-perfect on
+// the apex sample.
+func hasUserDoubleback(p Point, marks []Point, diameterMM float64) bool {
+	if len(marks) == 0 {
+		return false
+	}
+	radius := math.Max(2*diameterMM, 10)
+	for _, m := range marks {
+		if dist(p, m) <= radius {
+			return true
+		}
+	}
+	return false
 }
 
 // isDoubleBackHairpin returns true if the vertex at idx is the apex of a

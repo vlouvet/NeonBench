@@ -38,10 +38,15 @@ func circumradius3(a, b, c Point) float64 {
 // DiameterMM is the per-run tube-diameter override, parsed from the SVG
 // path's data-tube-diameter-mm attribute. Zero means no override and rules
 // fall back to the project tube spec.
+//
+// DoublebackMarks are world-space (mm) points the user explicitly marked
+// as the apex of an intentional double-back hairpin. The bend-radius rule
+// suppresses errors within ~max(2D, 10mm) of any marked apex.
 type Polyline struct {
-	Points     []Point
-	Closed     bool
-	DiameterMM float64
+	Points          []Point
+	Closed          bool
+	DiameterMM      float64
+	DoublebackMarks []Point
 }
 
 // Length returns the total arc length of the polyline.

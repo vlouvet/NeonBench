@@ -179,7 +179,7 @@ export default function EditorPage() {
     setDirty(true);
   }
 
-  function placeAnnotation(runId: string, kind: 'jump' | 'support', liveIndex: number) {
+  function placeAnnotation(runId: string, kind: 'jump' | 'support' | 'doubleback', liveIndex: number) {
     setDoc((prev) => {
       if (!prev) return prev;
       const runs = prev.runs.map((run) => {
@@ -300,6 +300,12 @@ export default function EditorPage() {
               onClick={() => setTool('support')}
               title="Mark a support point (chassis-mount)"
             >Mark support</button>
+            <button
+              type="button"
+              className={tool === 'doubleback' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('doubleback')}
+              title="Mark a hairpin as an intentional double-back (suppresses bend-radius warning)"
+            >Mark double-back</button>
           </div>
         </div>
         <p className="meta">
