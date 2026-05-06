@@ -13,7 +13,9 @@ export type EditorTool =
   | 'jump'
   | 'support'
   | 'doubleback'
-  | 'bend';
+  | 'bend'
+  | 'label'
+  | 'dimension';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -34,6 +36,10 @@ export default function EditorCanvas({
   onPlaceAnnotation,
   onDeleteAnnotation,
   onPlaceBend,
+  onPlaceLabel,
+  onPlaceDimension,
+  onDeleteLabel,
+  onDeleteDimension,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -46,17 +52,23 @@ export default function EditorCanvas({
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
   onPlaceBend: (runId: string, liveIndex: number) => void;
+  onPlaceLabel: (x: number, y: number) => void;
+  onPlaceDimension: (x1: number, y1: number, x2: number, y2: number) => void;
+  onDeleteLabel: (index: number) => void;
+  onDeleteDimension: (index: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
   const [staged, setStaged] = useState<StagedBlockout | null>(null);
+  const [stagedDim, setStagedDim] = useState<{ x: number; y: number } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
   // Drop the staged blockout when leaving blockout mode so a stale start
   // doesn't surprise the user when they come back later.
   useEffect(() => {
     if (tool !== 'blockout') setStaged(null);
+    if (tool !== 'dimension') setStagedDim(null);
   }, [tool]);
 
   useEffect(() => {
@@ -147,9 +159,27 @@ export default function EditorCanvas({
       }
       if (wasDrag) return;
     }
-    // Click on background → deselect (if not on a path or marker)
     const tag = (e.target as SVGElement).tagName;
-    if (tag === 'svg' || tag === 'rect') {
+    const isBackground = tag === 'svg' || tag === 'rect';
+    // Background click in label/dimension mode places a marker in world
+    // space; in any other mode it deselects the current run.
+    if (tool === 'label' && isBackground) {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (world) onPlaceLabel(world[0], world[1]);
+      return;
+    }
+    if (tool === 'dimension' && isBackground) {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      if (!stagedDim) {
+        setStagedDim({ x: world[0], y: world[1] });
+      } else {
+        onPlaceDimension(stagedDim.x, stagedDim.y, world[0], world[1]);
+        setStagedDim(null);
+      }
+      return;
+    }
+    if (isBackground) {
       onSelectRun(null);
     }
   }
@@ -324,6 +354,45 @@ export default function EditorCanvas({
               </g>
             );
           })}
+          {(doc.dimensions ?? []).map((d, di) => (
+            <DimensionMarker
+              key={`dim-${di}`}
+              x1={d.x1}
+              y1={d.y1}
+              x2={d.x2}
+              y2={d.y2}
+              note={d.note}
+              k={transform.k}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (e.shiftKey || e.altKey) onDeleteDimension(di);
+              }}
+            />
+          ))}
+          {(doc.labels ?? []).map((l, li) => (
+            <LabelMarker
+              key={`label-${li}`}
+              x={l.x}
+              y={l.y}
+              text={l.text}
+              k={transform.k}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (e.shiftKey || e.altKey) onDeleteLabel(li);
+              }}
+            />
+          ))}
+          {stagedDim && (
+            <circle
+              cx={stagedDim.x}
+              cy={stagedDim.y}
+              r={6 / transform.k}
+              fill="none"
+              stroke="#ff8a00"
+              strokeWidth={2 / transform.k}
+              pointerEvents="none"
+            />
+          )}
           {staged && (() => {
             const run = doc.runs.find((r) => r.id === staged.runId);
             if (!run) return null;
@@ -420,6 +489,14 @@ export default function EditorCanvas({
         {tool === 'bend' && (
           <span className="meta hint">Click on a path to add a manual bend (overrides auto-detect for that run)</span>
         )}
+        {tool === 'label' && (
+          <span className="meta hint">Click on the canvas to drop a text label</span>
+        )}
+        {tool === 'dimension' && (
+          <span className="meta hint">
+            {stagedDim ? 'Click the second endpoint to draw the dimension' : 'Click the first endpoint of the dimension'}
+          </span>
+        )}
       </div>
     </div>
   );
@@ -447,6 +524,91 @@ function ElectrodeMarker({
       onClick={onClick}
       style={{ cursor: 'pointer' }}
     />
+  );
+}
+
+function LabelMarker({
+  x,
+  y,
+  text,
+  k,
+  onClick,
+}: {
+  x: number;
+  y: number;
+  text: string;
+  k: number;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  // Render at a fixed pixel-equivalent size regardless of zoom.
+  const fontSize = 14 / k;
+  return (
+    <g onClick={onClick} style={{ cursor: 'pointer' }}>
+      <circle cx={x} cy={y} r={3 / k} fill="#1f6feb" />
+      <text
+        x={x + 6 / k}
+        y={y - 4 / k}
+        fontSize={fontSize}
+        fontFamily="-apple-system, system-ui, sans-serif"
+        fill="#1f6feb"
+        stroke="#fff"
+        strokeWidth={3 / k}
+        paintOrder="stroke fill"
+      >
+        {text || '(label)'}
+      </text>
+    </g>
+  );
+}
+
+function DimensionMarker({
+  x1,
+  y1,
+  x2,
+  y2,
+  note,
+  k,
+  onClick,
+}: {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  note?: string;
+  k: number;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.hypot(dx, dy);
+  const midX = (x1 + x2) / 2;
+  const midY = (y1 + y2) / 2;
+  // Tick perpendicular to the line, fixed pixel size.
+  const tick = 5 / k;
+  const angle = Math.atan2(dy, dx);
+  const px = -Math.sin(angle) * tick;
+  const py = Math.cos(angle) * tick;
+  const fontSize = 12 / k;
+  const label = note ? `${length.toFixed(1)}mm · ${note}` : `${length.toFixed(1)}mm`;
+  return (
+    <g onClick={onClick} style={{ cursor: 'pointer' }}>
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#1f6feb" strokeWidth={1 / k} />
+      <line x1={x1 - px} y1={y1 - py} x2={x1 + px} y2={y1 + py} stroke="#1f6feb" strokeWidth={1 / k} />
+      <line x1={x2 - px} y1={y2 - py} x2={x2 + px} y2={y2 + py} stroke="#1f6feb" strokeWidth={1 / k} />
+      <text
+        x={midX + px}
+        y={midY + py - 1 / k}
+        fontSize={fontSize}
+        fontFamily="-apple-system, system-ui, sans-serif"
+        fill="#1f6feb"
+        stroke="#fff"
+        strokeWidth={3 / k}
+        paintOrder="stroke fill"
+        textAnchor="middle"
+      >
+        {label}
+      </text>
+    </g>
   );
 }
 

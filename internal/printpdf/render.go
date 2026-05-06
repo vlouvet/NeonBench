@@ -290,6 +290,41 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 				}
 			}
 
+			// Doc-level dimensions: line + perpendicular ticks + measured label.
+			pdf.SetLineWidth(0.3)
+			for _, d := range doc.Dimensions {
+				ax, ay := toPage(d.X1, d.Y1)
+				bx, by := toPage(d.X2, d.Y2)
+				pdf.Line(ax, ay, bx, by)
+				dx := bx - ax
+				dy := by - ay
+				length := math.Hypot(dx, dy)
+				if length > 0 {
+					px := -dy / length * 1.5
+					py := dx / length * 1.5
+					pdf.Line(ax-px, ay-py, ax+px, ay+py)
+					pdf.Line(bx-px, by-py, bx+px, by+py)
+				}
+				measured := math.Hypot(d.X2-d.X1, d.Y2-d.Y1)
+				note := fmt.Sprintf("%.1fmm", measured)
+				if d.Note != "" {
+					note += " · " + d.Note
+				}
+				pdf.SetFont("Helvetica", "", 8)
+				pdf.Text((ax+bx)/2+1, (ay+by)/2-1, note)
+			}
+			pdf.SetLineWidth(opts.StrokeMM)
+
+			// Doc-level text labels: small dot + text to the right.
+			pdf.SetFont("Helvetica", "", 9)
+			for _, l := range doc.Labels {
+				lx, ly := toPage(l.X, l.Y)
+				pdf.SetLineWidth(0.3)
+				pdf.Circle(lx, ly, 0.7, "F")
+				pdf.SetLineWidth(opts.StrokeMM)
+				pdf.Text(lx+2, ly-1, l.Text)
+			}
+
 			pdf.ClipEnd()
 			drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows)
 		}

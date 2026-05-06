@@ -4,9 +4,31 @@ package designdoc
 // enough information to round-trip through the editor and re-render to SVG.
 // All coordinates are in millimeters.
 type Doc struct {
-	Version   int        `json:"version"`     // schema version
-	ViewBoxMM [4]float64 `json:"view_box_mm"` // [x, y, w, h]
-	Runs      []Run      `json:"runs"`
+	Version    int         `json:"version"`     // schema version
+	ViewBoxMM  [4]float64  `json:"view_box_mm"` // [x, y, w, h]
+	Runs       []Run       `json:"runs"`
+	Labels     []Label     `json:"labels,omitempty"`
+	Dimensions []Dimension `json:"dimensions,omitempty"`
+}
+
+// Label is a free-form text marker placed in mm coordinates. Used for
+// callouts ("transformer", "wall mount", "do not bend below 50mm") that
+// belong to the design as a whole, not to any one run.
+type Label struct {
+	X    float64 `json:"x"` // mm
+	Y    float64 `json:"y"` // mm
+	Text string  `json:"text"`
+}
+
+// Dimension is a measured line between two world-space points. The editor
+// auto-computes the distance from the endpoints; an optional Note can add
+// context the measurement alone doesn't convey ("min spacing", "centerline").
+type Dimension struct {
+	X1   float64 `json:"x1"`
+	Y1   float64 `json:"y1"`
+	X2   float64 `json:"x2"`
+	Y2   float64 `json:"y2"`
+	Note string  `json:"note,omitempty"`
 }
 
 // Run is one continuous tube path (one disjoint subpath in the source SVG).

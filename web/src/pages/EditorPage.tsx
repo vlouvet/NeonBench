@@ -400,6 +400,38 @@ export default function EditorPage() {
     }));
   }
 
+  function placeLabel(x: number, y: number) {
+    const text = window.prompt('Label text:', '')?.trim();
+    if (!text) return;
+    editDoc((prev) => ({
+      ...prev,
+      labels: [...(prev.labels ?? []), { x, y, text }],
+    }));
+  }
+
+  function deleteLabel(index: number) {
+    editDoc((prev) => ({
+      ...prev,
+      labels: (prev.labels ?? []).filter((_, i) => i !== index),
+    }));
+  }
+
+  function placeDimension(x1: number, y1: number, x2: number, y2: number) {
+    if (Math.hypot(x2 - x1, y2 - y1) < 0.5) return; // ignore misclicks <0.5mm apart
+    const note = window.prompt('Optional note (blank to skip):', '')?.trim() || undefined;
+    editDoc((prev) => ({
+      ...prev,
+      dimensions: [...(prev.dimensions ?? []), { x1, y1, x2, y2, ...(note ? { note } : {}) }],
+    }));
+  }
+
+  function deleteDimension(index: number) {
+    editDoc((prev) => ({
+      ...prev,
+      dimensions: (prev.dimensions ?? []).filter((_, i) => i !== index),
+    }));
+  }
+
   function setRunNotes(runId: string, notes: string) {
     editDoc((prev) => ({
       ...prev,
@@ -524,6 +556,19 @@ export default function EditorPage() {
               onClick={() => setTool('bend')}
               title="Add a manual bend point (overrides auto-detect for that run)"
             >Add bend</button>
+            <span className="toolbar-divider" aria-hidden />
+            <button
+              type="button"
+              className={tool === 'label' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('label')}
+              title="Drop a text label anywhere on the canvas"
+            >Label</button>
+            <button
+              type="button"
+              className={tool === 'dimension' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('dimension')}
+              title="Measure a distance between two points (click two points)"
+            >Dimension</button>
           </div>
         </div>
         <p className="meta">
@@ -544,6 +589,10 @@ export default function EditorPage() {
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
           onPlaceBend={placeBend}
+          onPlaceLabel={placeLabel}
+          onPlaceDimension={placeDimension}
+          onDeleteLabel={deleteLabel}
+          onDeleteDimension={deleteDimension}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>

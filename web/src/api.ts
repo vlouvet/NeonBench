@@ -41,10 +41,26 @@ export type DesignVersion = {
   created_at: string;
 };
 
+export type Label = {
+  x: number;
+  y: number;
+  text: string;
+};
+
+export type Dimension = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  note?: string;
+};
+
 export type DesignDoc = {
   version: number;
   view_box_mm: [number, number, number, number]; // [x, y, w, h]
   runs: DesignRun[];
+  labels?: Label[];
+  dimensions?: Dimension[];
 };
 
 export type Blockout = {
