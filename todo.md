@@ -36,57 +36,65 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ### Image input
 
-- [ ] Upload endpoint accepting PNG, JPG, SVG (max size guard)
-- [ ] PNG/JPG: preprocess — grayscale, threshold to 1-bit (with adjustable threshold preview before vectorize)
-- [ ] SVG: skip vectorization, validate it's parseable, normalize to internal representation
-- [ ] Store original asset alongside processed bitmap
+- [x] Upload endpoint accepting PNG, JPG, SVG (max size guard, 50MB)
+- [ ] PNG/JPG: adjustable threshold preview before vectorize (currently sent as a request param; live canvas preview is a v1.x polish item)
+- [x] SVG: skip vectorization, persist as design_version pass-through
+- [x] Store original asset on disk under `<data-dir>/assets/<project_id>/` with metadata in DB
 
 ### Vectorization
 
-- [ ] Shell out to system `potrace` binary (decided — quality > single-binary purity)
-- [ ] On first launch, detect `potrace` on PATH; if missing, show install instructions per OS (`brew install potrace`, `choco install potrace`, `apt install potrace`)
+- [x] Shell out to system `potrace` binary (decided — quality > single-binary purity)
+- [ ] On first launch, detect `potrace` on PATH; if missing, show install instructions per OS — currently surfaces a 424 with install instructions only on first vectorize attempt; pre-flight check is a polish item
 - [ ] Setting to override `potrace` binary path (for non-standard installs)
-- [ ] Bundle `potrace` binary alongside the Go binary in release artifacts per OS to keep UX one-step (still ship the install-instructions fallback for users who delete it)
-- [ ] Wrapper: write input bitmap to temp file (PBM format potrace prefers), invoke with chosen params, capture SVG on stdout, parse
-- [ ] Expose vectorize parameters: turn policy, alphamax (corner threshold), opttolerance (curve simplification)
-- [ ] Output: SVG with paths in mm coordinates (no transforms, single coordinate space)
-- [ ] Preview UI: show original raster + vectorized overlay with toggle
+- [ ] Bundle `potrace` binary alongside the Go binary in release artifacts per OS
+- [x] Wrapper: input PBM via stdin, capture SVG on stdout
+- [x] Expose vectorize parameters: turn policy, alphamax, opttolerance, threshold, target_width_mm, label
+- [ ] Normalize potrace output to mm-canonical viewBox (currently keeps potrace's pt-units viewBox; bake transform into path coords) — needed for SVG marker overlay (Phase 2 prereq)
+- [ ] Live before/after preview UI (currently just shows the result inline)
 
 ### Validation rules
 
-- [ ] **Min bend radius:** sample each path at fine intervals, compute curvature, flag any radius < tube spec min
-- [ ] **Single continuous path / connectivity:** detect disjoint subpaths; report as discrete "tube runs" needing electrodes/jumps
-- [ ] **Max segment length:** sum arc length per continuous run; flag runs exceeding max
-- [ ] **Min spacing:** detect parallel/adjacent path segments closer than tube diameter (spatial index over polyline samples; check distance between non-adjacent samples)
-- [ ] Validation report: structured JSON (rule, severity, location, message) + visual overlay markers in editor
-- [ ] Block "Send to printer" until report has zero errors (warnings allowed)
+- [x] **Min bend radius:** discrete 3-point circumradius along flattened polylines, with **double-back hairpin exemption** (Blazek "DB" construction)
+- [x] **Connectivity / tube run count:** counted, exposed in report, no error raised (multi-run is normal)
+- [x] **Max segment length:** total arc per subpath; flagged with arc-midpoint location
+- [x] **Min spacing:** spatial-grid pairwise check with curvature-aware same-polyline filter
+- [x] **Crossing detection:** demote perpendicular spacing flags to `crossing_needs_blockout` warning (Saving Neon p.19 — block-out paint exempts crossings)
+- [x] **Splice recommended:** Miller p.125 — bbox height ≥ 305mm warns about multi-blank construction
+- [x] Validation report: structured JSON (rule, severity, location, message) + grouped UI list with severity color coding
+- [x] Block "Send to printer" until report has zero errors (warnings allowed) — wired in PrintPanel
+- [ ] **Visual marker overlay on SVG preview** — deferred; needs SVG normalization (see Vectorization section)
+- [ ] **Lead-in length / 90° angle** (Miller p.124, 50–254mm) — deferred until electrode placement model exists (potrace gives closed loops with no defined endpoints)
+- [ ] **Glass-to-grounded-metal ≥6.35mm, HV-cable-to-metal ≥70mm** (Miller App I §126, p.202; Strattman updates HV to 63.5mm) — deferred until cabinet/substrate model exists
+- [ ] Tighten bend-radius defaults to wall-thinning derivation (18/22/27/34mm for ø 8/10/12/15mm) — see `docs/neon-rules/bend-radius.md` derivation; currently still 16/20/25/30mm
 
 ### Print output (1:1 PDF)
 
-- [ ] **Decision needed:** PDF library — `signintech/gopdf` vs `jung-kurt/gofpdf` vs `unidoc/unipdf`. Need vector path support, exact mm scaling, multi-page tiling.
-- [ ] Generate PDF at exact 1:1 scale, paths in mm
-- [ ] Tiling for designs larger than paper: split across pages with overlap markers and tile labels (A1/A2/B1...)
-- [ ] Page setup: paper size selection (Letter, A4, A3, custom), orientation, margins
-- [ ] Registration marks at tile corners + ruler/scale bar on each page (let glassblower verify printer didn't scale)
-- [ ] "Send to printer" → either generate PDF and open in OS default print dialog, or download
+- [x] PDF library — `github.com/phpdave11/gofpdf` (mature, mm-native, path-friendly)
+- [x] Generate PDF at exact 1:1 scale, paths in mm, stroked outlines
+- [x] Tiling for designs larger than paper: split across pages with configurable overlap (default 10mm)
+- [x] Page setup: paper size selection (Letter, Legal, Tabloid, A4, A3, A2), orientation, margin
+- [x] Registration crosses at tile corners + 100mm scale bar with mm tick marks (and "verify scale" callout)
+- [x] Footer with project / version / tube spec / tile coords / date
+- [x] Download PDF action; gated on no validation errors
+- [ ] Send to printer (OS print dialog) — currently downloads only; "send to printer" via OS dialog is a polish item
 
 ### Frontend (Phase 1)
 
-- [ ] Project list / create / open
-- [ ] Tube spec picker on project create; allow editing tube spec per project
-- [ ] Upload screen with drag-drop
-- [ ] Vectorize step: threshold preview, vectorize params, before/after view
-- [ ] Validation results panel with click-to-zoom on issues
-- [ ] Version history sidebar: every vectorize/validation pass creates a version, user can name & revert
-- [ ] Print preview with tile layout, paper size, then trigger output
-- [ ] Keyboard shortcuts from day one (cmd/ctrl+Z, cmd+S, etc. — even if no-ops initially, sets the tone vs NeonWizard)
+- [x] Project list / create modal with tube spec picker
+- [ ] Edit tube spec per project (currently set on create; mutation UI is a v1.x item)
+- [x] Project detail with file upload (click to upload; drag-drop is a v1.x polish item)
+- [x] Vectorize step with target width + threshold + advanced potrace params
+- [x] Validation results panel with grouped issue lists, severity colors, re-validate button
+- [x] Version history list with click-to-switch preview
+- [x] Print panel with paper picker + landscape toggle + download button
+- [ ] Keyboard shortcuts (cmd/ctrl+Z, cmd+S) — placeholder behavior; real shortcuts in Phase 2 with the editor
 
 ### v1 release checklist
 
-- [ ] Smoke test on macOS, Windows, Linux
+- [ ] Smoke test on macOS, Windows, Linux (currently only macOS verified)
 - [ ] Sample bitmaps + golden vectorized outputs in `testdata/`
 - [ ] User-facing README with install + first-design walkthrough
-- [ ] Crash recovery: if app dies mid-session, last design version still in SQLite
+- [x] Crash recovery: every vectorize creates a `design_versions` row before returning, so a mid-session crash leaves the last good state in SQLite
 
 ---
 
