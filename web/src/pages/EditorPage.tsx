@@ -7,11 +7,13 @@ import {
   type DesignDoc,
   type DesignVersion,
   type Project,
+  type TubeSpec,
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import { defaultDirection } from '../lib/runArcs';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
+import { computeBends } from '../lib/bends';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -20,6 +22,7 @@ export default function EditorPage() {
   const navigate = useNavigate();
 
   const [project, setProject] = useState<Project | null>(null);
+  const [tubeSpec, setTubeSpec] = useState<TubeSpec | null>(null);
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setTool] = useState<EditorTool>('select');
@@ -107,12 +110,17 @@ export default function EditorPage() {
   void historyTick; // referenced so React tracks the dependency for the booleans above
 
   useEffect(() => {
-    Promise.all([api.getProject(projectId), api.getDesignVersion(projectId, versionId)])
-      .then(([p, v]) => {
+    Promise.all([
+      api.getProject(projectId),
+      api.getDesignVersion(projectId, versionId),
+      api.listTubeSpecs(),
+    ])
+      .then(([p, v, specs]) => {
         setProject(p);
         setVersion(v);
         setDoc(parseDoc(v));
         setReport(parseReport(v));
+        setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
         setDirty(false);
         resetHistory();
       })
@@ -457,6 +465,7 @@ export default function EditorPage() {
           doc={doc}
           tool={tool}
           selectedRunId={selected}
+          projectDiameterMM={tubeSpec?.diameter_mm ?? 10}
           onSelectRun={setSelected}
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
@@ -562,6 +571,33 @@ export default function EditorPage() {
                   </button>
                 </>
               )}
+              {(() => {
+                const bends = computeBends(selectedRun, tubeSpec?.diameter_mm ?? 10);
+                if (bends.length === 0) {
+                  return (
+                    <p className="meta hint-line">
+                      Bends: none auto-detected (smooth curves below 20° turn).
+                    </p>
+                  );
+                }
+                return (
+                  <>
+                    <h5 className="meta">
+                      Bends · {bends.length} · total{' '}
+                      {bends.reduce((acc, b) => acc + b.angleDeg, 0).toFixed(0)}°
+                    </h5>
+                    <ul className="blockout-list">
+                      {bends.map((b, bi) => (
+                        <li key={bi}>
+                          <span className="meta">
+                            #{bi + 1} @ {b.arcLengthMM.toFixed(1)}mm · {b.angleDeg.toFixed(0)}° · r={b.radiusMM > 0 && Number.isFinite(b.radiusMM) ? `${b.radiusMM.toFixed(1)}mm` : '∞'}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                );
+              })()}
               {(selectedRun.annotations?.length ?? 0) > 0 && (
                 <>
                   <h5 className="meta">Annotations</h5>

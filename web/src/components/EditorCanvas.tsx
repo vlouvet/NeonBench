@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
+import { computeBends } from '../lib/bends';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -24,6 +25,7 @@ export default function EditorCanvas({
   doc,
   tool,
   selectedRunId,
+  projectDiameterMM,
   onSelectRun,
   onPlaceElectrode,
   onDeleteElectrode,
@@ -34,6 +36,7 @@ export default function EditorCanvas({
   doc: DesignDoc;
   tool: EditorTool;
   selectedRunId: string | null;
+  projectDiameterMM: number;
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
@@ -343,6 +346,15 @@ export default function EditorCanvas({
               );
             }),
           )}
+          {selectedRunId &&
+            (() => {
+              const run = doc.runs.find((r) => r.id === selectedRunId);
+              if (!run) return null;
+              const bends = computeBends(run, projectDiameterMM);
+              return bends.map((b, bi) => (
+                <BendMarker key={`bend-${selectedRunId}-${bi}`} x={b.x} y={b.y} sizeMM={markerSizeMM * 0.6} />
+              ));
+            })()}
           {doc.runs.flatMap((run) => {
             const arcs = runArcs(run);
             return (run.annotations ?? []).map((a, ai) => {
@@ -411,6 +423,24 @@ function ElectrodeMarker({
       strokeWidth={r * 0.15}
       onClick={onClick}
       style={{ cursor: 'pointer' }}
+    />
+  );
+}
+
+function BendMarker({ x, y, sizeMM }: { x: number; y: number; sizeMM: number }) {
+  // Small hollow disc — non-interactive. The sidebar list is the way to
+  // jump to / inspect a bend; clicking the marker would just compete with
+  // the underlying path's electrode/blockout/annotation hit zone.
+  const r = sizeMM / 2;
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={r}
+      fill="#fff"
+      stroke="#ff8a00"
+      strokeWidth={r * 0.35}
+      pointerEvents="none"
     />
   );
 }

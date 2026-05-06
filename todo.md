@@ -118,7 +118,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run transformer/voltage notes still TODO.
 - [x] **Per-run color (gas/phosphor):** sidebar dropdown + run-row swatch; canvas tints the live arc with the selected gas color while blockouts stay neutral. PDF stays B&W on purpose (1:1 trace pattern). (slice 3c)
 - [x] **Per-run tube-diameter override:** sidebar number input on the selected run, round-trips through the design doc. Wired into validation: bend-radius limit scales linearly with the override per the wall-thinning derivation; spacing rule stays project-wide for now.
-- [ ] **Bend planning:** mark each bend point; auto-suggest based on curvature; export bend list as part of pattern
+- [x] **Bend planning (auto-suggest + visualize):** `computeBends` walks the live arc, finds vertices whose smoothed turn-angle exceeds 20°, clusters apex points within 2× tube diameter, and emits one bend per cluster with its arc-length offset, approximate radius, and turn angle. Selected-run bends render as small orange discs on the canvas and a sorted list in the sidebar. Manual add/remove and PDF export are follow-ups.
 - [x] **Live re-validation on edit:** 500ms debounce; in-flight requests are aborted on the next tick so the user only sees results for their latest state. Status badge in the editor header summarizes errors / warnings / total tube length.
 - [ ] Annotation layer: text notes, dimensions, color/gas labels per run
 
