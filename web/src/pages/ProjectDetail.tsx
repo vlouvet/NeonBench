@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, type Asset, type Project, type TubeSpec } from '../api';
+import { api, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
+import VectorizePanel from '../components/VectorizePanel';
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -8,19 +9,25 @@ export default function ProjectDetail() {
   const [project, setProject] = useState<Project | null>(null);
   const [tubeSpec, setTubeSpec] = useState<TubeSpec | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [versions, setVersions] = useState<DesignVersion[]>([]);
+  const [latest, setLatest] = useState<DesignVersion | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [p, a, specs] = await Promise.all([
+      const [p, a, specs, vs, lat] = await Promise.all([
         api.getProject(projectId),
         api.listAssets(projectId),
         api.listTubeSpecs(),
+        api.listDesignVersions(projectId),
+        api.latestDesignVersion(projectId),
       ]);
       setProject(p);
       setAssets(a);
       setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
+      setVersions(vs);
+      setLatest(lat);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -46,10 +53,25 @@ export default function ProjectDetail() {
     }
   }
 
+  async function showVersion(v: DesignVersion) {
+    if (v.svg_data) {
+      setLatest(v);
+      return;
+    }
+    try {
+      const full = await api.getDesignVersion(projectId, v.id);
+      setLatest(full);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   if (error) return <p className="error">{error}</p>;
   if (!project) return <p className="meta">Loading…</p>;
 
   const sourceAssets = assets.filter((a) => a.kind === 'source_image');
+  const mostRecentSource = sourceAssets[0];
+  const isSVG = mostRecentSource?.mime === 'image/svg+xml';
 
   return (
     <section>
@@ -59,7 +81,9 @@ export default function ProjectDetail() {
       <h1>{project.name}</h1>
       <p className="meta">
         Tube spec:{' '}
-        {tubeSpec ? `${tubeSpec.name} (Ø ${tubeSpec.diameter_mm}mm, min bend ${tubeSpec.min_bend_radius_mm}mm)` : `#${project.tube_spec_id}`}
+        {tubeSpec
+          ? `${tubeSpec.name} (Ø ${tubeSpec.diameter_mm}mm, min bend ${tubeSpec.min_bend_radius_mm}mm)`
+          : `#${project.tube_spec_id}`}
         {' · Units: '}
         {project.units}
         {' · Created '}
@@ -96,6 +120,53 @@ export default function ProjectDetail() {
         />
         {uploading ? 'Uploading…' : 'Upload image (PNG, JPG, or SVG)'}
       </label>
+
+      {mostRecentSource && (
+        <VectorizePanel
+          projectId={projectId}
+          assetId={mostRecentSource.id}
+          isSVG={isSVG}
+          onCreated={async (dv) => {
+            setLatest(dv);
+            const vs = await api.listDesignVersions(projectId);
+            setVersions(vs);
+          }}
+        />
+      )}
+
+      {latest && (
+        <>
+          <h2>
+            Design v{latest.version_no}
+            {latest.label ? ` — ${latest.label}` : ''}
+          </h2>
+          <div
+            className="svg-preview"
+            dangerouslySetInnerHTML={{ __html: latest.svg_data }}
+          />
+        </>
+      )}
+
+      {versions.length > 0 && (
+        <>
+          <h2>Versions</h2>
+          <ul className="version-list">
+            {versions.map((v) => (
+              <li key={v.id}>
+                <button
+                  type="button"
+                  className={`version-row ${latest?.id === v.id ? 'active' : ''}`}
+                  onClick={() => showVersion(v)}
+                >
+                  <strong>v{v.version_no}</strong>
+                  <span>{v.label || '(no label)'}</span>
+                  <span className="meta">{new Date(v.created_at).toLocaleString()}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </section>
   );
 }

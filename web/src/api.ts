@@ -30,6 +30,27 @@ export type Asset = {
   created_at: string;
 };
 
+export type DesignVersion = {
+  id: number;
+  project_id: number;
+  version_no: number;
+  label?: string | null;
+  svg_data: string;
+  validation_report_json?: string | null;
+  created_at: string;
+};
+
+export type VectorizeRequest = {
+  asset_id: number;
+  target_width_mm: number;
+  threshold?: number;
+  turn_policy?: string;
+  turdsize?: number;
+  alphamax?: number;
+  opttolerance?: number;
+  label?: string;
+};
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -64,4 +85,16 @@ export const api = {
   },
   assetURL: (projectId: number, assetId: number) =>
     `/api/projects/${projectId}/assets/${assetId}`,
+  vectorize: (projectId: number, body: VectorizeRequest) =>
+    req<DesignVersion>(`/api/projects/${projectId}/vectorize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  listDesignVersions: (projectId: number) =>
+    req<DesignVersion[]>(`/api/projects/${projectId}/design_versions`),
+  latestDesignVersion: (projectId: number) =>
+    req<DesignVersion | null>(`/api/projects/${projectId}/design_versions/latest`),
+  getDesignVersion: (projectId: number, versionId: number) =>
+    req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}`),
 };

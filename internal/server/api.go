@@ -27,4 +27,9 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("GET /api/projects/{id}/assets", s.handleListAssets)
 	mux.HandleFunc("POST /api/projects/{id}/assets", s.handleUploadAsset)
 	mux.HandleFunc("GET /api/projects/{id}/assets/{aid}", s.handleDownloadAsset)
+
+	mux.HandleFunc("POST /api/projects/{id}/vectorize", s.handleVectorize)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions", s.handleListDesignVersions)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/latest", s.handleLatestDesignVersion)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}", s.handleGetDesignVersion)
 }
