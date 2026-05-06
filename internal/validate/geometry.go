@@ -34,9 +34,14 @@ func circumradius3(a, b, c Point) float64 {
 
 // Polyline is a sequence of points in millimeter coordinates representing a
 // flattened subpath.
+//
+// DiameterMM is the per-run tube-diameter override, parsed from the SVG
+// path's data-tube-diameter-mm attribute. Zero means no override and rules
+// fall back to the project tube spec.
 type Polyline struct {
-	Points []Point
-	Closed bool
+	Points     []Point
+	Closed     bool
+	DiameterMM float64
 }
 
 // Length returns the total arc length of the polyline.

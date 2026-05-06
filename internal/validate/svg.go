@@ -99,16 +99,26 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 			push(current(), t.Attr)
 			if t.Name.Local == "path" {
 				dAttr := ""
+				var diameterMM float64
 				for _, a := range t.Attr {
-					if a.Name.Local == "d" {
+					switch a.Name.Local {
+					case "d":
 						dAttr = a.Value
-						break
+					case "data-tube-diameter-mm":
+						if v, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64); err == nil && v > 0 {
+							diameterMM = v
+						}
 					}
 				}
 				if dAttr == "" {
 					continue
 				}
 				ps, iss := ParseAndFlatten(dAttr, current())
+				if diameterMM > 0 {
+					for i := range ps {
+						ps[i].DiameterMM = diameterMM
+					}
+				}
 				polylines = append(polylines, ps...)
 				issues = append(issues, iss...)
 				for _, pl := range ps {

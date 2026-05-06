@@ -68,7 +68,7 @@ func ToSVG(doc *Doc) []byte {
 		liveIndices, closed := liveArcIndices(run)
 		segments := splitByBlockouts(liveIndices, run.Blockouts, closed)
 		for _, seg := range segments {
-			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout)
+			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM)
 		}
 	}
 	buf.WriteString(`</svg>`)
@@ -153,14 +153,18 @@ func clampLiveIndex(i, n int) int {
 	return i
 }
 
-func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool) {
+func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64) {
 	if len(indices) < 2 {
 		return
 	}
+	diameterAttr := ""
+	if diameterMM > 0 {
+		diameterAttr = fmt.Sprintf(` data-tube-diameter-mm="%s"`, fmtFloat(diameterMM))
+	}
 	if isBlockout {
-		buf.WriteString(`<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout" d="`)
+		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s d="`, diameterAttr)
 	} else {
-		buf.WriteString(`<path fill="black" fill-rule="evenodd" stroke="none" d="`)
+		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s d="`, diameterAttr)
 	}
 	for j, idx := range indices {
 		cmd := "L"

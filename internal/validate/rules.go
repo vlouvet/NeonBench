@@ -52,17 +52,44 @@ func checkBendRadiusClustered(polylines []Polyline, limits Limits) []Issue {
 	return clusterIssues(raw, math.Max(limits.MinBendRadiusMM*1.5, 5))
 }
 
+// runDiameterMM returns the effective tube diameter for a polyline: the
+// per-run override if present, else the project default from limits.
+func runDiameterMM(pl Polyline, limits Limits) float64 {
+	if pl.DiameterMM > 0 {
+		return pl.DiameterMM
+	}
+	return limits.DiameterMM
+}
+
+// runBendLimitMM returns the effective minimum bend radius for a polyline.
+// When the polyline carries a per-run diameter override that differs from
+// the project default, the project's bend-radius limit is scaled linearly
+// by the diameter ratio — this matches the wall-thinning derivation in
+// docs/neon-rules/bend-radius.md (r ∝ D for a fixed wall-strain budget).
+// Without an override, the project's limit is used as-is so the user's
+// tube-spec customization is preserved.
+func runBendLimitMM(pl Polyline, limits Limits) float64 {
+	if pl.DiameterMM > 0 && limits.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
+		return limits.MinBendRadiusMM * pl.DiameterMM / limits.DiameterMM
+	}
+	return limits.MinBendRadiusMM
+}
+
 // checkBendRadius scans each polyline using a 3-point discrete circumradius
 // and emits an issue at any vertex where r < limit, EXCEPT where the
 // vertex is the apex of a structural double-back hairpin (legitimate
-// construction, not an error).
+// construction, not an error). When a polyline carries a per-run diameter
+// override, both the limit and the hairpin look-ahead scale with it.
 func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
-	limitMM := limits.MinBendRadiusMM
-	if limitMM <= 0 {
+	if limits.MinBendRadiusMM <= 0 {
 		return nil
 	}
 	var issues []Issue
 	for _, pl := range polylines {
+		limitMM := runBendLimitMM(pl, limits)
+		if limitMM <= 0 {
+			continue
+		}
 		// We need fairly tight sampling for stable curvature. Resample at
 		// ~limit/4 spacing — capped to a sensible range.
 		step := math.Max(0.5, math.Min(limitMM/4, 5))
@@ -72,6 +99,7 @@ func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
 		if n < 3 {
 			continue
 		}
+		hairpinD := runDiameterMM(pl, limits)
 		emitted := map[int]bool{} // suppress dense duplicate flags
 		for i := 1; i < n-1; i++ {
 			r := circumradius3(pts[i-1], pts[i], pts[i+1])
@@ -87,15 +115,19 @@ func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
 				if skip {
 					continue
 				}
-				if isDoubleBackHairpin(pts, sampled.Closed, i, step, limits.DiameterMM) {
+				if isDoubleBackHairpin(pts, sampled.Closed, i, step, hairpinD) {
 					// Legitimate 180° construction; not a bend-radius failure.
 					continue
 				}
 				emitted[i] = true
+				suffix := ""
+				if pl.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
+					suffix = fmt.Sprintf(" (run override: ø%.1fmm)", pl.DiameterMM)
+				}
 				issues = append(issues, Issue{
 					Rule:     RuleMinBendRadius,
 					Severity: SeverityError,
-					Message:  fmt.Sprintf("bend radius %.1fmm below tube minimum %.1fmm", r, limitMM),
+					Message:  fmt.Sprintf("bend radius %.1fmm below tube minimum %.1fmm%s", r, limitMM, suffix),
 					XMM:      pts[i].X,
 					YMM:      pts[i].Y,
 				})
