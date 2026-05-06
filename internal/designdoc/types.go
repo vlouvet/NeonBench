@@ -26,6 +26,20 @@ type Run struct {
 	Color          string      `json:"color,omitempty"`
 	Electrodes     []Electrode `json:"electrodes,omitempty"`
 	Direction      string      `json:"direction,omitempty"` // "forward" | "backward"
+	Blockouts      []Blockout  `json:"blockouts,omitempty"`
+}
+
+// Blockout is a segment of a run's live arc covered by black-out paint.
+// Indices reference live-arc positions (0-based), not raw polyline points,
+// so the user marks "from this point on the visible tube to that point" and
+// the back-end translates to the underlying polyline indices when rendering.
+//
+// Per Saving Neon (p.19) and Miller (1935 p.60), block-out paint is the
+// standard way crossings and run-to-run jumps are hidden so they don't
+// glow.
+type Blockout struct {
+	StartLiveIndex int `json:"start_live_index"`
+	EndLiveIndex   int `json:"end_live_index"`
 }
 
 type Polyline struct {

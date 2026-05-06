@@ -65,24 +65,116 @@ func ToSVG(doc *Doc) []byte {
 		if len(run.Polyline.Points) < 2 {
 			continue
 		}
-		indices, closed := liveArcIndices(run)
-		buf.WriteString(`<path fill="black" fill-rule="evenodd" stroke="none" d="`)
-		for j, idx := range indices {
-			cmd := "L"
-			if j == 0 {
-				cmd = "M"
-			}
-			p := run.Polyline.Points[idx]
-			fmt.Fprintf(&buf, "%s%s %s ", cmd, fmtFloat(p[0]), fmtFloat(p[1]))
+		liveIndices, closed := liveArcIndices(run)
+		segments := splitByBlockouts(liveIndices, run.Blockouts, closed)
+		for _, seg := range segments {
+			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout)
 		}
-		if closed {
-			buf.WriteByte('Z')
-		}
-		buf.WriteString(`"/>`)
-		buf.WriteByte('\n')
 	}
 	buf.WriteString(`</svg>`)
 	return buf.Bytes()
+}
+
+// pathSegment is one contiguous run of polyline indices, tagged with whether
+// the bender will paint it out (block-out) so the renderer can emit dashed
+// vs solid and the validator can apply spacing exemption.
+type pathSegment struct {
+	Indices    []int
+	Closed     bool
+	IsBlockout bool
+}
+
+// splitByBlockouts walks the live-arc indices and emits alternating
+// alive / blockout segments based on the run's Blockouts list. Blockout
+// indices are interpreted as positions WITHIN the live arc (so [3, 7] means
+// "starting at the third live-arc sample, run for 5 samples"), so this
+// transparently handles both open and closed runs.
+func splitByBlockouts(liveIndices []int, blockouts []Blockout, closed bool) []pathSegment {
+	n := len(liveIndices)
+	if n == 0 {
+		return nil
+	}
+	if len(blockouts) == 0 {
+		return []pathSegment{{Indices: liveIndices, Closed: closed}}
+	}
+	mask := make([]bool, n)
+	for _, b := range blockouts {
+		s, e := clampLiveIndex(b.StartLiveIndex, n), clampLiveIndex(b.EndLiveIndex, n)
+		if s == e {
+			mask[s] = true
+			continue
+		}
+		// Walk forward from s to e (inclusive). For open runs we don't wrap;
+		// for closed runs we do.
+		i := s
+		for {
+			mask[i] = true
+			if i == e {
+				break
+			}
+			i++
+			if i >= n {
+				if !closed {
+					break
+				}
+				i = 0
+			}
+		}
+	}
+	var out []pathSegment
+	cur := pathSegment{IsBlockout: mask[0]}
+	for j := 0; j < n; j++ {
+		if mask[j] != cur.IsBlockout && len(cur.Indices) > 0 {
+			out = append(out, cur)
+			// Bridge: include the boundary point at the start of the new segment.
+			cur = pathSegment{IsBlockout: mask[j], Indices: []int{liveIndices[j-1]}}
+		}
+		cur.Indices = append(cur.Indices, liveIndices[j])
+	}
+	if len(cur.Indices) > 0 {
+		out = append(out, cur)
+	}
+	if closed && len(out) == 1 && !out[0].IsBlockout {
+		out[0].Closed = true
+	}
+	return out
+}
+
+func clampLiveIndex(i, n int) int {
+	if n == 0 {
+		return 0
+	}
+	if i < 0 {
+		i = 0
+	}
+	if i >= n {
+		i = n - 1
+	}
+	return i
+}
+
+func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool) {
+	if len(indices) < 2 {
+		return
+	}
+	if isBlockout {
+		buf.WriteString(`<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout" d="`)
+	} else {
+		buf.WriteString(`<path fill="black" fill-rule="evenodd" stroke="none" d="`)
+	}
+	for j, idx := range indices {
+		cmd := "L"
+		if j == 0 {
+			cmd = "M"
+		}
+		p := points[idx]
+		fmt.Fprintf(buf, "%s%s %s ", cmd, fmtFloat(p[0]), fmtFloat(p[1]))
+	}
+	if closed {
+		buf.WriteByte('Z')
+	}
+	buf.WriteString(`"/>`)
+	buf.WriteByte('\n')
 }
 
 // liveArcIndices returns the polyline indices that make up the run's live
