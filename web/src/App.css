@@ -508,6 +508,13 @@
 .editor-toolbar {
   display: flex;
   gap: 0.25rem;
+  align-items: center;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--border);
+  margin: 0 0.25rem;
 }
 .tool-btn {
   padding: 0.4rem 0.75rem;

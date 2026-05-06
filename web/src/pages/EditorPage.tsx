@@ -32,6 +32,80 @@ export default function EditorPage() {
   const [validating, setValidating] = useState(false);
   const validateAbortRef = useRef<AbortController | null>(null);
 
+  // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
+  // edits that land within COALESCE_MS of the previous edit into a single
+  // undo step — typing into the diameter input or rapid-clicking a tool
+  // shouldn't bury a meaningful prior state under 30 trivial entries.
+  const undoStackRef = useRef<DesignDoc[]>([]);
+  const redoStackRef = useRef<DesignDoc[]>([]);
+  const lastPushAtRef = useRef<number>(0);
+  const [historyTick, setHistoryTick] = useState(0); // bump to refresh canUndo/canRedo
+  const COALESCE_MS = 500;
+  const HISTORY_CAP = 50;
+
+  function resetHistory() {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
+    lastPushAtRef.current = 0;
+    setHistoryTick((t) => t + 1);
+  }
+
+  function editDoc(updater: (prev: DesignDoc) => DesignDoc) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const next = updater(prev);
+      if (next === prev) return prev;
+      const now = Date.now();
+      const stack = undoStackRef.current;
+      // Coalesce rapid sequential edits into the most-recent undo entry so
+      // one Cmd+Z reverts a logical action, not a single keystroke.
+      if (stack.length > 0 && now - lastPushAtRef.current < COALESCE_MS) {
+        // Replace top: keep the OLDER snapshot already on the stack.
+      } else {
+        stack.push(prev);
+        if (stack.length > HISTORY_CAP) stack.shift();
+      }
+      lastPushAtRef.current = now;
+      // Any new edit invalidates the redo branch.
+      redoStackRef.current = [];
+      setHistoryTick((t) => t + 1);
+      return next;
+    });
+    setDirty(true);
+  }
+
+  function undo() {
+    const stack = undoStackRef.current;
+    if (stack.length === 0) return;
+    setDoc((cur) => {
+      if (!cur) return cur;
+      const prev = stack.pop()!;
+      redoStackRef.current.push(cur);
+      lastPushAtRef.current = 0; // next edit starts a fresh coalesce window
+      setHistoryTick((t) => t + 1);
+      return prev;
+    });
+    setDirty(true);
+  }
+
+  function redo() {
+    const stack = redoStackRef.current;
+    if (stack.length === 0) return;
+    setDoc((cur) => {
+      if (!cur) return cur;
+      const next = stack.pop()!;
+      undoStackRef.current.push(cur);
+      lastPushAtRef.current = 0;
+      setHistoryTick((t) => t + 1);
+      return next;
+    });
+    setDirty(true);
+  }
+
+  const canUndo = undoStackRef.current.length > 0;
+  const canRedo = redoStackRef.current.length > 0;
+  void historyTick; // referenced so React tracks the dependency for the booleans above
+
   useEffect(() => {
     Promise.all([api.getProject(projectId), api.getDesignVersion(projectId, versionId)])
       .then(([p, v]) => {
@@ -39,9 +113,42 @@ export default function EditorPage() {
         setVersion(v);
         setDoc(parseDoc(v));
         setReport(parseReport(v));
+        setDirty(false);
+        resetHistory();
       })
       .catch((e: Error) => setError(e.message));
+    // resetHistory has stable identity via refs and is intentionally omitted
+    // from deps to avoid re-running on every history bump.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, versionId]);
+
+  // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo. Skipped
+  // when the user is typing into an input — otherwise an editor undo would
+  // hijack input field text undo.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      if (e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          redo();
+        } else {
+          undo();
+        }
+      } else if (e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redo();
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
@@ -94,8 +201,7 @@ export default function EditorPage() {
 
   function placeElectrode(runId: string, pointIndex: number) {
     if (!doc) return;
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const existing = run.electrodes ?? [];
@@ -121,12 +227,10 @@ export default function EditorPage() {
       return { ...prev, runs };
     });
     setSelected(runId);
-    setDirty(true);
   }
 
   function flipDirection(runId: string) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const cur = run.direction ?? defaultDirection(run);
@@ -135,12 +239,10 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   function deleteElectrode(runId: string, electrodeIndex: number) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const electrodes = (run.electrodes ?? []).filter((_, i) => i !== electrodeIndex);
@@ -148,24 +250,18 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   function clearElectrodesOnSelected() {
     if (!selected) return;
-    setDoc((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        runs: prev.runs.map((r) => (r.id === selected ? { ...r, electrodes: [] } : r)),
-      };
-    });
-    setDirty(true);
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((r) => (r.id === selected ? { ...r, electrodes: [] } : r)),
+    }));
   }
 
   function placeBlockout(runId: string, startLiveIndex: number, endLiveIndex: number) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         // Normalize so start <= end for non-wrapping intent. (For closed runs
@@ -178,12 +274,10 @@ export default function EditorPage() {
       return { ...prev, runs };
     });
     setSelected(runId);
-    setDirty(true);
   }
 
   function deleteBlockout(runId: string, blockoutIndex: number) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const blockouts = (run.blockouts ?? []).filter((_, i) => i !== blockoutIndex);
@@ -191,24 +285,18 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   function clearBlockoutsOnSelected() {
     if (!selected) return;
-    setDoc((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        runs: prev.runs.map((r) => (r.id === selected ? { ...r, blockouts: [] } : r)),
-      };
-    });
-    setDirty(true);
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((r) => (r.id === selected ? { ...r, blockouts: [] } : r)),
+    }));
   }
 
   function setRunColor(runId: string, color: string) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         // Empty value collapses to omitted field so the JSON stays clean.
@@ -220,12 +308,10 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   function placeAnnotation(runId: string, kind: 'jump' | 'support' | 'doubleback', liveIndex: number) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const annotations = [...(run.annotations ?? []), { kind, live_index: liveIndex }];
@@ -234,12 +320,10 @@ export default function EditorPage() {
       return { ...prev, runs };
     });
     setSelected(runId);
-    setDirty(true);
   }
 
   function deleteAnnotation(runId: string, annotationIndex: number) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const annotations = (run.annotations ?? []).filter((_, i) => i !== annotationIndex);
@@ -247,24 +331,18 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   function clearAnnotationsOnSelected() {
     if (!selected) return;
-    setDoc((prev) => {
-      if (!prev) return prev;
-      return {
-        ...prev,
-        runs: prev.runs.map((r) => (r.id === selected ? { ...r, annotations: [] } : r)),
-      };
-    });
-    setDirty(true);
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((r) => (r.id === selected ? { ...r, annotations: [] } : r)),
+    }));
   }
 
   function setRunDiameter(runId: string, diameterMM: number | null) {
-    setDoc((prev) => {
-      if (!prev) return prev;
+    editDoc((prev) => {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         if (diameterMM == null || Number.isNaN(diameterMM) || diameterMM <= 0) {
@@ -275,7 +353,6 @@ export default function EditorPage() {
       });
       return { ...prev, runs };
     });
-    setDirty(true);
   }
 
   async function save() {
@@ -291,6 +368,9 @@ export default function EditorPage() {
       navigate(`/projects/${projectId}/edit/${newVersion.id}`, { replace: true });
       setDirty(false);
       setLabel('');
+      // Saved baseline = clean state; clear undo history so users don't undo
+      // back through changes that are already persisted as a new version.
+      resetHistory();
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -314,6 +394,21 @@ export default function EditorPage() {
             {dirty && <span className="dirty-dot" title="Unsaved changes" />}
           </h1>
           <div className="editor-toolbar">
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={undo}
+              disabled={!canUndo}
+              title="Undo (Cmd/Ctrl+Z)"
+            >Undo</button>
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={redo}
+              disabled={!canRedo}
+              title="Redo (Cmd/Ctrl+Shift+Z)"
+            >Redo</button>
+            <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
               className={tool === 'select' ? 'tool-btn active' : 'tool-btn'}
