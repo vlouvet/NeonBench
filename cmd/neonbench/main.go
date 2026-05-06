@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/vlouvet/neonbench/internal/appdata"
@@ -17,14 +19,23 @@ const appName = "NeonBench"
 
 func main() {
 	var (
-		port    = flag.Int("port", 0, "HTTP port (0 = pick a free one)")
-		dataDir = flag.String("data-dir", "", "Override data directory (default: per-OS app data path)")
-		dev     = flag.Bool("dev", false, "Dev mode: proxy frontend to Vite dev server on :5173")
-		noOpen  = flag.Bool("no-open", false, "Don't auto-open the browser on startup")
+		port     = flag.Int("port", 0, "HTTP port (0 = pick a free one)")
+		dataDir  = flag.String("data-dir", "", "Override data directory (default: per-OS app data path)")
+		dev      = flag.Bool("dev", false, "Dev mode: proxy frontend to Vite dev server on :5173")
+		noOpen   = flag.Bool("no-open", false, "Don't auto-open the browser on startup")
+		logLevel = flag.String("log-level", "info", "Log level: debug, info, warn, error")
 	)
 	flag.Parse()
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: level == slog.LevelDebug,
+	}))
 	slog.SetDefault(logger)
 
 	dir := *dataDir
@@ -67,4 +78,18 @@ func main() {
 		logger.Error("server exited", "err", err)
 		os.Exit(1)
 	}
+}
+
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("unknown --log-level %q (try: debug, info, warn, error)", s)
 }
