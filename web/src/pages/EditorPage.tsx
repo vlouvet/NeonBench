@@ -179,6 +179,45 @@ export default function EditorPage() {
     setDirty(true);
   }
 
+  function placeAnnotation(runId: string, kind: 'jump' | 'support', liveIndex: number) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const annotations = [...(run.annotations ?? []), { kind, live_index: liveIndex }];
+        return { ...run, annotations };
+      });
+      return { ...prev, runs };
+    });
+    setSelected(runId);
+    setDirty(true);
+  }
+
+  function deleteAnnotation(runId: string, annotationIndex: number) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const annotations = (run.annotations ?? []).filter((_, i) => i !== annotationIndex);
+        return { ...run, annotations };
+      });
+      return { ...prev, runs };
+    });
+    setDirty(true);
+  }
+
+  function clearAnnotationsOnSelected() {
+    if (!selected) return;
+    setDoc((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        runs: prev.runs.map((r) => (r.id === selected ? { ...r, annotations: [] } : r)),
+      };
+    });
+    setDirty(true);
+  }
+
   function setRunDiameter(runId: string, diameterMM: number | null) {
     setDoc((prev) => {
       if (!prev) return prev;
@@ -249,6 +288,18 @@ export default function EditorPage() {
               onClick={() => setTool('blockout')}
               title="Mark blockout (click two points on the same run)"
             >Mark blockout</button>
+            <button
+              type="button"
+              className={tool === 'jump' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('jump')}
+              title="Mark a jump-over (tube lifts to clear another tube)"
+            >Mark jump</button>
+            <button
+              type="button"
+              className={tool === 'support' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('support')}
+              title="Mark a support point (chassis-mount)"
+            >Mark support</button>
           </div>
         </div>
         <p className="meta">
@@ -264,6 +315,8 @@ export default function EditorPage() {
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
           onPlaceBlockout={placeBlockout}
+          onPlaceAnnotation={placeAnnotation}
+          onDeleteAnnotation={deleteAnnotation}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>
@@ -360,6 +413,26 @@ export default function EditorPage() {
                   </ul>
                   <button type="button" className="btn-secondary" onClick={clearBlockoutsOnSelected}>
                     Clear blockouts
+                  </button>
+                </>
+              )}
+              {(selectedRun.annotations?.length ?? 0) > 0 && (
+                <>
+                  <h5 className="meta">Annotations</h5>
+                  <ul className="blockout-list">
+                    {selectedRun.annotations!.map((a, ai) => (
+                      <li key={ai}>
+                        <span className="meta">{a.kind} @ live {a.live_index}</span>
+                        <button
+                          type="button"
+                          className="btn-link"
+                          onClick={() => deleteAnnotation(selectedRun.id, ai)}
+                        >Remove</button>
+                      </li>
+                    ))}
+                  </ul>
+                  <button type="button" className="btn-secondary" onClick={clearAnnotationsOnSelected}>
+                    Clear annotations
                   </button>
                 </>
               )}

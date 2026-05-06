@@ -5,7 +5,7 @@ import { colorHex } from '../lib/neonColors';
 
 type Transform = { tx: number; ty: number; k: number };
 
-export type EditorTool = 'select' | 'electrode' | 'blockout';
+export type EditorTool = 'select' | 'electrode' | 'blockout' | 'jump' | 'support';
 
 type StagedBlockout = { runId: string; liveIndex: number };
 
@@ -20,6 +20,8 @@ export default function EditorCanvas({
   onPlaceElectrode,
   onDeleteElectrode,
   onPlaceBlockout,
+  onPlaceAnnotation,
+  onDeleteAnnotation,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -28,6 +30,8 @@ export default function EditorCanvas({
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
+  onPlaceAnnotation: (runId: string, kind: 'jump' | 'support', liveIndex: number) => void;
+  onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
@@ -163,7 +167,26 @@ export default function EditorCanvas({
       setStaged(null);
       return;
     }
+    if (tool === 'jump' || tool === 'support') {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const arcs = runArcs(run);
+      if (arcs.live.length < 1) return;
+      const liveIdx = nearestLiveArcIndex(arcs.live, run.polyline.points, world);
+      onPlaceAnnotation(run.id, tool, liveIdx);
+      onSelectRun(run.id);
+      return;
+    }
     onSelectRun(run.id);
+  }
+
+  function onAnnotationClick(e: React.MouseEvent, runId: string, annotationIndex: number) {
+    e.stopPropagation();
+    if (dragRef.current?.moved) return;
+    onSelectRun(runId);
+    if (tool === 'select' && (e.shiftKey || e.altKey)) {
+      onDeleteAnnotation(runId, annotationIndex);
+    }
   }
 
   function onElectrodeClick(e: React.MouseEvent, runId: string, electrodeIndex: number) {
@@ -213,7 +236,9 @@ export default function EditorCanvas({
             const liveStroke = colorHex(run.color);
             const liveWidth = (selected ? 1.6 : 0.8) / transform.k;
             const cursor =
-              tool === 'electrode' || tool === 'blockout' ? 'crosshair' : 'pointer';
+              tool === 'electrode' || tool === 'blockout' || tool === 'jump' || tool === 'support'
+                ? 'crosshair'
+                : 'pointer';
             // When a colored run is selected we still want a clear selection
             // signal, so draw a wider semi-transparent pink halo underneath.
             const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
@@ -312,6 +337,24 @@ export default function EditorCanvas({
               );
             }),
           )}
+          {doc.runs.flatMap((run) => {
+            const arcs = runArcs(run);
+            return (run.annotations ?? []).map((a, ai) => {
+              const polyIdx = arcs.live[a.live_index];
+              const p = polyIdx != null ? run.polyline.points[polyIdx] : null;
+              if (!p) return null;
+              return (
+                <AnnotationMarker
+                  key={`${run.id}-ann-${ai}`}
+                  kind={a.kind}
+                  x={p[0]}
+                  y={p[1]}
+                  sizeMM={markerSizeMM}
+                  onClick={(ev) => onAnnotationClick(ev, run.id, ai)}
+                />
+              );
+            });
+          })}
         </g>
       </svg>
       <div className="canvas-toolbar">
@@ -326,6 +369,12 @@ export default function EditorCanvas({
           <span className="meta hint">
             {staged ? 'Click again on the same run to set the end' : 'Click on a path to set the blockout start'}
           </span>
+        )}
+        {tool === 'jump' && (
+          <span className="meta hint">Click on a path to mark a jump-over</span>
+        )}
+        {tool === 'support' && (
+          <span className="meta hint">Click on a path to mark a support point</span>
         )}
       </div>
     </div>
@@ -354,6 +403,41 @@ function ElectrodeMarker({
       onClick={onClick}
       style={{ cursor: 'pointer' }}
     />
+  );
+}
+
+function AnnotationMarker({
+  kind,
+  x,
+  y,
+  sizeMM,
+  onClick,
+}: {
+  kind: 'jump' | 'support';
+  x: number;
+  y: number;
+  sizeMM: number;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const r = sizeMM / 2;
+  if (kind === 'jump') {
+    // Half-circle arch above the tube — represents the tube lifting up
+    // and over an obstacle.
+    const d = `M${x - r},${y} A${r},${r} 0 0 1 ${x + r},${y}`;
+    return (
+      <g onClick={onClick} style={{ cursor: 'pointer' }}>
+        <circle cx={x} cy={y} r={r} fill="#fff" stroke="#0096ff" strokeWidth={r * 0.15} />
+        <path d={d} fill="none" stroke="#0096ff" strokeWidth={r * 0.3} strokeLinecap="round" />
+      </g>
+    );
+  }
+  // Support: anchor-style triangle pointing down.
+  const points = `${x - r * 0.8},${y - r} ${x + r * 0.8},${y - r} ${x},${y + r * 0.7}`;
+  return (
+    <g onClick={onClick} style={{ cursor: 'pointer' }}>
+      <circle cx={x} cy={y} r={r} fill="#fff" stroke="#7a4cff" strokeWidth={r * 0.15} />
+      <polygon points={points} fill="#7a4cff" />
+    </g>
   );
 }
 

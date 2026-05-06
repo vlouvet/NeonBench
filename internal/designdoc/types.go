@@ -20,13 +20,28 @@ type Doc struct {
 // For open polylines or runs with fewer than two electrodes, direction is
 // ignored.
 type Run struct {
-	ID             string      `json:"id"`
-	Polyline       Polyline    `json:"polyline"`
-	TubeDiameterMM float64     `json:"tube_diameter_mm,omitempty"`
-	Color          string      `json:"color,omitempty"`
-	Electrodes     []Electrode `json:"electrodes,omitempty"`
-	Direction      string      `json:"direction,omitempty"` // "forward" | "backward"
-	Blockouts      []Blockout  `json:"blockouts,omitempty"`
+	ID             string       `json:"id"`
+	Polyline       Polyline     `json:"polyline"`
+	TubeDiameterMM float64      `json:"tube_diameter_mm,omitempty"`
+	Color          string       `json:"color,omitempty"`
+	Electrodes     []Electrode  `json:"electrodes,omitempty"`
+	Direction      string       `json:"direction,omitempty"` // "forward" | "backward"
+	Blockouts      []Blockout   `json:"blockouts,omitempty"`
+	Annotations    []Annotation `json:"annotations,omitempty"`
+}
+
+// Annotation is a single point marker on a run's live arc, informational
+// only — the bender's pattern picks them up so they know where to leave
+// extra clearance (jumps) or where to mount supports.
+//
+// Kind is "jump" (a horseshoe lift over another tube or obstacle) or
+// "support" (a chassis-mount point holding the tube to the substrate).
+// LiveIndex is a position WITHIN the live arc, same convention as
+// Blockout.StartLiveIndex, so user intent survives later edits to
+// electrodes or direction.
+type Annotation struct {
+	Kind      string `json:"kind"` // "jump" | "support"
+	LiveIndex int    `json:"live_index"`
 }
 
 // Blockout is a segment of a run's live arc covered by black-out paint.

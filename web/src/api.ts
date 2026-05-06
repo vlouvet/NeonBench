@@ -52,6 +52,11 @@ export type Blockout = {
   end_live_index: number;
 };
 
+export type Annotation = {
+  kind: 'jump' | 'support';
+  live_index: number;
+};
+
 export type DesignRun = {
   id: string;
   polyline: { points: [number, number][]; closed: boolean };
@@ -60,6 +65,7 @@ export type DesignRun = {
   electrodes?: { point_index: number }[];
   direction?: 'forward' | 'backward';
   blockouts?: Blockout[];
+  annotations?: Annotation[];
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {
