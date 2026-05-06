@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 
+	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/printpdf"
 	"github.com/vlouvet/neonbench/internal/storage"
 )
@@ -58,7 +60,17 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	}
 	opts.TubeSpecName = tubeSpec.Name
 
-	data, err := printpdf.Render([]byte(v.SVGData), opts)
+	var data []byte
+	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {
+		var doc designdoc.Doc
+		if err := json.Unmarshal([]byte(*v.DesignDocJSON), &doc); err == nil && len(doc.Runs) > 0 {
+			data, err = printpdf.RenderFromDoc(&doc, opts, tubeSpec.DiameterMM)
+		} else {
+			data, err = printpdf.Render([]byte(v.SVGData), opts)
+		}
+	} else {
+		data, err = printpdf.Render([]byte(v.SVGData), opts)
+	}
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "render pdf: "+err.Error())
 		return

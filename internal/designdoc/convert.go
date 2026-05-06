@@ -86,6 +86,37 @@ type pathSegment struct {
 	IsBlockout bool
 }
 
+// RenderableSegment exposes splitByBlockouts to other packages (printpdf
+// in particular). Indices reference run.Polyline.Points.
+type RenderableSegment struct {
+	Indices    []int
+	Closed     bool
+	IsBlockout bool
+}
+
+// LiveArcIndices returns the polyline indices of the run's live tube and
+// whether the resulting arc is closed. Exported so renderers can locate
+// the tube geometry without re-implementing the closed-loop split.
+func LiveArcIndices(run Run) ([]int, bool) {
+	return liveArcIndices(run)
+}
+
+// RenderableSegments returns the run split into alternating alive/blockout
+// segments along the live arc — same data ToSVG uses to emit alive vs
+// dashed paths.
+func RenderableSegments(run Run) []RenderableSegment {
+	if len(run.Polyline.Points) < 2 {
+		return nil
+	}
+	liveIndices, closed := liveArcIndices(run)
+	segs := splitByBlockouts(liveIndices, run.Blockouts, closed)
+	out := make([]RenderableSegment, len(segs))
+	for i, s := range segs {
+		out[i] = RenderableSegment{Indices: s.Indices, Closed: s.Closed, IsBlockout: s.IsBlockout}
+	}
+	return out
+}
+
 // splitByBlockouts walks the live-arc indices and emits alternating
 // alive / blockout segments based on the run's Blockouts list. Blockout
 // indices are interpreted as positions WITHIN the live arc (so [3, 7] means
