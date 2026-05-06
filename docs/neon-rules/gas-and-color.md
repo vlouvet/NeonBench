@@ -62,6 +62,109 @@ Miller's "side-tube method" is the gold standard *(Miller, pp. 190–192)*:
 - After bombardment and carrier-gas filling, the bulb is broken and a small drop of Hg released into the tube.
 - Quantity is "a few drops" — Miller does not state a numeric volume per cubic meter of tubing. Modern practice is roughly **1–2 mg per linear meter** of 12 mm tube; Miller is silent on this.
 
+### Strattman (1997) — first quantified mercury dosage
+
+Strattman *(NT Ch.10, "Quantity of mercury necessary")* gives the **first per-tube mercury dose table we have**:
+
+> "Tubing for signs can be subdivided as follows:
+> 1. Long units — more than four feet long
+> 2. Short units — less than four feet long
+> 3. Tubing to be used in warm climates
+> 4. Tubing to be used in cold climates
+>
+> The amount of mercury to be used should be minimum required to produce the necessary mercury vapor discharge. For long units and cold weather conditions a little more mercury is used. For short units or warm weather conditions less is used.
+>
+> The following list should be used only as a guide for the quantity of mercury:
+> 1. **Long units — cold weather — 600 milligrams**
+> 2. **Long units — warm weather — 400 milligrams**
+> 3. **Short units — cold weather — 400 milligrams**
+> 4. **Short units — warm weather — 300 milligrams**
+>
+> Cold cathode tubing, irrespective of diameter, should contain only a minute quantity of mercury. The following list can be used as a guide for the quantity of mercury for cold cathode tubing:
+> 1. **15, 18 or 20-millimeter tubing used on 30-milliampere transformers — 200 milligrams**
+> 2. **20, 22 or 25-millimeter tubing used on 100 or 200 milliamperes — 50 to 100 milligrams**" *(NT Ch.10)*
+
+So the **modern mercury dosage** is per-tube, not per-meter:
+- Sign tubing (8–15 mm typical): **300–600 mg per tube** depending on length and climate.
+- Cold-cathode tubing (15–25 mm): **50–200 mg per tube** depending on diameter and current.
+
+**This fills the most-flagged gap in `missing-rules.md` ("Mercury volume per linear meter").** The trade tabulates by **tube unit** (whole tube ~4 ft long is ~1.2 m), so the per-meter equivalent is roughly:
+- Long units (>4 ft, ~1.2 m+): **400 mg / 1.2 m ≈ 330 mg/m warm**, **600 mg / 1.2 m ≈ 500 mg/m cold**
+- Short units (<4 ft, <1.2 m): **300 mg / 1 m = 300 mg/m warm**, **400 mg / 1 m = 400 mg/m cold**
+
+(These are coarse — Strattman and the trade explicitly avoid per-meter quantities and prefer per-tube doses tied to length category × climate. Use the Strattman categorical numbers as the canonical citation.)
+
+## Phosphor catalog (Strattman)
+
+Phosphor coatings are a post-1935 development; Miller is silent. Strattman tabulates them in **Table 3.11 "Basic fluorescent phosphors most commonly used"** *(NT Ch.3)*:
+
+| Basic Powder | General color |
+|---|---|
+| Calcium Tungstate | Blue |
+| Calcium Silicate | Pink |
+| Zinc Silicate | Green |
+| Zinc Silicate | Green |
+| Calcium Halophosphate* | White |
+| Barium Magnesium Deep* | Blue |
+| Aluminate Barium Disilicate** | "Black Light" |
+
+\* Color depends on amount of activating agent.
+\** Provides ultraviolet light to illuminate fluorescent-painted surfaces.
+
+And **Table 3.12 "Transmission in Nanometers"** for the rare-earth phosphor activators *(NT Ch.3)*:
+
+| Phosphor (rare-earth activator) | General color | Excitation range UV (nm) | Sensitivity peak (nm) | Emitted range visible (nm) | Emitted peak (nm) |
+|---|---|---|---|---|---|
+| Calcium tungstate | Blue | 220–330 | 272 | 380–700 | 440 |
+| Zinc silicate | Green | 220–396 | 253.7 | 450–620 | 525 |
+| Calcium halophosphate | White | 220–300 | 253.7 | 450–720 | 595 |
+| Calcium silicate | Pink | 220–320 | 240 | 430–720 | 615 |
+| Barium magnesium | Deep blue | 220–400 | 253.7 | 400–540 | 450 |
+
+Plus the rare-earth-doped families, identified by name *(NT Ch.3, also from EGL Co.)*:
+- Calcium-tungstate-Cerium terbium → Green
+- Yttrium-orthophosphate Europium → Deep blue
+- Aluminate-Europium → Blue-green
+- Strontium-phosphate Europium → Purple-near UV
+- Calcium-tungstate Cerium terbium → Green
+
+**This is the modern phosphor catalog Miller (1935) couldn't have written.** It directly answers "what color does phosphor X emit when activated by 254 nm Hg-vapor UV". For NeonBench's gas-and-color preview rendering, use the emitted peak as the dominant wavelength and the emitted range to compute spectral width.
+
+## Glass tubing — modern variants (Strattman Tables 3.6, 3.10)
+
+Strattman tabulates modern glass tubing types *(NT Table 3.6)*:
+
+| Corning / Sylvania code | Strain point (°C) | Annealing point (°C) | Softening point (°C) | Working point (°C) | Coefficient of expansion |
+|---|---|---|---|---|---|
+| SG 10 lead glass | 392 | 432 | 620 | 985 | 92 |
+| SG 12 lead glass | 395 | 435 | 630 | 985 | 89 ± 5 |
+| SG 772 borosilicate glass | 484 | 523 | 736 | 1146 | 36 |
+| SG 81 sodaline glass (Coleman glass; Ruby, Ride, Green and Orange Lead-free Bo Si Coleman glass) | 473 | 514 | 685 | 1013 | 92 |
+
+And glass weights / wall thickness *(Table 3.10)*:
+
+| Tube ø (mm) | Clear glass: ft per pound | Wall thickness (in.) | Colored glass: ft per pound | Wall thickness (in.) |
+|---|---|---|---|---|
+| 7 | 37.6 | .042–.048 | — | 1.2–1.3 |
+| 8 | 26.5 | .052–.058 | — | 1.2–1.3 |
+| 9 | 21.2 | .052–.058 | — | 1.2–1.3 |
+| 10 | 18.0 | .052–.058 | 21.0 | 1.2–1.3 |
+| 11 | 16.0 | .052–.058 | — | 1.2–1.3 |
+| 12 | 13.8 | .052–.058 | 16.5 | 1.2–1.3 |
+| 13 | 12.0 | .052–.058 | — | 1.2–1.3 |
+| 14 | 11.0 | .052–.058 | 13.64 | 1.2–1.3 |
+| 15 | 10.0 | .052–.058 | — | 1.2–1.3 |
+| 18 | 8.7 | .052–.058 | 10.36 | 1.2–1.3 |
+| 20 | 7.2 | .052–.058 | — | 1.2–1.3 |
+| 22 | 6.3 | .052–.058 | — | 1.2–1.3 |
+| 25 | 5.0 | .052–.058 | — | 1.2–1.3 |
+
+Notes from the table footer:
+- **Clear glass wall thickness: 0.042–0.058 in** (1.07–1.47 mm) — confirms Miller p. 115 (0.045–0.060 in / 1.14–1.52 mm) within rounding.
+- **Colored glass wall thickness: 1.2–1.3** (column header is "wall thickness in." but values 1.2–1.3 are the *number of times thicker than clear* — i.e. colored glass is 1.2–1.3× thicker than clear at the same OD).
+
+So colored glass walls are roughly **1.27 × 0.05 in = 0.064 in (1.6 mm)** thick — slightly heavier than clear, accounting for the higher iron and metal-oxide content in tinted glass.
+
 ## Colored glass tubes
 
 > "Colored glass tubes are imported and more expensive than other tubes, like the Novial Gold glass used on the dancing pig of San Jose." — *Saving Neon, p. 20*
@@ -119,9 +222,12 @@ Future Claude will need *Neon Techniques* (Miller/Strattman 1997) for modern pho
 | | Code | Source | Verdict |
 |---|---|---|---|
 | Gas type per segment | not modeled | inventory in *Saving Neon, p. 20*; Miller Ch. III | gap |
-| Phosphor coating per segment | not modeled | *Saving Neon, p. 20* | gap |
+| Phosphor coating per segment | not modeled | *Saving Neon, p. 20*; **Strattman Table 3.11 — 7 phosphor types tabulated; Table 3.12 — emitted-peak wavelengths** | gap (now fully tabulated) |
 | Color rendering preview | (out of scope for validator) | — | n/a |
 | Fill pressure within nominal range | not checked | **Miller p. 40, 138, 186: 5–15 mm Hg neon, ~3 mm Hg He** | **gap, source-supported** |
 | Mixing-on-same-transformer rule | not checked | not in PDFs; Miller Ch. XIV implies "only if same current and series-wired" | gap |
-| Length-by-gas rule | not checked | **Miller p. 41, 43: He = ½ Ne footage, He-mix = ⅓** | **gap, source-supported** |
-| 60 mA transformer required for helium tubes | not checked | Miller p. 41 | gap |
+| Length-by-gas rule | not checked | Miller p. 41, 43: He = ½ Ne footage, He-mix = ⅓; **Strattman Table 6.3 confirms He = 50% of neon footage** (62-yr corroboration) | **gap, source-supported** |
+| 60 mA transformer required for helium tubes | not checked | Miller p. 41; **Strattman Ch.6 confirms — 60 mA standard for cold-weather and brightly-lit downtown** | gap |
+| **Mercury dose per tube** | not modeled | **Strattman Ch.10: 300–600 mg sign tube (long/short × warm/cold); 50–200 mg cold-cathode** | **NEW gap, source-supported — fills missing-rules item** |
+| **Phosphor coating per segment** | not modeled | **Strattman Tables 3.11, 3.12 — full catalog with peak wavelengths** | **NEW data-model field, fully source-supported** |
+| Cold-weather mercury (<40°F) | not modeled | **Strattman Ch.11 — derate to ≤25% of normal footage, OR avoid mercury** | gap, enforceable as warning |

@@ -81,6 +81,55 @@ Per common UL 1930 practice (which Miller cites), the typical tier values are: �
 - Vertical clearance for jumps and flyovers (other than 16 mm sleeve glass for cable crossings).
 - Min separation between adjacent letters.
 
+## What Strattman (Neon Techniques, 4th ed., 1997) adds
+
+**Strattman is also silent on a per-diameter minimum parallel-tube spacing table.** The 4th edition does not tabulate glass-tube to glass-tube clearance any more explicitly than Miller (1935). What Strattman *does* add are modern installation/wiring clearance numbers that supersede or refine Miller's:
+
+### High-voltage wiring to grounded conductive surface (refines Miller p. 202)
+
+> "Long lengths of wire make a [problem in box-style sign]... it should be at least **2-1/2 inches** away from any grounded conductive [surface]. Proximity of conductive surfaces could lead to capacitance losses along the cable run." *(NT Ch.11, "High-voltage wiring — general practice")*
+
+**2-1/2 in = 63.5 mm** — Strattman's modern minimum for HV wiring to grounded conductive surface inside a sign. **Miller (1935) p. 202 gave 70 mm (2-3/4 in); Strattman (1997) updates this to 63.5 mm (2-1/2 in)** — a slight relaxation, reflecting modern insulated wire (GTO with PVC jacket vs. 1935-era cotton-and-rubber sleeve). Use **63.5 mm as the modern enforceable minimum**; keep Miller's 70 mm as the conservative legacy value.
+
+### Window-border extension posts (refines Miller p. 201)
+
+> "Extension posts for window border signs. Extension post made from glass tubing and metal clamp. Method of connecting electrode of two tubing units in a window border. **No break is visible to the public.**" *(NT Fig. 11.3 caption, Ch. 11)*
+
+> Connecting glass for jumper between two tubing units: **"10 or 11mm glass tubing flared out at one end"** *(NT Fig. 11.3 (b))*.
+
+So a connector jumper between adjacent tubing sections in a window border is made from **10–11 mm OD glass tubing** with a flared end. This is the modern-equivalent of Miller's 16 mm cable-cross-over sleeve — slightly smaller because modern GTO cable insulation is thinner and the jumper carries no cable, just the tube-to-tube join itself. Strattman doesn't quote a post height range here; Miller's 50–152 mm range still stands.
+
+### Mounting-border-tubes / standoffs
+
+> "Mounting border tubes ... Tubes used for building outlines or for window borders are usually supported on **elevation posts (Figure 11.3 (a) and (b))**. ... they are fastened either to the window trim or to a built-up metal or wood framework. **Elevation posts may vary in height from two to six inches.** Special extensions may be used in conjunction with the standard auxiliary height. The tube is then bound with wire to the posts, in the same manner as in the box-type sign." *(NT Ch.11, "Mounting border tubes")*
+
+Two-to-six-inch range = **50.8–152.4 mm** — confirms Miller p. 201 to within rounding. **No supersession; both editions agree.**
+
+### Multi-transformer installation: distance between transformers and tube load
+
+> "In a large installation in which a three-wire power line (240 volt) is led to the sign with the distribution equally divided between the two circuits, voltage present can be potentially hazardous. Handling, testing or servicing should be done only by qualified personnel. ... a 30 ma transformer or 60 ma for a 60 ma transformer." *(NT Ch.11, "Multitransformer installation")*
+
+> Loading test: "should read approximately **24 ma for a 30 ma transformer** or **48 ma for a 60 ma transformer**." (i.e. 78–83% of rated current) *(NT Ch.11)*
+
+> Operating voltage check: "If the value is below 0.77, the transformer is overloaded and a higher voltage transformer should be used; ... A value higher than 0.83 means [tubing has not been properly processed], a much lower voltage may indicate tubing has not been properly processed." *(NT Ch.11)*
+
+Modern modular spacing rule: **transformer secondary current under load should be 78%–83% of nameplate rating**. Outside this band the design is wrong (overloaded or underloaded) — corresponds to Miller's qualitative "operate at the safe operating range" *(Miller Fig. 6, p. 71)*.
+
+### Mercury-tube cold-weather footage derating
+
+> "It should be noted that this footage chart has been created for 60Hz conventional core and coil style sign transformers ... so much variation exists in the various designs of electronic power supplies that no single, industry-wide footage chart has been developed." *(NT Table 6.3 Notes)*
+
+> "Mercury-Filled tubes operating below 40°F (4°C). The practice of underloading mercury-filled tubes with extreme cold weather conditions ... if the tubing is impacted, **it should not exceed 25% of the normal footage**." *(NT Ch.11, "Multitransformer installation")*
+
+So **for mercury-filled tubes operating below 40°F (4°C), tube length must be derated to ≤25% of the table-listed footage** — or non-mercury (pure neon) construction must be used. **Miller (1935) mentioned cold-weather mercury problems qualitatively; Strattman (1997) quantifies the 40°F threshold and 25% derate.**
+
+### What Strattman is *still* silent on
+
+- **A per-diameter parallel-glass-tube spacing minimum.** The trade still has not tabulated this number 62 years after Miller.
+- **Numeric minimum letter-to-letter spacing** in a word.
+- **Numeric counter (interior) clearance** for closed-form letters O/P/D.
+- **Per-stroke double-tube layout spacing** (the gap between the two parallel tubes of a double-stroke letter).
+
 ## Implication for validation
 
 Our current code's spacing defaults of 10/12/14/18 mm for ø 8/10/12/15 mm tubes are **not directly validated by Miller**. They are larger than the UL §126 minimum tube-to-grounded-metal of 6.35 mm but smaller than any UL §101–108 high-voltage cable spacing.
@@ -110,8 +159,11 @@ What the PDFs *do* support changing:
 | Tube z-offset from substrate (cabinet) | not checked | Miller p. 62 — 35 to 70 mm | gap (3D dimension) |
 | Tube z-offset (window border) | not checked | Miller p. 201 — 50 to 152 mm | gap (3D dimension) |
 | Elevation-post spacing along tube | not checked | Miller p. 98 — ≤ 381 mm (15 in), min 2 per section | gap (informational) |
-| HV cable / electrode terminal to metal | not checked | Miller p. 202 — 70 mm (2¾ in) | **gap, enforceable** |
+| HV cable / electrode terminal to metal | not checked | Miller (1935) p. 202 — 70 mm (2¾ in); **Strattman (1997) Ch.11 — 63.5 mm (2½ in)** for modern GTO cable | **gap, enforceable** (use 63.5 mm; supersedes Miller) |
 | GTO wire spacing | not checked | *Saving Neon, p. 21* — 3 in / 76 mm | gap |
+| Window-border jumper glass | not checked | **NT Fig. 11.3 — 10–11 mm OD glass jumper** (replaces Miller's 16 mm cable sleeve) | gap (informational) |
+| Cold-weather mercury-tube derate | not checked | **NT Ch.11 — ≤25% of table footage when ambient < 40°F (4°C)** | **gap, enforceable when temperature is known** |
+| Transformer load-current operating band | not checked | **NT Ch.11 — secondary current 78%–83% of rated; voltage 0.77–0.83 of rated** | gap, enforceable |
 | Crossing exemption (paint blockout) | not implemented | implied by *Saving Neon, p. 19* | gap, source of false positives |
 | Double-back inner clearance | not exempted | implied by Blazek 180° bend pages | gap, source of false positives |
 | Long parallel doubled-back runs near metal box | not warned | Miller p. 223–224 (qualitative) | warning gap |

@@ -52,6 +52,14 @@ Miller's worked **letter-O recipe (18 in / 457 mm diameter)** *(Miller, p. 118)*
 
 The four PDFs do not state stroke-width-as-fraction-of-cap-height ratios. Blazek's letter pages are unscaled patterns — they show topology and bend sequence but not absolute dimensions. Miller is also silent on stroke-width-to-height ratios as a design rule.
 
+**Strattman (1997) is also silent.** *(NT Ch.5 "The Type of Sign")* discusses the categories of letter forms — flat painted, raised, channel, raised-channel, cut-out — and the categories of letter forms — block, outline, double, script — but **never states a numeric stroke-width-to-cap-height ratio**. Strattman's "Letter types" section *(NT Ch.5)* shows photographs and named categories only:
+
+> "Various glass letter forms: (a) script-type letters, (b) standard block letters, (c) outline letters, (d) double-tubing letters." *(NT Fig. 5.10 caption)*
+
+> "The simplest type of letter background is the flat letter shown in Figure 5.10 (a). This is simply a letter of the metal box immediately behind the tubing. ... The raised letter, shown in Figure 5.10 (b), is a simple metal letter raised above the surface of the metal box immediately behind the tubing. ... The channel letter, in either Figure 5.10 (c), (d), or (e), is a raised letter usually but not always made of metal. The desired angle of visibility ... If a sharp-angled visibility is desired, the channel must be relatively shallow." *(NT Ch.5)*
+
+So Strattman, like Miller, treats stroke width as an **artistic / readability decision** governed by viewing distance and channel-depth requirements, not a validatable parameter. Confirms the missing-rules entry.
+
 Miller does give a **footage-vs-height estimator** *(Fig. 38, p. 101)*: "20 letters, 5 inches high, require nearly 27 feet of tubing." That's ≈ **1.35 ft (411 mm) of tube per 5-in (127 mm) letter**, i.e. tube length ≈ **3.2 × cap height** for a typical sans-serif letter at average stroke complexity. This is an estimating heuristic, not a validation rule.
 
 ## Counter widths (interior whitespace)
@@ -93,6 +101,20 @@ The DB is **not** a tight-radius error condition; it is a primary construction t
 
 A combination bend is a 3D operation: it converts a stacked-in-z double-back into a same-plane continuation. Blazek doesn't name this; Miller does. Useful for our glossary.
 
+**Strattman (1997) confirms and elaborates the combination bend** *(NT Ch.7 "Glass Bending", "Combination bend")*:
+
+> "A combination bend involves two bends made at the same time from one heating in the fire. Many different types of combination bends can be made, depending upon the layout of the glasswork and upon the capability of the glassblower. However, there are a few fundamental combination bends which, if thoroughly understood, will act as a basis from which all the more complicated bends can be achieved.
+>
+> The straight-drop combination bend, also known as the lift or drop bend, is one in which two right angle bends are made at the same time in a straight line. The drop is marked off at a 1-1/2 times the diameter of the tubing. ... When making a long flowing curve and using the various pictures of the letter A drop and 'C' shapes pictured to the same time. ...
+>
+> Another form of combination is when a fairly complicated double-outline letter S is made from a single piece of glass. The various stages of bending are indicated in Figure 7.24. The first and most important operation is to make the inside circular bend of the letter S as shown in Figure 7.24 (b). Careful study of the bending layout before actual bending should be done when making a single piece..." *(NT Ch.7)*
+
+Strattman's **figure 7.24 ("Double drop bends with uniform thickness and incorrect bends")** is the modern equivalent of Miller's Fig. 49 and shows the geometry of (a) drop bend, (b) lift bend, (c) angle bend with twist, (d) twist-inwardly-90° composite — modern names for Miller's 1935 vocabulary, no supersession of geometry. **Strattman adds: the drop offset for a "straight-drop combination bend" is 1.5× the tube diameter.** *(NT Ch.7)* — first numeric spec we have for double-back / Z-offset depth.
+
+### Double-back wall thickness diagnosis (Strattman Fig. 7.24)
+
+Strattman's "**correct wall / too heavy / too thin**" panel is the canonical visual diagnostic for double-back quality. The bender judges the bend by the **outside-wall thickness post-bend** *(NT Ch.7, Fig. 7.24)*. No numeric thickness threshold — use the source tubing's wall spec (0.042–0.058 in / 1.07–1.47 mm clear glass per *Table 3.10*) as the reference baseline.
+
 ## Window-sign vs cabinet-sign electrode layouts
 
 > "The double-backing of the electrodes on the pattern are for window sign layout."
@@ -116,3 +138,5 @@ Miller's separate treatment of **window borders, skeleton signs, and box (cabine
 | DB stacked in z (front leg behind front leg) | **3D rule we currently can't validate** in 2D | 3D layout future feature *(Miller, p. 120)* |
 | Footage estimate ≈ 3.2 × cap height per letter | informational | *(Miller, Fig. 38, p. 101)* |
 | Tube blank length 1,168 mm; usable 864 mm | **forces splice in tall letters** | *(Miller, p. 115, 125)* |
+| Combination-bend Z-offset depth | not validated | **Strattman NT Ch.7 — straight-drop combination = 1.5× tube ø** | first numeric Z-offset spec |
+| Double-back outside wall ≥ 80% of source spec | not validated | **Strattman Fig. 7.24 ("correct wall / too heavy / too thin")** + Table 3.10 wall thickness | qualitative threshold; visually judged |

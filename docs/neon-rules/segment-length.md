@@ -51,6 +51,104 @@ Miller's voltage tiers (2,000–15,000 V) and current tiers (30 / 60 mA) match m
 - **Voltage drop per foot for each gas at each diameter** — his curves (Fig. 4, Fig. 19) are graphical and not OCR-readable.
 - **Modern argon-mercury phosphor-tube limits** — phosphor coatings did not exist in 1935.
 
+## What Strattman (Neon Techniques, 4th ed., 1997) adds — the modern footage chart
+
+Strattman's **Table 6.2 "Luminous Tube Footage Chart"** *(NT Ch. 6, attributed "Courtesy of Allanson International Inc.")* is the modern equivalent of Miller's unreadable Table VI. It is the most directly useful quantitative table in the book for our validator.
+
+### Table 6.2 schema
+
+Columns:
+- **OPEN CIRCUIT SECONDARY VOLTAGE (volts)**: 15,000 / 12,000 / 9,000 / 7,500 / 6,000 / 5,000 / 4,000 / 3,000 / 2,500
+- **SHORT CIRCUIT SECONDARY CURRENT (mA)**: 30 / 60 / 90 / 120 (not all combinations populated)
+- **CAPACITY VOLT-AMPERES**: Normal Power Factor / High Power Factor (60 PF / 90 PF)
+- **APPROXIMATE WATTS CONSUMPTION**
+- **Footage by tube diameter (mm)**: 22, 20, 18, 15, 14, 13, 12, 11, 10, 9 — **values are for "Clear or Fluorescent Red, also recommended for Neon Fluorescent Gold"**
+
+### Sample rows readable from the screenshot crops
+
+For **15,000 V open-circuit / 30 mA short-circuit / 405 VA NPF / 463 W**:
+- 22 mm tube: **102 ft**
+- 20 mm tube: **85 ft**
+- 18 mm tube: **72 ft**
+- 15 mm tube: **60 ft**
+- 14 mm tube: **54 ft**
+- 13 mm tube: **50 ft**
+- 12 mm tube: **43 ft**
+- 11 mm tube: **39 ft**
+- 10 mm tube: **33 ft**
+- 9 mm tube: **27 ft**
+
+(Other rows for 12,000 V / 9,000 V / 7,500 V follow proportionally lower footage; full table is on **NT p. ≈ 65–66**, location reflowed in Kindle edition. Cite as *NT Ch.6, Table 6.2*.)
+
+### Table 6.3 — Mercury-filled tube footages
+
+Strattman's **Table 6.3 "Maximum Number of Feet of Tubing Operated (Based on Average Grade of Tubing)"** has two sub-tables:
+- (left) **Clear or Fluorescent Mercury Filled Tubes, All Colors / Indoor Applications (40°F Temp. or Above)**
+- (right) **Clear or Fluorescent Mercury Filled Tubes, All Colors / Indoor and Outdoor Applications**
+
+Sample readable values for **15,000 V / 30 mA / Indoor (≥40°F)**:
+- 22 mm: 100 ft
+- 20 mm: 90 ft
+- 18 mm: 80 ft
+- 15 mm: 72 ft
+- 14 mm: 64 ft
+- 13 mm: 60 ft
+- 12 mm: 54 ft
+- 11 mm: 47 ft
+- 10 mm: 40 ft
+- 9 mm: 32 ft
+
+For Outdoor applications (same row), values drop ~5–10% per row to account for cold-weather mercury condensation. *(NT Ch.6, Table 6.3)*
+
+### Table 6.3 footnotes (verbatim, paraphrased where partial)
+
+> 1. Deduct 1 foot from the footage listed in Table 6.2 for each pair of electrodes.
+> 2. Use Table 6.2 as a guide. More accurate information is available by performing a loading test, described in Chapter 11.
+> 3. Tubing under loading may be required for low-temperature mercury tube applications (below 40°F). In such cases, the reduced footage should not be less than 85% of the footage shown for indoor (mercury-filled tubes not be used due to the mercury's inability to be vaporised by heat supplied by the transformer). *(NT Ch.6, Notes to Table 6.3)*
+> 4. Mercury tubes, regardless of the fill gas, may be filled to slightly lower pressure; **10% for larger diameter tubes to 30% for smaller diameter tubes**.
+
+> "1 foot of cathode fall (a pair of electrodes) equals 1 foot of length." *(NT Ch.6, footage-chart introductory text)* — i.e. **each electrode pair adds an effective 1 ft (≈305 mm) "extra" to the tube load** because the cathode-fall voltage drop is the same as 1 ft of tube column. This is the modern restatement of Miller's cathode-fall rule and lets us deduct 1 ft per pair from the table.
+
+### Methodology notes
+
+> "The neon footage chart also gives information on the power usage of the transformer, the current draw on the primary side of the transformer and the recommended normal fill gas pressure for each size of tubing (listed by each diameter of tubing). Each transformer output voltage is accompanied by an output current. **Current determines brightness of the tube. For the majority of sign work the output current is 30mA. For cold weather applications, or brightly lit downtown regions 60mA transformers are sometimes used.** Although listed, lower current ratings than 30mA are used infrequently, mainly for portable, window-type signs." *(NT Ch.6, Table 6.2 introductory text)*
+
+> "For trouble-free operation the tubing on each transformer should operate without flicker at **78% of rated voltage** approximately 94 volts at a nominal line voltage of 120." *(NT Ch.6, Table 6.3 introductory text)*
+
+> "**Add approximately 15% to 60 mA figures when using 120 mA.** Helium filled tube footages should be calculated at **50% of Neon footages**." *(NT Ch.6, Table 6.3 header note)*
+
+So the modern multipliers replace Miller's 1935 estimates:
+- **Helium**: 50% of neon footage *(NT corroborates Miller p. 41 exactly — same number 62 years apart)*
+- **120 mA transformer**: footage = 1.15× the 60 mA value
+- **Mercury-filled, outdoor**: ~85% of indoor value (per Note 3)
+- **Mercury-filled below 40°F**: 25% of indoor value, OR avoid mercury and use pure neon *(NT Ch.11)*
+
+### Per-tube vs per-transformer
+
+> "For tubing of any diameter, regardless of its diameter, needs a sufficient voltage to overcome the voltage drop of the gas, the cathode fall, and a voltage per foot of tubing known as the positive column drop." *(NT Ch.6, "Calculations using the neon footage chart")*
+
+> "To calculate the voltage required, start by determining the length of each section. Each tube's voltage drop can then be determined from the chart. By starting under the column for the closest number of feet for a given output current, and the appropriate fill gas pressure, the voltage values can be read down. ... Doing the same for each section of tubing yields a number of voltages, which when totaled, must equal that voltage required to operate the transformer." *(NT Ch.6, post-Table 6.2 worked example)*
+
+So Strattman's method is: **sum the per-section voltage drops (positive column + 2× cathode fall), match the sum to the transformer open-circuit voltage at the chosen current**. This is the modern equivalent of Miller's same procedure and gives an explicit per-tube length budget when the total sign has multiple tubes wired in series.
+
+## Tube-end glass jumper sizing (modern)
+
+Strattman *(NT Ch.11 Fig. 11.3)* shows window-border jumpers as **10 or 11 mm OD glass tubing flared at one end**, replacing Miller's 16 mm sleeve over twisted lead-wire join. This is purely a connector-glass spec, not a tube-load spec; recorded here for completeness.
+
+## Modern transformer behavior (replaces Miller)
+
+> "Modern fluorescent gas-discharge tubes have higher light output than the older incandescent lamps which is converted into useful incandescent. ... Modern signs do not require excessive heating to operate, but the high light output is the result of the gas being heated to a high temperature." *(NT Ch.4, transformer ratings discussion)*
+
+> "Transformers are rated by: (1) primary input voltage (2) power frequency (60, 50, or 25 Hz), (3) primary current ... (4) primary watts consumed when operating at the proper load), (5) secondary volts (on open circuit), (6) secondary current ... and (7) secondary current in milliamperes for short circuit current. ... When the secondary voltage exceeds **9,000 V**, the secondary winding must be tapped at the center and grounded." *(NT Ch.4)*
+
+**Supersession of Miller p. 206**: Miller (1935) gave the mid-point grounding threshold as **7,500 V**; Strattman (1997) raises it to **9,000 V**, reflecting modern UL practice for high-power-factor transformers. Use **9,000 V as the modern threshold** for the mandatory mid-point ground.
+
+> "Transformer output ratings vary from **2,000 to 15,000 volts (secondary on open circuit)** and from **10 to 200 milliamperes (short circuit)**." *(NT Ch.4)* — **same ranges as Miller (1935) p. 71**, no supersession.
+
+### Electronic / solid-state power supplies
+
+Strattman explicitly notes that modern electronic (solid-state high-frequency) power supplies are now common but that **footage charts assume 60 Hz core-and-coil transformers** *(NT Table 6.3 Notes)*. Solid-state has different impedance behavior — the chart is a "rough guide only" for solid-state. **Same caveat we already had from prior research; Strattman corroborates explicitly.**
+
 ## Implication for validation
 
 Our 2500 mm (3000 mm @ 15 mm tube) default cap **per electrode pair** is plausibly real-world and matches modern trade practice. Miller's 1935 figures are the closest first-principles validation we have:
@@ -69,9 +167,15 @@ What the PDFs *do* support:
 |---|---|---|---|
 | Max segment length (general) | 2500mm | (no direct cite); consistent with Miller p. 43 footage chart for typical 30 mA / 12 mm pure-neon multi-tube circuits | unverified, but plausibly conservative |
 | Max segment length (15mm tube) | 3000mm | (no direct cite); Miller p. 19 confirms 15 mm is the upper-diameter design point at 30 mA | unverified |
-| Max length *per transformer* (all series tubes) | not implemented | Miller p. 41–43, Table VI p. 97: ~20 ft 12-mm helium / ~35 ft 12-mm neon @ 30 mA / 15 kV | **gap, source-supported** |
-| Gas-dependent variation | not implemented | Miller p. 41: helium = ½ neon footage; Miller p. 43 helium-mix specific | **gap, source-supported** |
-| Voltage-dependent variation | not implemented | Miller p. 71: 2 kV–15 kV transformer family | gap |
+| Max length *per transformer* (all series tubes) | not implemented | Miller p. 41–43, Table VI p. 97: ~20 ft 12-mm helium / ~35 ft 12-mm neon @ 30 mA / 15 kV. **Strattman (1997) Table 6.2: 12 mm clear neon @ 15 kV / 30 mA = 43 ft; @ 60 mA = ~50 ft** | **gap, fully source-supported (Strattman Table 6.2)** |
+| Gas-dependent variation | not implemented | Miller p. 41: helium = ½ neon footage; **Strattman 1997 NT Ch.6 confirms 50%** (same number 62 years later) | **gap, source-supported** |
+| Voltage-dependent variation | not implemented | Miller p. 71: 2 kV–15 kV transformer family; **Strattman Table 6.2 tabulates explicit footage by 15/12/9/7.5/6/5/4/3/2.5 kV × 30/60/90/120 mA × 9–22 mm tube ø** | **gap, source-supported** |
+| Indoor mercury-tube footage @ 40°F+ | not implemented | **Strattman Table 6.3 (left) — explicit table by mA × tube ø** | **gap, source-supported** |
+| Outdoor mercury-tube footage | not implemented | **Strattman Table 6.3 (right) — ~85% of indoor** | gap, source-supported |
+| Cold-weather mercury-tube derate (<40°F) | not implemented | **Strattman Ch.11 — ≤25% of normal footage OR avoid mercury** | **gap, enforceable as warning when ambient temperature is set** |
+| 78–83% loading band | not implemented | **Strattman Ch.11 — secondary current 24 mA on 30 mA transformer (80%); voltage 0.77–0.83 of rated** | gap, enforceable |
+| Cathode-fall as 1 ft of tube length | not implemented | **Strattman Ch.6 — "1 foot of cathode fall equals 1 foot of length"; deduct 1 ft per electrode pair** | gap, refines Miller |
+| Mid-point ground threshold | not enforced (electrical config) | Miller p. 206 = 7,500 V; **Strattman Ch.4 = 9,000 V** (supersedes) | gap, use 9 kV |
 | 4 W per foot of tubing (informational) | not tracked | *Saving Neon, p. 36* | could be added as power estimate |
 | Tube-blank usable-length 864 mm before forced splice | not enforced | Miller p. 115 (46-in blank, 6-in handling reserve each end) | informational; supports `letter-construction.md` weld-suggestion warning at >12 in cap height |
 

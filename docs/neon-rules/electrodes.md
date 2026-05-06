@@ -103,6 +103,67 @@ So for adjacent letters with electrodes face-to-face, the inter-electrode cable 
 
 So the cabinet is at ground potential (0 V); the two electrodes are at +V/2 and –V/2 of the secondary. **The 70 mm "live to grounded-metal" rule applies to each electrode independently.**
 
+## What Strattman (Neon Techniques, 4th ed., 1997) adds — modern electrode specs
+
+### Standardized modern electrode shells (Table 3.4, Ch.3)
+
+Strattman tabulates **modern factory-standard electrode sizes**:
+
+| Electrode Size | Shell diameter × length | Voltage drop without coating | Voltage drop with coating |
+|---|---|---|---|
+| **15** | **3/8 in (9.5 mm) × 1-5/16 in (33 mm)** | 200 V | 120 V |
+| **19** | **1/2 in (12.7 mm) × 1-5/8 in (41 mm)** | 170 V | 90 V |
+
+Footnote: *(iron clad, nickel plated; operated at rated current on a mercury tube)*. *(NT Ch.3, Table 3.4 "Typical voltage drop of neon-sign, cold-cathode electrodes")*
+
+Strattman further notes, in the surrounding text: *"shells are 1/8 inch in diameter and 1/2 inch in length, also 1-1/2 inch diameter and a 2-inch length. There are many different sizes and lengths in between these two extremes."* *(NT Ch.3)*
+
+So:
+- **Modern shell sizes range from 1/8 in × 1/2 in (3.2 × 12.7 mm) for very small sub-Lumiline tubes up to 1-1/2 in × 2 in (38 × 51 mm) for cold-cathode lighting**.
+- The two **standard neon-sign sizes** are the 15-shell (3/8 × 1-5/16 in) for 30 mA work and the 19-shell (1/2 × 1-5/8 in) for 60 mA work.
+- **Coated electrodes drop ~50% less voltage** (200 V → 120 V; 170 V → 90 V) — supersedes Miller's general "coating reduces sputtering" with explicit numeric voltage savings.
+
+**Supersession of Miller p. 50**: Miller's range was "⅜ to ⅝ in (9.5–15.9 mm)" diameter generically; Strattman fixes the modern standard at **two specific sizes** (15 and 19 in EGL Co. notation) and adds the per-shell voltage-drop table.
+
+### Mid-point ground threshold (supersedes Miller p. 206)
+
+> "When the secondary voltage exceeds **9,000 V**, the secondary winding must be tapped at the center and grounded." *(NT Ch.4, Transformer ratings)*
+
+**Miller (1935) p. 206 gave 7,500 V; Strattman (1997) raises this to 9,000 V** to reflect modern UL practice. Use **9,000 V as the modern threshold**.
+
+### High-voltage to grounded-metal clearance (supersedes Miller p. 202)
+
+> "Long lengths of wire ... should be at least **2-1/2 inches** away from any grounded conductive [surface]." *(NT Ch.11)*
+
+**Miller (1935) p. 202 gave 70 mm (2-3/4 in); Strattman (1997) updates to 63.5 mm (2-1/2 in)** for modern PVC-jacketed GTO cable. See `spacing.md`.
+
+### Modern electrode metals & seals (Table 3.5, Ch.3)
+
+Strattman tabulates the modern dumet-and-tungsten lead-in seal materials:
+
+| Metal | Composition | Heat treatment | Oxide layer | Primary glasses for sealing | Coefficient of thermal expansion |
+|---|---|---|---|---|---|
+| **Dumet** | Core Ni 42%, Fe 58%; Cu sheath | Oxidize to light straw color in air. Surface smooth. | CuO₂ (plus flux if used) | Corning 001, 012 lead glass; Ba/Sr glass | Dumet: radial 9.2; axial 6.5; glass 8.9 ± 9.2 |
+| **Tungsten** | Pure tungsten ground and polished rod or wire | None | Before clean and oxidize | Corning nos. 7720, 3320 | Metal 4.6; Glass 3.6 ± 4.5 |
+
+*(NT Table 3.5, Ch.3 — "Class in metal seals used for electrodes. (From Handbook of Electron Tube and Vacuum Technique, Rosebury, Prof. Addison Wesley.)")*
+
+So **dumet** is the standard for soft-glass tubes (typical neon signage); **tungsten** is the standard for hard-glass (Pyrex/borosilicate) tubes — used in specialty signage and luminous-tube lighting. Miller (1935) only described dumet; Strattman adds the tungsten seal as a modern standard.
+
+### Electrode types beyond cold-cathode
+
+Strattman briefly catalogs **hot-cathode electrodes** as the secondary modern type *(NT Ch.3, "Hot-cathode electrodes")*:
+
+> "Hot-cathode electrodes can be divided into two classes: (1) electrodes are maintained at the proper continuous flow of current, and (2) electrodes which are brought up to temperature initially, after which the cut off and the heat of the electrode is maintained by the arc discharge through the tube. The first type is luminous tubes or lighting because it requires a separate power source for heating the electrodes and keeping them at a heated temperature. This type of electrode is more generally used for vacuum tubes, cathode-ray tubes, etc."
+
+For neon signage, hot-cathode is rare; **cold-cathode remains the standard** — confirms Miller (1935) p. 45.
+
+### Aging-table standard (modern)
+
+> "Aging is carried out by operating the tube at rated current for a period of several minutes to most hours, although a well-constructed, properly bombarded tube, should age fast enough on a few minutes during operation that aging time can be done by manual switching control or by an automatic timer." *(NT Ch.10, "Aging methods")*
+
+Modern aging is **minutes to a few hours** (not days as in Miller's pre-electronic era). Aging-transformer rating is **15,000 V at 60 mA** *(NT — same as Miller App II)* — no supersession.
+
 ## Implication for validation
 
 The PDFs support a simple model:
@@ -125,10 +186,14 @@ The PDFs support a simple model:
 | Housing-hole alignment tolerance | not checked | "off even a quarter of an inch" *(Saving Neon, p. 23)*; Miller p. 50 housing bore ⅜–⅝ in | gap (~±6 mm) |
 | Window-sign mode (both electrodes on same side) | not represented | Blazek intro | gap, configurable mode |
 | Glass-tube to cabinet metal | not checked | **Miller App I §126: ≥ 6.35 mm** | **gap, source-supported** |
-| HV cable / electrode terminal to grounded metal | not checked | **Miller p. 202: ≥ 70 mm** | **gap, source-supported** |
+| HV cable / electrode terminal to grounded metal | not checked | Miller (1935) p. 202: ≥ 70 mm. **Strattman (1997) Ch.11: ≥ 63.5 mm (2-1/2 in)** — supersedes for modern jacketed GTO. | **gap, source-supported** |
 | Cable support within 6 in of electrode | not modeled (we don't model cable) | Miller App I §88 | n/a until we model wiring |
-| Tube z-offset from substrate (post height) | not checked | **Miller p. 62: 35–70 mm cabinet, p. 201: 50–152 mm window** | gap (3D dimension) |
-| Electrode count per series circuit (transformer load) | not enforced | Miller p. 41–43 (gas-dependent footage) | informational |
+| Tube z-offset from substrate (post height) | not checked | **Miller p. 62: 35–70 mm cabinet, p. 201: 50–152 mm window**; Strattman Ch.11 confirms 50–152 mm window-border range | gap (3D dimension) |
+| Electrode count per series circuit (transformer load) | not enforced | Miller p. 41–43 (gas-dependent footage); **Strattman Ch.6 — deduct 1 ft per electrode pair from Table 6.2** | informational, Strattman quantifies |
+| Mid-point ground threshold | not modeled | Miller (1935) p. 206: 7,500 V. **Strattman (1997) Ch.4: 9,000 V** — supersedes. | gap, electrical-config field |
+| Standard modern electrode shell sizes | not modeled | **Strattman Table 3.4 — 15-shell (3/8 × 1-5/16 in, 9.5 × 33 mm) and 19-shell (1/2 × 1-5/8 in, 12.7 × 41 mm)** | data-model field |
+| Electrode coating voltage drop | not modeled | **Strattman Table 3.4 — coated 15-shell: 120 V drop / uncoated: 200 V; coated 19-shell: 90 V / uncoated: 170 V** | data-model field; refines Miller |
+| Dumet vs tungsten lead-in seal | not modeled | **Strattman Table 3.5 — dumet for soft glass; tungsten for hard glass (Pyrex)** | data-model field |
 
 ## Anti-patterns from the sources
 

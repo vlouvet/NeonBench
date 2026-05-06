@@ -1,6 +1,6 @@
 # Glossary of neon trade terms
 
-Compiled from the four PDFs plus Miller (1935). Citations in the form `(SN p.X)` for *Saving Neon*, `(B1)`/`(B2)`/`(B3)` for Blazek Books 1/2/3, `(M p.X)` for Miller, *Neon Signs: Manufacture, Installation, Maintenance* (1935).
+Compiled from the four PDFs plus Miller (1935) plus Strattman (1997). Citations in the form `(SN p.X)` for *Saving Neon*, `(B1)`/`(B2)`/`(B3)` for Blazek Books 1/2/3, `(M p.X)` for Miller, *Neon Signs: Manufacture, Installation, Maintenance* (1935), and `(NT ch.X)` for Strattman (ed.), *Neon Techniques (formerly Neon Techniques and Handling): Handbook of Neon Sign and Cold-Cathode Lighting*, 4th ed., ST Media Group, 1997.
 
 ## Construction & geometry
 
@@ -23,7 +23,10 @@ Compiled from the four PDFs plus Miller (1935). Citations in the form `(SN p.X)`
 - **Weld / splice** *(SN p.19; B1 letter "H"; M p.122)*. Glass-to-glass join made by reheating two tube ends and fusing them. Used when a letter is split into halves. Miller distinguishes splices (general join) from welds (specifically joining halves of a large letter).
 - **Angle bend** *(M p.116)*. A bend made in the cross-fire burner where the heat is concentrated to about 1 in (25 mm) of tube. Includes right angles, sharper, and broader angles. Distinguished by Miller from the *ribbon-burner bend* (gradual curves) and the *double-back* (180° hairpin).
 - **Ribbon-burner bend** *(M p.117)*. A gradual curving or circular bend made over the broad ribbon-fire burner; the entire long heated section is uniformly soft and matched to the layout. Used for circular letters O, C, G, B, R.
-- **Combination bend** *(M p.120)*. Two bends close together, used to bring the rear leg of a double-back flush with the face of the sign while simultaneously turning the tube — effectively a 3D operation that converts a stacked-DB into an in-plane continuation.
+- **Combination bend** *(M p.120; NT ch.7)*. Two bends close together, used to bring the rear leg of a double-back flush with the face of the sign while simultaneously turning the tube — effectively a 3D operation that converts a stacked-DB into an in-plane continuation. Strattman further notes the **"straight-drop combination bend"** has a drop depth of **1.5× tube diameter**.
+- **Straight-drop combination bend / lift bend / drop bend** *(NT ch.7)*. Strattman's modern term for a combination of two right-angle bends made simultaneously in one heating that creates a Z-offset of depth = 1.5× tube ø.
+- **Right-angle bend / basic angle bend** *(NT Fig. 7.20)*. Strattman's term for the standard 90° bend; heat zone is **2× tube diameter**, single-heat operation, "pull up then bend".
+- **Ribbon-burner bend** *(NT Fig. 7.25)*. Strattman's modern restatement of Miller's circular-bend technique: heat 1 in (25 mm) section uniformly above ribbon burner, "amount of bend per inch of heated length is usually slight so it is often unnecessary to use a blowhose".
 - **Turn-up bend** *(M p.124)*. The 90° lead-in bend made *last* on each electrode end, joining the in-plane letter geometry to the out-of-plane lead-in segment. The straight portion before the turn-up is **2–10 in (50–254 mm)**.
 - **Gathering** *(M p.116, 119)*. Pushing slightly-soft glass together at the bend region so that the wall thickness is preserved (or slightly thickened) at the bend, preventing wall thinning.
 - **Tubulation** *(M p.126)*. The small-bore (5–6 mm) glass tube spliced to the back of a tube unit, used as the vacuum-pump connection during pumping/bombarding/filling. Cut and sealed off at the end of the process.
@@ -62,6 +65,8 @@ Compiled from the four PDFs plus Miller (1935). Citations in the form `(SN p.X)`
 - **Pertruded electrode** *(M p.50)*. Electrode shell stamped with perforations to increase surface area and mechanical strength.
 - **Borated copper electrode** *(M p.51)*. Copper electrode shell dipped in molten borax to form a copper-oxide coat that reduces sputtering. Distinctive deep-red color.
 - **Electrode receptacle** *(M App I §129–138, p.275–276)*. UL-defined housing of porcelain (dry- or wet-process) or pyrex into which the electrode end of a tube fits, providing both insulation and a spring-contact electrical connection. Replaces the bare housing+ring for higher-voltage installations.
+- **15-shell electrode** *(NT Table 3.4)*. Standard modern small electrode. Shell **3/8 in (9.5 mm) diameter × 1-5/16 in (33 mm) long**, iron-clad nickel-plated. Voltage drop: 200 V uncoated / 120 V coated. Used for 30 mA tubes.
+- **19-shell electrode** *(NT Table 3.4)*. Standard modern medium electrode. Shell **1/2 in (12.7 mm) diameter × 1-5/8 in (41 mm) long**, iron-clad nickel-plated. Voltage drop: 170 V uncoated / 90 V coated. Used for 60 mA tubes.
 - **Lamp holder** *(M App I §116–120, p.274)*. The terminal at which a low-voltage incandescent lamp is screwed in (combination signs only). Terminal-to-metal spacing **≥ ⅜ in (9.5 mm)**.
 
 ## Substrate / cabinet / paint
@@ -113,12 +118,36 @@ Compiled from the four PDFs plus Miller (1935). Citations in the form `(SN p.X)`
 - **Powdered (tube/unit)** *(B1 intro)*. Trade synonym for phosphor-coated.
 - **Novial** *(SN p.20; M p.279 spelled "noviol")*. Trade name for tinted glass tubing. Standard 1935 inventory: 12 mm and 15 mm noviol for green tubes (used with Ar-Hg fill). Other tints for red, yellow, blue.
 - **Lead glass / Corning G-1** *(M p.57, 115)*. Standard neon-tube glass: lead-silicate, wall thickness 0.045–0.060 in (1.14–1.52 mm), self-annealing, machine-drawn to ±0.5 mm OD tolerance. The workhorse glass for almost all 1935-era signs.
-- **Pyrex** *(M p.58)*. Borosilicate glass, used for special applications. Wall 0.040–0.070 in (1.0–1.78 mm), drawn by hand (less uniform). Requires graded-seal joint (7 different glass grades over ¼ in length) to mate with lead glass.
+- **Pyrex** *(M p.58; NT Table 3.6)*. Borosilicate glass, used for special applications. Wall 0.040–0.070 in (1.0–1.78 mm), drawn by hand (less uniform). Requires graded-seal joint (7 different glass grades over ¼ in length) to mate with lead glass. Strattman tabulates the modern Corning code as **SG 772 borosilicate**: strain point 484 °C, annealing point 523 °C, softening 736 °C, working 1146 °C, expansion coefficient 36.
+- **Borosilicate / Pyrex® / Nonex®** *(NT Table 3.4)*. Modern names for the hard-glass family used in cold-cathode lighting and specialty signage. Sealed with **tungsten** lead-in wire (vs. dumet for soft glass).
 - **Graded seal** *(M p.59)*. Multi-step (7-grade) glass joint that gradually transitions between pyrex and lead glass coefficients of expansion. Required when joining the two glass types.
 - **Opal white glass** *(M p.59)*. Particularly difficult-to-bend glass used for white tubes pre-phosphor.
+- **SG 81 sodaline / Coleman glass** *(NT Table 3.6)*. Modern lead-free borosilicate used for "Ruby, Ride, Green and Orange" lead-free Coleman colors. Strain 473 °C, annealing 514 °C, softening 685 °C, working 1013 °C, expansion 92 — close to lead glass behavior, lead-free for environmental compliance.
+- **Calcium tungstate** *(NT Table 3.11)*. Phosphor producing **blue** under 254 nm Hg excitation, peak emission 440 nm, range 380–700 nm.
+- **Calcium silicate** *(NT Table 3.11)*. Phosphor producing **pink** under 240 nm excitation, peak 615 nm, range 430–720 nm.
+- **Zinc silicate** *(NT Table 3.11)*. Phosphor producing **green** under 254 nm excitation, peak 525 nm, range 450–620 nm.
+- **Calcium halophosphate** *(NT Table 3.11)*. Phosphor producing **white** (color depends on activator amount), peak 595 nm, range 450–720 nm.
+- **Barium magnesium aluminate** *(NT Table 3.11)*. Phosphor producing **deep blue** under 254 nm, peak 450 nm, range 400–540 nm.
+- **Aluminate barium disilicate ("Black Light")** *(NT Table 3.11)*. UV-emitting phosphor used to illuminate fluorescent-painted surfaces. Provides UV output rather than visible light.
 - **Mercury stain** *(SN p.20)*. Dark spot on an old tube's glass where mercury has discolored the inside. Tube needs replacement.
 
 ## Roles
 
 - **Tube bender** *(SN p.19)*. The skilled craftsperson who heats and bends the glass. "Twenty-plus years to perfect this skill."
 - **Sign shop / sign contractor** *(SN throughout)*. The business that handles the full restoration or build.
+
+## Specialty / modern (Strattman Ch. 16)
+
+- **Single-ended tube** *(NT ch.16)*. A neon tube with both electrodes at the same end (like a U-shape inside a single sealed envelope). Used for plug-in / replaceable specialty signs.
+- **Spelling neon** *(NT ch.16)*. Pre-formed letter-shaped luminous tubes sold as discrete characters; analog of dimensional letter signage.
+- **Borosilicate neon / hard-glass neon** *(NT ch.16)*. Neon made from borosilicate (Pyrex) glass for higher heat tolerance or chemical environments. Sealed with tungsten lead-in seals (per Table 3.5).
+- **Off-hand blown glass** *(NT ch.16)*. Free-form glassblower-shaped luminous tubes — not for letter signage but for sculpture and effects.
+- **Plate-glass neon** *(NT ch.16)*. Neon embedded in a plate-glass sandwich for architectural use.
+- **Luminglas** *(NT ch.16)*. Trade name for plate-glass-neon variant.
+- **Crackle tubes** *(NT ch.16)*. Tubes with internal crackle/discharge effect.
+- **Plasma displays** *(NT ch.16)*. Sealed glass shapes containing rare-gas mixes that produce moving discharge patterns from a single high-voltage source. Typically run from electronic high-frequency power supplies, not standard sign transformers.
+- **Lightning displays** *(NT ch.16)*. Plasma-display variant simulating lightning.
+- **Other gas mixtures** *(NT ch.16)*. Specialty fills (e.g. exotic Ne+Ar+Kr blends) for signs producing colors not obtainable from the standard fill set.
+- **Miscellaneous electronic effects** *(NT ch.16)*. Catch-all for solid-state and modern visual-effect lighting devices.
+- **Bombarding fluorescent tubing used for cold-cathode lighting** *(NT ch.9)*. Modern cold-cathode lighting tubing bombarded with phosphor coating in place — a process variation on standard mercury-tube bombarding.
+- **Multitransformer installation** *(NT ch.11)*. A sign powered by several transformers mounted on a common chassis or rack, sharing primary supply but with each secondary driving its own tube load. Strattman gives the loading-test procedure (24 mA on a 30 mA transformer = 80% load = correct).
