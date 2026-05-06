@@ -139,10 +139,17 @@ export default function ProjectDetail() {
 
       {latest && (
         <>
-          <h2>
-            Design v{latest.version_no}
-            {latest.label ? ` — ${latest.label}` : ''}
-          </h2>
+          <div className="row">
+            <h2>
+              Design v{latest.version_no}
+              {latest.label ? ` — ${latest.label}` : ''}
+            </h2>
+            {latest.design_doc_json && (
+              <Link to={`/projects/${projectId}/edit/${latest.id}`} className="btn-secondary">
+                Open in editor
+              </Link>
+            )}
+          </div>
           <div
             className="svg-preview"
             dangerouslySetInnerHTML={{ __html: latest.svg_data }}

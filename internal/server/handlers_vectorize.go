@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/storage"
 	"github.com/vlouvet/neonbench/internal/validate"
 	"github.com/vlouvet/neonbench/internal/vectorize"
@@ -119,12 +120,17 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Generate the structured design doc from the SVG so the editor (Phase 2)
+	// has something to load. Failure here is non-fatal — the SVG is still
+	// usable for validation, preview, and print.
+	docJSON := s.generateDesignDoc(r, pid, svg)
 	reportJSON := s.runValidation(r, pid, svg)
 
 	dv, err := storage.CreateDesignVersion(r.Context(), s.db, storage.CreateDesignVersionParams{
 		ProjectID:            pid,
 		Label:                req.Label,
 		SVGData:              string(svg),
+		DesignDocJSON:        docJSON,
 		ValidationReportJSON: reportJSON,
 	})
 	if err != nil {
@@ -132,6 +138,34 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, dv)
+}
+
+// generateDesignDoc converts an SVG into the structured design doc model
+// used by the editor. Returns "" on error (logged) — the design version is
+// still creatable without a doc; the editor will fall back to lazy
+// regeneration.
+func (s *apiServer) generateDesignDoc(r *http.Request, projectID int64, svg []byte) string {
+	project, err := storage.GetProject(r.Context(), s.db, projectID)
+	if err != nil {
+		slog.Warn("designdoc: load project", "err", err)
+		return ""
+	}
+	spec, err := storage.GetTubeSpec(r.Context(), s.db, project.TubeSpecID)
+	if err != nil {
+		slog.Warn("designdoc: load tube spec", "err", err)
+		return ""
+	}
+	doc, err := designdoc.FromSVG(svg, spec.DiameterMM)
+	if err != nil {
+		slog.Warn("designdoc: convert", "err", err)
+		return ""
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		slog.Warn("designdoc: marshal", "err", err)
+		return ""
+	}
+	return string(b)
 }
 
 // runValidation loads the project's tube spec, validates the SVG, and

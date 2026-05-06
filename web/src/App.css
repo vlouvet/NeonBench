@@ -390,3 +390,114 @@
   cursor: not-allowed;
   pointer-events: auto;
 }
+
+.btn-secondary {
+  display: inline-block;
+  padding: 0.4rem 0.875rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+.btn-secondary:hover {
+  text-decoration: none;
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  height: calc(100vh - 4rem);
+}
+.editor-header h1 {
+  margin: 0.25rem 0;
+}
+.editor-layout {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 1rem;
+  flex: 1;
+  min-height: 0;
+}
+.editor-canvas {
+  position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: grab;
+}
+.editor-canvas:active {
+  cursor: grabbing;
+}
+.editor-canvas svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: #fafafa;
+}
+.canvas-toolbar {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  background: rgba(15, 15, 18, 0.8);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8125rem;
+}
+.canvas-toolbar button {
+  padding: 0.25rem 0.625rem;
+  font-size: 0.8125rem;
+}
+
+.editor-sidebar {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.editor-sidebar h3,
+.editor-sidebar h4 {
+  margin: 0;
+  font-size: 0.875rem;
+}
+.run-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.run-row {
+  cursor: pointer;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.run-row:hover {
+  border-color: var(--accent);
+}
+.run-row.active {
+  border-color: var(--accent);
+  background: rgba(255, 59, 107, 0.08);
+}
+.run-detail {
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}

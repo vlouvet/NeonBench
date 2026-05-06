@@ -36,9 +36,33 @@ export type DesignVersion = {
   version_no: number;
   label?: string | null;
   svg_data: string;
+  design_doc_json?: string | null;
   validation_report_json?: string | null;
   created_at: string;
 };
+
+export type DesignDoc = {
+  version: number;
+  view_box_mm: [number, number, number, number]; // [x, y, w, h]
+  runs: DesignRun[];
+};
+
+export type DesignRun = {
+  id: string;
+  polyline: { points: [number, number][]; closed: boolean };
+  tube_diameter_mm?: number;
+  color?: string;
+  electrodes?: { point_index: number }[];
+};
+
+export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {
+  if (!dv?.design_doc_json) return null;
+  try {
+    return JSON.parse(dv.design_doc_json) as DesignDoc;
+  } catch {
+    return null;
+  }
+}
 
 export type ValidationIssue = {
   rule:

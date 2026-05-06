@@ -13,6 +13,7 @@ type DesignVersion struct {
 	VersionNo            int64   `json:"version_no"`
 	Label                *string `json:"label,omitempty"`
 	SVGData              string  `json:"svg_data"`
+	DesignDocJSON        *string `json:"design_doc_json,omitempty"`
 	ValidationReportJSON *string `json:"validation_report_json,omitempty"`
 	CreatedAt            string  `json:"created_at"`
 }
@@ -21,6 +22,7 @@ type CreateDesignVersionParams struct {
 	ProjectID            int64
 	Label                string // empty string → NULL
 	SVGData              string
+	DesignDocJSON        string // empty string → NULL
 	ValidationReportJSON string // empty string → NULL
 }
 
@@ -42,9 +44,9 @@ func CreateDesignVersion(ctx context.Context, db *sql.DB, p CreateDesignVersionP
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO design_versions (project_id, version_no, label, svg_data, validation_report_json)
-		 VALUES (?, ?, NULLIF(?, ''), ?, NULLIF(?, ''))`,
-		p.ProjectID, nextVer, p.Label, p.SVGData, p.ValidationReportJSON)
+		`INSERT INTO design_versions (project_id, version_no, label, svg_data, design_doc, validation_report_json)
+		 VALUES (?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''))`,
+		p.ProjectID, nextVer, p.Label, p.SVGData, p.DesignDocJSON, p.ValidationReportJSON)
 	if err != nil {
 		return DesignVersion{}, fmt.Errorf("insert design_version: %w", err)
 	}
@@ -63,11 +65,11 @@ func CreateDesignVersion(ctx context.Context, db *sql.DB, p CreateDesignVersionP
 }
 
 func GetDesignVersion(ctx context.Context, db *sql.DB, id int64) (DesignVersion, error) {
-	const q = `SELECT id, project_id, version_no, label, svg_data, validation_report_json, created_at
+	const q = `SELECT id, project_id, version_no, label, svg_data, design_doc, validation_report_json, created_at
 	           FROM design_versions WHERE id = ?`
 	var v DesignVersion
 	err := db.QueryRowContext(ctx, q, id).Scan(&v.ID, &v.ProjectID, &v.VersionNo,
-		&v.Label, &v.SVGData, &v.ValidationReportJSON, &v.CreatedAt)
+		&v.Label, &v.SVGData, &v.DesignDocJSON, &v.ValidationReportJSON, &v.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DesignVersion{}, ErrNotFound
 	}
