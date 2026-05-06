@@ -30,6 +30,8 @@ export default function EditorCanvas({
   tool,
   selectedRunId,
   projectDiameterMM,
+  snapEnabled,
+  snapMM,
   onSelectRun,
   onPlaceElectrode,
   onDeleteElectrode,
@@ -48,6 +50,8 @@ export default function EditorCanvas({
   tool: EditorTool;
   selectedRunId: string | null;
   projectDiameterMM: number;
+  snapEnabled: boolean;
+  snapMM: number;
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
@@ -113,6 +117,21 @@ export default function EditorCanvas({
     return [(px - transform.tx) / transform.k, (py - transform.ty) / transform.k];
   }
 
+  // Snapped variant — applied at placement / drag sites that should respect
+  // the user's current snap setting (label drop, dimension endpoints,
+  // vertex drag). Pan and run-path picks deliberately use the un-snapped
+  // clientToWorld so the cursor still tracks smoothly across the canvas.
+  function clientToWorldSnapped(clientX: number, clientY: number): [number, number] | null {
+    const w = clientToWorld(clientX, clientY);
+    if (!w) return null;
+    return snapPoint(w);
+  }
+
+  function snapPoint(w: [number, number]): [number, number] {
+    if (!snapEnabled || !(snapMM > 0)) return w;
+    return [Math.round(w[0] / snapMM) * snapMM, Math.round(w[1] / snapMM) * snapMM];
+  }
+
   function onWheel(e: React.WheelEvent<SVGSVGElement>) {
     e.preventDefault();
     const rect = containerRef.current?.getBoundingClientRect();
@@ -176,12 +195,12 @@ export default function EditorCanvas({
     // Background click in label/dimension mode places a marker in world
     // space; in any other mode it deselects the current run.
     if (tool === 'label' && isBackground) {
-      const world = clientToWorld(e.clientX, e.clientY);
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
       if (world) onPlaceLabel(world[0], world[1]);
       return;
     }
     if (tool === 'dimension' && isBackground) {
-      const world = clientToWorld(e.clientX, e.clientY);
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
       if (!world) return;
       if (!stagedDim) {
         setStagedDim({ x: world[0], y: world[1] });
@@ -485,7 +504,7 @@ export default function EditorCanvas({
                   k={transform.k}
                   onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
                   onShiftClick={() => onDeleteVertex(run.id, pi)}
-                  clientToWorld={clientToWorld}
+                  clientToWorld={clientToWorldSnapped}
                 />
               ));
             })()}

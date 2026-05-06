@@ -34,6 +34,8 @@ export default function EditorPage() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [validating, setValidating] = useState(false);
   const validateAbortRef = useRef<AbortController | null>(null);
+  const [snapEnabled, setSnapEnabled] = useState(false);
+  const [snapMM, setSnapMM] = useState(1);
 
   // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
   // edits that land within COALESCE_MS of the previous edit into a single
@@ -441,6 +443,25 @@ export default function EditorPage() {
               onClick={() => setTool('node')}
               title="Edit polyline vertices on the selected run (drag to move, shift-click to delete)"
             >Node edit</button>
+            <span className="toolbar-divider" aria-hidden />
+            <button
+              type="button"
+              className={snapEnabled ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setSnapEnabled((v) => !v)}
+              title={`Snap labels, dimensions, and vertex drags to a ${snapMM}mm grid`}
+            >Snap {snapEnabled ? 'on' : 'off'}</button>
+            <input
+              type="number"
+              step="0.5"
+              min="0.1"
+              value={snapMM}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                if (v > 0) setSnapMM(v);
+              }}
+              className="snap-input"
+              title="Snap grid spacing in mm"
+            />
           </div>
         </div>
         <p className="meta">
@@ -467,6 +488,8 @@ export default function EditorPage() {
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
           onDeleteVertex={deleteVertex}
+          snapEnabled={snapEnabled}
+          snapMM={snapMM}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>

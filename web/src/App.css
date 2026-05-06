@@ -516,6 +516,11 @@
   background: var(--border);
   margin: 0 0.25rem;
 }
+.snap-input {
+  width: 4rem;
+  font-size: 0.875rem;
+  padding: 0.25rem 0.4rem;
+}
 .tool-btn {
   padding: 0.4rem 0.75rem;
   font-size: 0.875rem;
