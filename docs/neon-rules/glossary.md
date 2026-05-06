@@ -1,6 +1,6 @@
 # Glossary of neon trade terms
 
-Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*, `(B1)`/`(B2)`/`(B3)` for Blazek Books 1/2/3.
+Compiled from the four PDFs plus Miller (1935). Citations in the form `(SN p.X)` for *Saving Neon*, `(B1)`/`(B2)`/`(B3)` for Blazek Books 1/2/3, `(M p.X)` for Miller, *Neon Signs: Manufacture, Installation, Maintenance* (1935).
 
 ## Construction & geometry
 
@@ -20,7 +20,16 @@ Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*,
 - **Reheat & Close** *(B1 letter pages, e.g. "B")*. Reheating a previously-made bend so the tube can be closed (welded shut after a tube-end manipulation).
 - **Close** *(B1, B2 letter pages)*. The final step of joining a bent tube to itself or to another piece. Often paired with a weld.
 - **Yield** *(B1 letter pages)*. A small relaxation/give-back motion in the bend, used to relieve stress in tight forms.
-- **Weld / splice** *(SN p.19; B1 letter "H")*. Glass-to-glass join made by reheating two tube ends and fusing them. Used when a letter is split into halves.
+- **Weld / splice** *(SN p.19; B1 letter "H"; M p.122)*. Glass-to-glass join made by reheating two tube ends and fusing them. Used when a letter is split into halves. Miller distinguishes splices (general join) from welds (specifically joining halves of a large letter).
+- **Angle bend** *(M p.116)*. A bend made in the cross-fire burner where the heat is concentrated to about 1 in (25 mm) of tube. Includes right angles, sharper, and broader angles. Distinguished by Miller from the *ribbon-burner bend* (gradual curves) and the *double-back* (180° hairpin).
+- **Ribbon-burner bend** *(M p.117)*. A gradual curving or circular bend made over the broad ribbon-fire burner; the entire long heated section is uniformly soft and matched to the layout. Used for circular letters O, C, G, B, R.
+- **Combination bend** *(M p.120)*. Two bends close together, used to bring the rear leg of a double-back flush with the face of the sign while simultaneously turning the tube — effectively a 3D operation that converts a stacked-DB into an in-plane continuation.
+- **Turn-up bend** *(M p.124)*. The 90° lead-in bend made *last* on each electrode end, joining the in-plane letter geometry to the out-of-plane lead-in segment. The straight portion before the turn-up is **2–10 in (50–254 mm)**.
+- **Gathering** *(M p.116, 119)*. Pushing slightly-soft glass together at the bend region so that the wall thickness is preserved (or slightly thickened) at the bend, preventing wall thinning.
+- **Tubulation** *(M p.126)*. The small-bore (5–6 mm) glass tube spliced to the back of a tube unit, used as the vacuum-pump connection during pumping/bombarding/filling. Cut and sealed off at the end of the process.
+- **Side tube** *(M p.190)*. A small bulb of mercury sealed onto the back of a mercury-tube unit before pumping, used to introduce mercury *after* bombardment is complete. Standard mercury-insertion technique.
+- **Asbestos layout** *(M p.112)*. The full-size 1:1 working drawing on heavy asbestos paper used by the bender. Drawn *in reverse* (mirrored) so the bender can lay the still-soft glass directly on the drawing while bending. Distinct from the *original layout* (the engineering drawing).
+- **Original layout** *(M p.94, 95)*. The complete full-size mechanical drawing produced by the layout man. Includes metalwork, glass-bending detail, electrical apparatus, and connection diagram. Permanent record kept until sign is no longer in service.
 
 ## Pumping & gas filling
 
@@ -28,6 +37,13 @@ Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*,
 - **Vacuum-sealed** *(SN p.19)*. After bombardment, the tube is evacuated, the noble gas is admitted at low pressure, and the tube is sealed.
 - **Pump** *(B1 intro)*. Verb. The full evacuate+fill+seal operation. "Easier to bend, pump, install and service this way."
 - **Drop of mercury** *(SN p.20)*. A small quantity of liquid mercury introduced into argon-filled tubes; vapor pressure provides the UV that activates the phosphor coating.
+- **Bombardment / bombarding** *(M Ch.IX, pp.167–180)*. Running a heavy current (60–700 mA, vs 30 mA operating) through the unsealed tube while it is on the pumps, to drive impurities and adsorbed gas off the electrodes and inside walls. Typically uses a **bombarding transformer** rated 5 kVA at 10–15 kV. Dangerous; high secondary current can kill.
+- **Aging** *(M Ch.X)*. Operating the sealed and filled tube on a low-current transformer for hours or days to stabilize gas pressure and electrode behavior before delivery. Aging-table standard transformer is **15,000 V, 60 mA** *(M App II, p.280)*.
+- **Carrier gas** *(M p.42)*. The 80 % argon / 20 % neon mixture used in mercury tubes to ionize first, generate heat, and vaporize the liquid mercury in the tube. Sometimes He is added (He-Ar-Ne carrier) for cold-climate signs at the cost of doubled per-foot voltage drop.
+- **Cleanup / gas cleanup** *(M p.23, 228)*. Slow loss of gas pressure inside the sealed tube as electrode metal sputters onto the inside walls and traps gas molecules. Eventually causes the tube to fail.
+- **Sputtering** *(M p.22)*. Metal flying off the electrode under electrical and thermal stress, depositing on the inside glass near the electrode (causing a black "halo"). Driven by too-high current per electrode area or too-low gas pressure. Inversely related to electrode area (Claude's law: **1.5 dm²/A**).
+- **Cathode fall / cathode-voltage drop** *(M p.47)*. The voltage drop right at the electrode surface, distinct from the per-foot drop in the gas column. Reduced by chemical electrode coatings (Ba/Sr salts) or by larger electrode surface area.
+- **U gauge / butyl phthalate gauge / McLeod gauge** *(M Ch.VIII)*. Three pressure-measurement devices used during pumping. U gauge reads down to 1 mm Hg; butyl phthalate gauge has 14× resolution down to ~0.07 mm Hg; McLeod gauge reads microns (0.001 mm Hg).
 
 ## Electrodes & wiring
 
@@ -40,6 +56,13 @@ Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*,
 - **Rubber boot / silicone end cap** *(SN p.22)*. A flexible cover used to weatherproof an electrode-to-wire join — explicitly **forbidden** as a shortcut for re-engineering double-back electrodes (banned for vintage-sign restoration). Code allowed them only after the mid-1990s.
 - **Double-backed electrode** *(SN p.3, p.22)*. An electrode geometry where the electrode lead doubles back to exit the same side of the letter as the other electrode. Used for **window signs**. Should be designed in, not retrofitted with rubber boots.
 - **Series wiring** *(SN p.22)*. Two or more tubes wired in series on a single transformer.
+- **Dumet wire** *(M p.47)*. The standard electrode lead-in wire: nickel-iron alloy (~40 % Ni) with a heavy copper coat. Coefficient of expansion matches lead glass; copper coat makes molten glass adhere. A 6-mil (0.15 mm) dumet wire carries 200 mA — well above operating currents.
+- **Cold electrode** *(M p.45)*. The standard neon-sign electrode: large hollow metal shell, no heater, operates by cold cathode emission under high voltage. Almost universal in commercial signs.
+- **Hot cathode** *(M p.45, 54)*. An electrode containing a heated filament that emits electrons thermionically. Allows lower operating voltage. Uncommon in 1935 commercial signs; more common today in some niche applications.
+- **Pertruded electrode** *(M p.50)*. Electrode shell stamped with perforations to increase surface area and mechanical strength.
+- **Borated copper electrode** *(M p.51)*. Copper electrode shell dipped in molten borax to form a copper-oxide coat that reduces sputtering. Distinctive deep-red color.
+- **Electrode receptacle** *(M App I §129–138, p.275–276)*. UL-defined housing of porcelain (dry- or wet-process) or pyrex into which the electrode end of a tube fits, providing both insulation and a spring-contact electrical connection. Replaces the bare housing+ring for higher-voltage installations.
+- **Lamp holder** *(M App I §116–120, p.274)*. The terminal at which a low-voltage incandescent lamp is screwed in (combination signs only). Terminal-to-metal spacing **≥ ⅜ in (9.5 mm)**.
 
 ## Substrate / cabinet / paint
 
@@ -48,7 +71,20 @@ Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*,
 - **Block-out paint** *(SN p.19)*. Black paint applied to (a) the area between letters where the tube jumps between strokes, and (b) the section of glass tube that passes through the housing. Hides the un-illuminated portions so only the intended letter glows.
 - **Pattern / paper pattern** *(SN p.18)*. The 1:1 paper drawing the bender works against. Marks letterforms, electrode/housing centers ("circled x"), and bend types. **The accuracy of the pattern is the foundation of the build** — "If the pattern is off even a quarter of an inch, the glass might not fit."
 - **Center-to-center measurement** *(SN p.18)*. Distance between two housing-hole centers on the substrate; the dimension the tube ends must hit precisely.
-- **Channel letters** *(SN p.37)*. Sheet-metal U-channel forming a 3D letter shape; tubing runs inside the channel.
+- **Channel letters** *(SN p.37; M p.88)*. Sheet-metal U-channel forming a 3D letter shape; tubing runs inside the channel. Miller distinguishes this from the **flat painted letter**, **raised letter**, **raised-channel letter** (shallow channel), and **cut-out letter**.
+- **Flat painted letter** *(M p.86)*. The simplest sign-letter type: paint on the metal box behind the glass. "Very little daylight effect."
+- **Raised letter** *(M p.87)*. A 3D metal letter raised above the box surface, matching the glass-letter outline. Stainless-steel finish common.
+- **Raised-channel letter** *(M p.87)*. Combination of raised letter and channel letter — raised letter with a very shallow channel for the tube.
+- **Cut-out letter** *(M p.88)*. Metal sheet with letter shapes cut out; tubes are mounted behind, shining through.
+- **Skeleton sign** *(M Ch.V, p.80)*. A self-supporting tube-only sign with no metal box, hung from electrodes plus auxiliary wire supports. Common for indoor displays and storefronts.
+- **Box / box-type sign** *(M Ch.V, p.80; Ch.XI)*. The standard outdoor sign with a metal cabinet enclosing transformers and protecting the back of the tubing. Most outdoor commercial signs.
+- **Border / window border** *(M p.201)*. A perimeter outline of a window, made of one or more tube sections wired in series. Mounted on extension elevation posts 50–152 mm tall.
+- **Window sign / window display sign** *(M p.62, 200, 254–261)*. A sign mounted in a storefront window. Often skeleton style with the transformer concealed below or above the window. Both electrodes typically wire from the same side (Blazek's "window-sign electrode").
+- **Elevation post / neon-tube support** *(M p.62)*. An insulator (porcelain or glass) used to mount the tube on the sign box. Cabinet posts: 35–70 mm tall (1⅜–2¾ in). Window-border posts: 50–152 mm (2–6 in). Spaced ≤ 381 mm (15 in) apart along the tube, minimum two per tube section.
+- **Snap-in elevation post** *(M p.62)*. Elevation post with a wire-clasp on top: tube snaps in. Less common variant.
+- **Standard elevation post** *(M p.62)*. Elevation post with a semicircular recess on top, tube held by a fine copper tie-wire wrapped around it.
+- **Crossover paint** *(M p.59)*. Black or matched-color nonmetallic paint applied to the section of tube that jumps between letters or behind another stroke. Equivalent to *Saving Neon*'s "blockout paint." **Must be nonmetallic** — metallic paint near electrodes conducts the high voltage out onto the sign face.
+- **Map-measuring wheel** *(M p.98)*. A dial wheel rolled along the layout drawing to read out the total tube footage. The standard layout-drawing tool used in pricing and transformer sizing.
 
 ## Animation & control
 
@@ -61,12 +97,25 @@ Compiled from the four PDFs. Citations in the form `(SN p.X)` for *Saving Neon*,
 - **Transformer** *(SN throughout)*. Steps line voltage up to several kV to drive the gas discharge. Two types in current use: **electromagnetic** (preferred for outdoor, longer life) and **solid-state** (cheaper, shorter outdoor life).
 - **Pull-chain transformer** *(SN p.3)*. A transformer with an integrated mechanical pull-switch. Forbidden for restoration — failure-prone.
 - **4 watts per foot** *(SN p.36)*. Rule of thumb for power consumption of a neon tube.
+- **Bombarding transformer** *(M Ch.IX, p.168)*. High-power (typically 5 kVA) transformer at 10–15 kV / 60–700 mA used during the manufacturing process for tube cleanup. Distinct from the operating-voltage *tube transformer*.
+- **Aging transformer** *(M App II, p.280)*. A 15,000 V / 60 mA transformer used at the aging table to break in newly sealed tubes for hours or days before delivery.
+- **Core-and-coil transformer** *(M p.73)*. A transformer with no metal case, naked windings — cheap, indoor-only, and inside-cabinet only.
+- **Weatherproof transformer** *(M p.73)*. A sealed transformer suitable for direct exposure to weather; can be hung outdoors without a separate weatherproof enclosure.
+- **High-power-factor transformer** *(M p.74)*. A transformer with a built-in capacitor for power-factor correction. Typically 90 % PF vs 50 % for a leakage-reactance type.
+- **Magnetic shunt** *(M p.66, 71)*. Iron piece placed between primary and secondary windings of a tube transformer; provides the leakage reactance that limits secondary current. One shunt for ≤ 5 kV transformers, two for higher.
+- **Mid-point ground** *(M p.206)*. The center tap of the secondary winding, grounded to the transformer case, used in transformers above 7.5 kV. Means each electrode is at half the open-circuit voltage relative to ground.
+- **Rotary converter / dynamotor** *(M p.75)*. A motor-generator that converts DC line current to AC for transformer operation, used in cities where the mains were DC. Largely obsolete today.
+- **GTO cable / sign cable** *(SN p.21; M p.63–64)*. The high-voltage secondary cable from transformer to electrode. Available in three voltage ratings: 5 kV (red thread), 10 kV (yellow thread), 15 kV (blue thread). UL allows only one wire size: No. 14 B&S gauge.
 
 ## Color & coating
 
-- **Phosphor-coated** *(SN p.20)*. Inside surface of glass tube coated with phosphor. Looks white in daylight, glows in the phosphor's color when energized. Typically fills with argon + Hg.
+- **Phosphor-coated** *(SN p.20)*. Inside surface of glass tube coated with phosphor. Looks white in daylight, glows in the phosphor's color when energized. Typically fills with argon + Hg. **Note: phosphor-coated tubes did not exist in 1935; Miller does not describe them.**
 - **Powdered (tube/unit)** *(B1 intro)*. Trade synonym for phosphor-coated.
-- **Novial** *(SN p.20)*. Trade name for an imported tinted glass tube (e.g. Novial Gold).
+- **Novial** *(SN p.20; M p.279 spelled "noviol")*. Trade name for tinted glass tubing. Standard 1935 inventory: 12 mm and 15 mm noviol for green tubes (used with Ar-Hg fill). Other tints for red, yellow, blue.
+- **Lead glass / Corning G-1** *(M p.57, 115)*. Standard neon-tube glass: lead-silicate, wall thickness 0.045–0.060 in (1.14–1.52 mm), self-annealing, machine-drawn to ±0.5 mm OD tolerance. The workhorse glass for almost all 1935-era signs.
+- **Pyrex** *(M p.58)*. Borosilicate glass, used for special applications. Wall 0.040–0.070 in (1.0–1.78 mm), drawn by hand (less uniform). Requires graded-seal joint (7 different glass grades over ¼ in length) to mate with lead glass.
+- **Graded seal** *(M p.59)*. Multi-step (7-grade) glass joint that gradually transitions between pyrex and lead glass coefficients of expansion. Required when joining the two glass types.
+- **Opal white glass** *(M p.59)*. Particularly difficult-to-bend glass used for white tubes pre-phosphor.
 - **Mercury stain** *(SN p.20)*. Dark spot on an old tube's glass where mercury has discolored the inside. Tube needs replacement.
 
 ## Roles
