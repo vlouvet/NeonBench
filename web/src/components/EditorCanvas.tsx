@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
+import { colorHex } from '../lib/neonColors';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -209,10 +210,13 @@ export default function EditorCanvas({
               ? indicesToD(arcs.inactive, run.polyline.points, false)
               : '';
             const segs = blockoutSegments(arcs.live, run.blockouts, arcs.liveClosed);
-            const liveStroke = selected ? '#ff3b6b' : '#222';
+            const liveStroke = colorHex(run.color);
             const liveWidth = (selected ? 1.6 : 0.8) / transform.k;
             const cursor =
               tool === 'electrode' || tool === 'blockout' ? 'crosshair' : 'pointer';
+            // When a colored run is selected we still want a clear selection
+            // signal, so draw a wider semi-transparent pink halo underneath.
+            const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
             return (
               <g key={run.id}>
                 {inactiveD && (
@@ -225,6 +229,16 @@ export default function EditorCanvas({
                     pointerEvents="none"
                   />
                 )}
+                {selected && (
+                  <path
+                    d={liveD}
+                    stroke="#ff3b6b"
+                    strokeWidth={3.2 / transform.k}
+                    strokeOpacity={0.35}
+                    fill="none"
+                    pointerEvents="none"
+                  />
+                )}
                 {segs.map((seg, si) => {
                   const d = indicesToD(
                     seg.liveIndices,
@@ -232,11 +246,14 @@ export default function EditorCanvas({
                     arcs.liveClosed && segs.length === 1 && !seg.isBlockout,
                   );
                   if (seg.isBlockout) {
+                    // Blockouts are painted-out tube — they don't glow, so
+                    // render them in the neutral stroke even when the run
+                    // has a gas color assigned.
                     return (
                       <path
                         key={`bo-${si}`}
                         d={d}
-                        stroke={liveStroke}
+                        stroke="#222"
                         strokeWidth={liveWidth}
                         strokeDasharray={`${1.6 / transform.k} ${1 / transform.k}`}
                         fill="none"

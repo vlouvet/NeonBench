@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, parseDoc, type DesignDoc, type DesignVersion, type Project } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import { defaultDirection } from '../lib/runArcs';
+import { NEON_COLORS, colorHex } from '../lib/neonColors';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -161,6 +162,23 @@ export default function EditorPage() {
     setDirty(true);
   }
 
+  function setRunColor(runId: string, color: string) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        // Empty value collapses to omitted field so the JSON stays clean.
+        if (color === '') {
+          const { color: _drop, ...rest } = run;
+          return rest;
+        }
+        return { ...run, color };
+      });
+      return { ...prev, runs };
+    });
+    setDirty(true);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -242,7 +260,14 @@ export default function EditorPage() {
                   className={`run-row ${run.id === selected ? 'active' : ''}`}
                   onClick={() => setSelected(run.id)}
                 >
-                  <strong>{run.id}</strong>
+                  <div className="run-row-head">
+                    <span
+                      className="color-swatch"
+                      style={{ background: colorHex(run.color) }}
+                      title={run.color || 'unassigned'}
+                    />
+                    <strong>{run.id}</strong>
+                  </div>
                   <span className="meta">
                     {run.polyline.points.length} pts · {ne}/2 ⬥ · ø {run.tube_diameter_mm ?? '?'}mm
                   </span>
@@ -258,6 +283,23 @@ export default function EditorPage() {
                 {selectedRun.polyline.closed ? 'closed' : 'open'} ·{' '}
                 {selectedRun.electrodes?.length ?? 0} electrodes
               </p>
+              <label className="color-picker">
+                Color
+                <select
+                  value={selectedRun.color ?? ''}
+                  onChange={(e) => setRunColor(selectedRun.id, e.target.value)}
+                >
+                  {NEON_COLORS.map((c) => (
+                    <option key={c.value || 'unset'} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+                <span
+                  className="color-swatch lg"
+                  style={{ background: colorHex(selectedRun.color) }}
+                />
+              </label>
               {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
                 <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
                   Switch live arc ({selectedRun.direction ?? 'forward'})
