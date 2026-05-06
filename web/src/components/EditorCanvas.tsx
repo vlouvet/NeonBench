@@ -133,6 +133,13 @@ export default function EditorCanvas({
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (e.button !== 0 && e.button !== 1) return;
+    // Only start pan-drag (and capture the pointer) when the press is on
+    // empty canvas. If it's on a path / marker / handle, leave the pointer
+    // alone so the child element's onClick / drag handlers receive the
+    // events normally — capturing on the SVG retargets pointer-up + click
+    // to the SVG, which is why clicks on paths weren't firing.
+    const tag = (e.target as SVGElement).tagName;
+    if (tag !== 'svg' && tag !== 'rect') return;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
