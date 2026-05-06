@@ -500,4 +500,59 @@
 .run-detail {
   padding-top: 0.5rem;
   border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.editor-toolbar {
+  display: flex;
+  gap: 0.25rem;
+}
+.tool-btn {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.875rem;
+}
+.tool-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.editor-canvas.tool-electrode svg {
+  cursor: crosshair;
+}
+
+.dirty-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--accent);
+  border-radius: 50%;
+  margin-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.canvas-toolbar .hint {
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.save-section {
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.save-section label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.save-section .btn-primary {
+  text-align: center;
 }

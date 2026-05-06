@@ -156,6 +156,15 @@ export const api = {
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}/validate`, {
       method: 'POST',
     }),
+  saveDesignVersion: (
+    projectId: number,
+    body: { based_on_vid?: number; label?: string; design_doc: DesignDoc },
+  ) =>
+    req<DesignVersion>(`/api/projects/${projectId}/design_versions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   printPDFURL: (
     projectId: number,
     versionId: number,

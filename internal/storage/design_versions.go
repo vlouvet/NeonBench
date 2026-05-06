@@ -80,9 +80,10 @@ func GetDesignVersion(ctx context.Context, db *sql.DB, id int64) (DesignVersion,
 }
 
 // ListDesignVersions returns versions for a project, newest first. SVG data
-// is omitted; callers fetch it via GetDesignVersion when needed.
+// and design doc are omitted to keep listings small; callers fetch them via
+// GetDesignVersion when needed.
 func ListDesignVersions(ctx context.Context, db *sql.DB, projectID int64) ([]DesignVersion, error) {
-	const q = `SELECT id, project_id, version_no, label, '' AS svg_data, validation_report_json, created_at
+	const q = `SELECT id, project_id, version_no, label, '' AS svg_data, NULL AS design_doc, validation_report_json, created_at
 	           FROM design_versions WHERE project_id = ?
 	           ORDER BY version_no DESC`
 	rows, err := db.QueryContext(ctx, q, projectID)
@@ -94,7 +95,7 @@ func ListDesignVersions(ctx context.Context, db *sql.DB, projectID int64) ([]Des
 	for rows.Next() {
 		var v DesignVersion
 		if err := rows.Scan(&v.ID, &v.ProjectID, &v.VersionNo, &v.Label, &v.SVGData,
-			&v.ValidationReportJSON, &v.CreatedAt); err != nil {
+			&v.DesignDocJSON, &v.ValidationReportJSON, &v.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan design_version: %w", err)
 		}
 		out = append(out, v)
@@ -121,12 +122,12 @@ func UpdateDesignVersionReport(ctx context.Context, db *sql.DB, id int64, report
 // LatestDesignVersion returns the most recent version for a project, or
 // ErrNotFound if none exist.
 func LatestDesignVersion(ctx context.Context, db *sql.DB, projectID int64) (DesignVersion, error) {
-	const q = `SELECT id, project_id, version_no, label, svg_data, validation_report_json, created_at
+	const q = `SELECT id, project_id, version_no, label, svg_data, design_doc, validation_report_json, created_at
 	           FROM design_versions WHERE project_id = ?
 	           ORDER BY version_no DESC LIMIT 1`
 	var v DesignVersion
 	err := db.QueryRowContext(ctx, q, projectID).Scan(&v.ID, &v.ProjectID, &v.VersionNo,
-		&v.Label, &v.SVGData, &v.ValidationReportJSON, &v.CreatedAt)
+		&v.Label, &v.SVGData, &v.DesignDocJSON, &v.ValidationReportJSON, &v.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DesignVersion{}, ErrNotFound
 	}

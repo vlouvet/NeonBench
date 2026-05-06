@@ -1,26 +1,33 @@
 import { useEffect, useRef, useState } from 'react';
-import type { DesignDoc } from '../api';
+import type { DesignDoc, DesignRun } from '../api';
 
 type Transform = { tx: number; ty: number; k: number };
+
+export type EditorTool = 'select' | 'electrode';
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 200;
 
 export default function EditorCanvas({
   doc,
+  tool,
   selectedRunId,
   onSelectRun,
+  onPlaceElectrode,
+  onDeleteElectrode,
 }: {
   doc: DesignDoc;
+  tool: EditorTool;
   selectedRunId: string | null;
   onSelectRun: (id: string | null) => void;
+  onPlaceElectrode: (runId: string, pointIndex: number) => void;
+  onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
-  const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number } | null>(null);
+  const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
-  // Watch container size so we can fit the design and convert mouse coords.
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
@@ -33,17 +40,30 @@ export default function EditorCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // Fit the design to the viewport whenever the doc or container changes.
+  // Fit on first measurement of the design doc.
+  const fittedDocRef = useRef<DesignDoc | null>(null);
   useEffect(() => {
     if (size.w === 0 || size.h === 0) return;
+    if (fittedDocRef.current === doc) return;
     const [x, y, w, h] = doc.view_box_mm;
     if (w <= 0 || h <= 0) return;
     const padding = 0.9;
     const scale = Math.min(size.w / w, size.h / h) * padding;
-    const tx = size.w / 2 - (x + w / 2) * scale;
-    const ty = size.h / 2 - (y + h / 2) * scale;
-    setTransform({ tx, ty, k: scale });
+    setTransform({
+      k: scale,
+      tx: size.w / 2 - (x + w / 2) * scale,
+      ty: size.h / 2 - (y + h / 2) * scale,
+    });
+    fittedDocRef.current = doc;
   }, [doc, size.w, size.h]);
+
+  function clientToWorld(clientX: number, clientY: number): [number, number] | null {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return null;
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    return [(px - transform.tx) / transform.k, (py - transform.ty) / transform.k];
+  }
 
   function onWheel(e: React.WheelEvent<SVGSVGElement>) {
     e.preventDefault();
@@ -65,9 +85,13 @@ export default function EditorCanvas({
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (e.button !== 0 && e.button !== 1) return;
-    // Only start panning when not clicking on a run.
-    if ((e.target as SVGElement).tagName === 'path') return;
-    dragRef.current = { startX: e.clientX, startY: e.clientY, tx: transform.tx, ty: transform.ty };
+    dragRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      tx: transform.tx,
+      ty: transform.ty,
+      moved: false,
+    };
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   }
 
@@ -75,21 +99,49 @@ export default function EditorCanvas({
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.startX;
     const dy = e.clientY - dragRef.current.startY;
-    setTransform((t) => ({ ...t, tx: dragRef.current!.tx + dx, ty: dragRef.current!.ty + dy }));
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+      dragRef.current.moved = true;
+      setTransform((t) => ({ ...t, tx: dragRef.current!.tx + dx, ty: dragRef.current!.ty + dy }));
+    }
   }
 
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     if (dragRef.current) {
+      const wasDrag = dragRef.current.moved;
       dragRef.current = null;
-      (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // pointer might have been released already
+      }
+      if (wasDrag) return;
+    }
+    // Click on background → deselect (if not on a path or marker)
+    const tag = (e.target as SVGElement).tagName;
+    if (tag === 'svg' || tag === 'rect') {
+      onSelectRun(null);
     }
   }
 
-  function onCanvasClick(e: React.MouseEvent<SVGSVGElement>) {
-    // If we just finished a drag, the pointerup handler clears dragRef before
-    // click fires. Treat clicks on the background as deselect.
-    if ((e.target as SVGElement).tagName === 'svg' || (e.target as SVGElement).tagName === 'rect') {
-      onSelectRun(null);
+  function onRunClick(e: React.MouseEvent<SVGPathElement>, run: DesignRun) {
+    e.stopPropagation();
+    if (dragRef.current?.moved) return;
+    if (tool === 'electrode') {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const idx = nearestPointIndex(run.polyline.points, world);
+      onPlaceElectrode(run.id, idx);
+      return;
+    }
+    onSelectRun(run.id);
+  }
+
+  function onElectrodeClick(e: React.MouseEvent, runId: string, electrodeIndex: number) {
+    e.stopPropagation();
+    if (dragRef.current?.moved) return;
+    onSelectRun(runId);
+    if (tool === 'select' && (e.shiftKey || e.altKey)) {
+      onDeleteElectrode(runId, electrodeIndex);
     }
   }
 
@@ -105,8 +157,11 @@ export default function EditorCanvas({
     });
   }
 
+  // Marker size: 10 device pixels regardless of zoom.
+  const markerSizeMM = 10 / transform.k;
+
   return (
-    <div ref={containerRef} className="editor-canvas">
+    <div ref={containerRef} className={`editor-canvas tool-${tool}`}>
       <svg
         width="100%"
         height="100%"
@@ -115,7 +170,6 @@ export default function EditorCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
-        onClick={onCanvasClick}
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
@@ -125,26 +179,66 @@ export default function EditorCanvas({
               <path
                 key={run.id}
                 d={polylineToD(run.polyline.points, run.polyline.closed)}
-                stroke={selected ? '#ff3b6b' : '#888'}
+                stroke={selected ? '#ff3b6b' : '#444'}
                 strokeWidth={(selected ? 1.5 : 0.6) / transform.k}
                 fill="none"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onSelectRun(run.id);
-                }}
-                style={{ cursor: 'pointer' }}
+                onClick={(e) => onRunClick(e, run)}
+                style={{ cursor: tool === 'electrode' ? 'crosshair' : 'pointer' }}
               />
             );
           })}
+          {doc.runs.flatMap((run) =>
+            (run.electrodes ?? []).map((e, ei) => {
+              const p = run.polyline.points[e.point_index];
+              if (!p) return null;
+              return (
+                <ElectrodeMarker
+                  key={`${run.id}-${ei}`}
+                  x={p[0]}
+                  y={p[1]}
+                  sizeMM={markerSizeMM}
+                  onClick={(ev) => onElectrodeClick(ev, run.id, ei)}
+                />
+              );
+            }),
+          )}
         </g>
       </svg>
       <div className="canvas-toolbar">
         <button type="button" onClick={fitToView}>Fit</button>
         <span className="meta">
-          zoom {(transform.k).toFixed(2)}× · {doc.runs.length} runs · {Math.round(doc.view_box_mm[2])} × {Math.round(doc.view_box_mm[3])}mm
+          zoom {transform.k.toFixed(2)}× · {doc.runs.length} runs · {Math.round(doc.view_box_mm[2])} × {Math.round(doc.view_box_mm[3])}mm
         </span>
+        {tool === 'electrode' && (
+          <span className="meta hint">Click on a path to place an electrode</span>
+        )}
       </div>
     </div>
+  );
+}
+
+function ElectrodeMarker({
+  x,
+  y,
+  sizeMM,
+  onClick,
+}: {
+  x: number;
+  y: number;
+  sizeMM: number;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const r = sizeMM / 2;
+  const points = `${x},${y - r} ${x + r},${y} ${x},${y + r} ${x - r},${y}`;
+  return (
+    <polygon
+      points={points}
+      fill="#ff3b6b"
+      stroke="#fff"
+      strokeWidth={r * 0.15}
+      onClick={onClick}
+      style={{ cursor: 'pointer' }}
+    />
   );
 }
 
@@ -157,4 +251,19 @@ function polylineToD(points: [number, number][], closed: boolean): string {
   }
   if (closed) parts.push('Z');
   return parts.join(' ');
+}
+
+function nearestPointIndex(points: [number, number][], target: [number, number]): number {
+  let best = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const dx = points[i][0] - target[0];
+    const dy = points[i][1] - target[1];
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }
