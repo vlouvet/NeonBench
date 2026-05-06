@@ -294,6 +294,10 @@ export default function EditorCanvas({
             const segs = blockoutSegments(arcs.live, run.blockouts, arcs.liveClosed);
             const liveStroke = colorHex(run.color);
             const liveWidth = (selected ? 1.6 : 0.8) / transform.k;
+            // Hit zone for clicks: ~12 device pixels wide regardless of zoom,
+            // so picking electrodes / blockouts / annotations doesn't require
+            // landing exactly on the 1-pixel visible stroke.
+            const hitWidth = 12 / transform.k;
             const cursor =
               tool === 'select' ? 'pointer' : 'crosshair';
             // When a colored run is selected we still want a clear selection
@@ -321,6 +325,17 @@ export default function EditorCanvas({
                     pointerEvents="none"
                   />
                 )}
+                {/* Hit-target stroke: invisible, wide enough that clicks
+                    don't have to land on the 1px visible line. Layered
+                    under the visible strokes so the latter render on top. */}
+                <path
+                  d={liveD}
+                  stroke="transparent"
+                  strokeWidth={hitWidth}
+                  fill="none"
+                  onClick={(e) => onRunClick(e, run)}
+                  style={{ cursor }}
+                />
                 {segs.map((seg, si) => {
                   const d = indicesToD(
                     seg.liveIndices,
@@ -339,8 +354,7 @@ export default function EditorCanvas({
                         strokeWidth={liveWidth}
                         strokeDasharray={`${1.6 / transform.k} ${1 / transform.k}`}
                         fill="none"
-                        onClick={(e) => onRunClick(e, run)}
-                        style={{ cursor }}
+                        pointerEvents="none"
                       />
                     );
                   }
@@ -351,8 +365,7 @@ export default function EditorCanvas({
                       stroke={liveStroke}
                       strokeWidth={liveWidth}
                       fill="none"
-                      onClick={(e) => onRunClick(e, run)}
-                      style={{ cursor }}
+                      pointerEvents="none"
                     />
                   );
                 })}
