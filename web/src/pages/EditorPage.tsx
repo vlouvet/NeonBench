@@ -13,7 +13,7 @@ import {
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import { defaultDirection } from '../lib/runArcs';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
-import { computeBends } from '../lib/bends';
+import { computeBends, effectiveBends } from '../lib/bends';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -349,6 +349,57 @@ export default function EditorPage() {
     }));
   }
 
+  function placeBend(runId: string, liveIndex: number) {
+    editDoc((prev) => {
+      const projDiam = tubeSpec?.diameter_mm ?? 10;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        // First manual add snapshots the current auto-detected list so the
+        // user can edit on top of it instead of starting from blank.
+        const seed = run.bends && run.bends.length > 0
+          ? run.bends
+          : computeBends(run, projDiam).map((b) => ({ live_index: b.liveIndex }));
+        // Avoid trivial duplicates within a few samples of an existing bend.
+        if (seed.some((b) => Math.abs(b.live_index - liveIndex) < 2)) {
+          return { ...run, bends: seed };
+        }
+        const bends = [...seed, { live_index: liveIndex }].sort(
+          (a, b) => a.live_index - b.live_index,
+        );
+        return { ...run, bends };
+      });
+      return { ...prev, runs };
+    });
+    setSelected(runId);
+  }
+
+  function deleteBend(runId: string, bendIndex: number) {
+    editDoc((prev) => {
+      const projDiam = tubeSpec?.diameter_mm ?? 10;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const seed = run.bends && run.bends.length > 0
+          ? run.bends
+          : computeBends(run, projDiam).map((b) => ({ live_index: b.liveIndex }));
+        const bends = seed.filter((_, i) => i !== bendIndex);
+        return { ...run, bends };
+      });
+      return { ...prev, runs };
+    });
+  }
+
+  function resetBendsOnSelected() {
+    if (!selected) return;
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((r) => {
+        if (r.id !== selected) return r;
+        const { bends: _drop, ...rest } = r;
+        return rest;
+      }),
+    }));
+  }
+
   function setRunDiameter(runId: string, diameterMM: number | null) {
     editDoc((prev) => {
       const runs = prev.runs.map((run) => {
@@ -453,6 +504,12 @@ export default function EditorPage() {
               onClick={() => setTool('doubleback')}
               title="Mark a hairpin as an intentional double-back (suppresses bend-radius warning)"
             >Mark double-back</button>
+            <button
+              type="button"
+              className={tool === 'bend' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('bend')}
+              title="Add a manual bend point (overrides auto-detect for that run)"
+            >Add bend</button>
           </div>
         </div>
         <p className="meta">
@@ -472,6 +529,7 @@ export default function EditorPage() {
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
+          onPlaceBend={placeBend}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>
@@ -572,8 +630,9 @@ export default function EditorPage() {
                 </>
               )}
               {(() => {
-                const bends = computeBends(selectedRun, tubeSpec?.diameter_mm ?? 10);
-                if (bends.length === 0) {
+                const bends = effectiveBends(selectedRun, tubeSpec?.diameter_mm ?? 10);
+                const isManual = !!selectedRun.bends && selectedRun.bends.length > 0;
+                if (bends.length === 0 && !isManual) {
                   return (
                     <p className="meta hint-line">
                       Bends: none auto-detected (smooth curves below 20° turn).
@@ -585,6 +644,7 @@ export default function EditorPage() {
                     <h5 className="meta">
                       Bends · {bends.length} · total{' '}
                       {bends.reduce((acc, b) => acc + b.angleDeg, 0).toFixed(0)}°
+                      {isManual ? ' · manual' : ' · auto'}
                     </h5>
                     <ul className="blockout-list">
                       {bends.map((b, bi) => (
@@ -592,9 +652,21 @@ export default function EditorPage() {
                           <span className="meta">
                             #{bi + 1} @ {b.arcLengthMM.toFixed(1)}mm · {b.angleDeg.toFixed(0)}° · r={b.radiusMM > 0 && Number.isFinite(b.radiusMM) ? `${b.radiusMM.toFixed(1)}mm` : '∞'}
                           </span>
+                          <button
+                            type="button"
+                            className="btn-link"
+                            onClick={() => deleteBend(selectedRun.id, bi)}
+                          >Remove</button>
                         </li>
                       ))}
                     </ul>
+                    {isManual && (
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={resetBendsOnSelected}
+                      >Reset to auto</button>
+                    )}
                   </>
                 );
               })()}

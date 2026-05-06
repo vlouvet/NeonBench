@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
-import { computeBends } from '../lib/bends';
+import { effectiveBends } from '../lib/bends';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -12,7 +12,8 @@ export type EditorTool =
   | 'blockout'
   | 'jump'
   | 'support'
-  | 'doubleback';
+  | 'doubleback'
+  | 'bend';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -32,6 +33,7 @@ export default function EditorCanvas({
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
+  onPlaceBend,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -43,6 +45,7 @@ export default function EditorCanvas({
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
+  onPlaceBend: (runId: string, liveIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
@@ -185,6 +188,16 @@ export default function EditorCanvas({
       if (arcs.live.length < 1) return;
       const liveIdx = nearestLiveArcIndex(arcs.live, run.polyline.points, world);
       onPlaceAnnotation(run.id, tool, liveIdx);
+      onSelectRun(run.id);
+      return;
+    }
+    if (tool === 'bend') {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const arcs = runArcs(run);
+      if (arcs.live.length < 1) return;
+      const liveIdx = nearestLiveArcIndex(arcs.live, run.polyline.points, world);
+      onPlaceBend(run.id, liveIdx);
       onSelectRun(run.id);
       return;
     }
@@ -350,9 +363,16 @@ export default function EditorCanvas({
             (() => {
               const run = doc.runs.find((r) => r.id === selectedRunId);
               if (!run) return null;
-              const bends = computeBends(run, projectDiameterMM);
+              const bends = effectiveBends(run, projectDiameterMM);
+              const isManual = !!run.bends && run.bends.length > 0;
               return bends.map((b, bi) => (
-                <BendMarker key={`bend-${selectedRunId}-${bi}`} x={b.x} y={b.y} sizeMM={markerSizeMM * 0.6} />
+                <BendMarker
+                  key={`bend-${selectedRunId}-${bi}`}
+                  x={b.x}
+                  y={b.y}
+                  sizeMM={markerSizeMM * 0.6}
+                  manual={isManual}
+                />
               ));
             })()}
           {doc.runs.flatMap((run) => {
@@ -397,6 +417,9 @@ export default function EditorCanvas({
         {tool === 'doubleback' && (
           <span className="meta hint">Click the apex of a hairpin to mark it as an intentional double-back</span>
         )}
+        {tool === 'bend' && (
+          <span className="meta hint">Click on a path to add a manual bend (overrides auto-detect for that run)</span>
+        )}
       </div>
     </div>
   );
@@ -427,17 +450,27 @@ function ElectrodeMarker({
   );
 }
 
-function BendMarker({ x, y, sizeMM }: { x: number; y: number; sizeMM: number }) {
-  // Small hollow disc — non-interactive. The sidebar list is the way to
-  // jump to / inspect a bend; clicking the marker would just compete with
-  // the underlying path's electrode/blockout/annotation hit zone.
+function BendMarker({
+  x,
+  y,
+  sizeMM,
+  manual,
+}: {
+  x: number;
+  y: number;
+  sizeMM: number;
+  manual: boolean;
+}) {
+  // Hollow disc; filled when the user has overridden the auto-detected list,
+  // so they can tell at a glance which mode the run is in. Non-interactive —
+  // the sidebar list is where you remove or jump to bends.
   const r = sizeMM / 2;
   return (
     <circle
       cx={x}
       cy={y}
       r={r}
-      fill="#fff"
+      fill={manual ? '#ff8a00' : '#fff'}
       stroke="#ff8a00"
       strokeWidth={r * 0.35}
       pointerEvents="none"

@@ -57,6 +57,10 @@ export type Annotation = {
   live_index: number;
 };
 
+export type Bend = {
+  live_index: number;
+};
+
 export type DesignRun = {
   id: string;
   polyline: { points: [number, number][]; closed: boolean };
@@ -66,6 +70,7 @@ export type DesignRun = {
   direction?: 'forward' | 'backward';
   blockouts?: Blockout[];
   annotations?: Annotation[];
+  bends?: Bend[];
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

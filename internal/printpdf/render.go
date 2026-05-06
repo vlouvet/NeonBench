@@ -221,7 +221,7 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	// match the bend list page at the back.
 	bendsByRun := make(map[string][]designdoc.BendPoint, len(doc.Runs))
 	for _, run := range doc.Runs {
-		bendsByRun[run.ID] = designdoc.ComputeBends(run, projectDiameterMM)
+		bendsByRun[run.ID] = designdoc.EffectiveBends(run, projectDiameterMM)
 	}
 
 	for r := 0; r < rows; r++ {

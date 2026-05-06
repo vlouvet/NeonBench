@@ -20,6 +20,51 @@ const (
 	bendClusterScale = 2.0
 )
 
+// EffectiveBends returns the bend list the renderer should actually use:
+// the user-authored Run.Bends when set, or the auto-detected list from
+// ComputeBends when not. Manual bends still get their angle/radius
+// computed from the polyline neighborhood so the bend-list page reads
+// consistent regardless of mode.
+func EffectiveBends(run Run, projectDiameterMM float64) []BendPoint {
+	if len(run.Bends) == 0 {
+		return ComputeBends(run, projectDiameterMM)
+	}
+	liveIdx, _ := liveArcIndices(run)
+	if len(liveIdx) < 3 {
+		return nil
+	}
+	pts := make([][2]float64, len(liveIdx))
+	for i, j := range liveIdx {
+		pts[i] = run.Polyline.Points[j]
+	}
+	n := len(pts)
+	arcLen := make([]float64, n)
+	for i := 1; i < n; i++ {
+		arcLen[i] = arcLen[i-1] + dist2(pts[i-1], pts[i])
+	}
+	out := make([]BendPoint, 0, len(run.Bends))
+	for _, b := range run.Bends {
+		li := b.LiveIndex
+		if li < 0 || li >= n {
+			continue
+		}
+		a := pts[max0(li-1)]
+		c := pts[minN(li+1, n-1)]
+		angleRad := vertexTurn(a, pts[li], c)
+		r := circumradius(a, pts[li], c)
+		out = append(out, BendPoint{
+			LiveIndex:   li,
+			PointIndex:  liveIdx[li],
+			X:           pts[li][0],
+			Y:           pts[li][1],
+			ArcLengthMM: arcLen[li],
+			RadiusMM:    r,
+			AngleDeg:    angleRad * 180 / math.Pi,
+		})
+	}
+	return out
+}
+
 // ComputeBends walks a run's live arc and returns the apex points for each
 // detected bend. The detection mirrors web/src/lib/bends.ts so the editor's
 // preview and the printed pattern see the same set of bends.

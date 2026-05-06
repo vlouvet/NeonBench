@@ -28,6 +28,15 @@ type Run struct {
 	Direction      string       `json:"direction,omitempty"` // "forward" | "backward"
 	Blockouts      []Blockout   `json:"blockouts,omitempty"`
 	Annotations    []Annotation `json:"annotations,omitempty"`
+	Bends          []Bend       `json:"bends,omitempty"`
+}
+
+// Bend is a single user-authored bend apex along the run's live arc.
+// LiveIndex matches the convention used by Blockout and Annotation. When
+// the run has no manual bends, the editor and printer fall back to
+// ComputeBends auto-detection.
+type Bend struct {
+	LiveIndex int `json:"live_index"`
 }
 
 // Annotation is a single point marker on a run's live arc, informational

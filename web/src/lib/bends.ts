@@ -15,6 +15,40 @@ const DEFAULT_DIAMETER_MM = 10;
 const TURN_MIN_DEG = 20;     // a "bend" must turn the tube at least this much
 const CLUSTER_FACTOR = 2;    // bends within CLUSTER_FACTOR × diameter merge into one
 
+// effectiveBends returns the run's authored bend list when present and
+// non-empty, otherwise the auto-detected list. Manual bends still get
+// their angle/radius computed from the polyline neighborhood.
+export function effectiveBends(run: DesignRun, projectDiameterMM = DEFAULT_DIAMETER_MM): BendPoint[] {
+  if (!run.bends || run.bends.length === 0) {
+    return computeBends(run, projectDiameterMM);
+  }
+  const arcs = runArcs(run);
+  const liveIdx = arcs.live;
+  if (liveIdx.length < 3) return [];
+  const pts = liveIdx.map((i) => run.polyline.points[i]);
+  const n = pts.length;
+  const arcLen = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i++) arcLen[i] = arcLen[i - 1] + distance(pts[i - 1], pts[i]);
+  return run.bends
+    .filter((b) => b.live_index >= 0 && b.live_index < n)
+    .map((b) => {
+      const li = b.live_index;
+      const a = pts[Math.max(0, li - 1)];
+      const c = pts[Math.min(n - 1, li + 1)];
+      const turn = vertexTurn(a, pts[li], c);
+      const r = circumradius3(a, pts[li], c);
+      return {
+        liveIndex: li,
+        pointIndex: liveIdx[li],
+        x: pts[li][0],
+        y: pts[li][1],
+        arcLengthMM: arcLen[li],
+        radiusMM: Number.isFinite(r) ? r : 0,
+        angleDeg: (turn * 180) / Math.PI,
+      };
+    });
+}
+
 // computeBends scans a run's live arc and returns the points where the tube
 // physically bends — auto-suggested apex locations a fabricator would heat
 // and form. The detection is intentionally simple: per-vertex turn angles
