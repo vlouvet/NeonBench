@@ -53,6 +53,7 @@ export type DesignRun = {
   tube_diameter_mm?: number;
   color?: string;
   electrodes?: { point_index: number }[];
+  direction?: 'forward' | 'backward';
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

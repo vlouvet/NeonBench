@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, parseDoc, type DesignDoc, type DesignVersion, type Project } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import { defaultDirection } from '../lib/runArcs';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -53,19 +54,42 @@ export default function EditorPage() {
       const runs = prev.runs.map((run) => {
         if (run.id !== runId) return run;
         const existing = run.electrodes ?? [];
+        let nextElectrodes;
         if (existing.length >= 2) {
           // Replace the closer of the two existing electrodes.
           const dist = (idx: number) => Math.abs(idx - pointIndex);
           const replaceIdx = dist(existing[0].point_index) < dist(existing[1].point_index) ? 0 : 1;
-          const newEl = [...existing];
-          newEl[replaceIdx] = { point_index: pointIndex };
-          return { ...run, electrodes: newEl };
+          nextElectrodes = [...existing];
+          nextElectrodes[replaceIdx] = { point_index: pointIndex };
+        } else {
+          nextElectrodes = [...existing, { point_index: pointIndex }];
         }
-        return { ...run, electrodes: [...existing, { point_index: pointIndex }] };
+        const next = { ...run, electrodes: nextElectrodes };
+        // When we just gave a closed run its second electrode, default the
+        // direction to whichever arc is longer (typically the visible part
+        // of a glyph perimeter).
+        if (run.polyline.closed && nextElectrodes.length === 2 && !run.direction) {
+          next.direction = defaultDirection(next);
+        }
+        return next;
       });
       return { ...prev, runs };
     });
     setSelected(runId);
+    setDirty(true);
+  }
+
+  function flipDirection(runId: string) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const cur = run.direction ?? defaultDirection(run);
+        const next: 'forward' | 'backward' = cur === 'forward' ? 'backward' : 'forward';
+        return { ...run, direction: next };
+      });
+      return { ...prev, runs };
+    });
     setDirty(true);
   }
 
@@ -184,6 +208,11 @@ export default function EditorPage() {
                 {selectedRun.polyline.closed ? 'closed' : 'open'} ·{' '}
                 {selectedRun.electrodes?.length ?? 0} electrodes
               </p>
+              {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
+                <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
+                  Switch live arc ({selectedRun.direction ?? 'forward'})
+                </button>
+              )}
               {(selectedRun.electrodes?.length ?? 0) > 0 && (
                 <button type="button" className="btn-secondary" onClick={clearElectrodesOnSelected}>
                   Clear electrodes

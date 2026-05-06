@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun } from '../api';
+import { runArcs, indicesToD } from '../lib/runArcs';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -175,16 +176,32 @@ export default function EditorCanvas({
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
           {doc.runs.map((run) => {
             const selected = run.id === selectedRunId;
+            const arcs = runArcs(run);
+            const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
+            const inactiveD = arcs.inactive.length > 1
+              ? indicesToD(arcs.inactive, run.polyline.points, false)
+              : '';
             return (
-              <path
-                key={run.id}
-                d={polylineToD(run.polyline.points, run.polyline.closed)}
-                stroke={selected ? '#ff3b6b' : '#444'}
-                strokeWidth={(selected ? 1.5 : 0.6) / transform.k}
-                fill="none"
-                onClick={(e) => onRunClick(e, run)}
-                style={{ cursor: tool === 'electrode' ? 'crosshair' : 'pointer' }}
-              />
+              <g key={run.id}>
+                {inactiveD && (
+                  <path
+                    d={inactiveD}
+                    stroke="#aaa"
+                    strokeWidth={0.4 / transform.k}
+                    strokeDasharray={`${2 / transform.k} ${1.5 / transform.k}`}
+                    fill="none"
+                    pointerEvents="none"
+                  />
+                )}
+                <path
+                  d={liveD}
+                  stroke={selected ? '#ff3b6b' : '#222'}
+                  strokeWidth={(selected ? 1.6 : 0.8) / transform.k}
+                  fill="none"
+                  onClick={(e) => onRunClick(e, run)}
+                  style={{ cursor: tool === 'electrode' ? 'crosshair' : 'pointer' }}
+                />
+              </g>
             );
           })}
           {doc.runs.flatMap((run) =>
@@ -240,17 +257,6 @@ function ElectrodeMarker({
       style={{ cursor: 'pointer' }}
     />
   );
-}
-
-function polylineToD(points: [number, number][], closed: boolean): string {
-  if (points.length === 0) return '';
-  const parts: string[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const cmd = i === 0 ? 'M' : 'L';
-    parts.push(`${cmd}${points[i][0]} ${points[i][1]}`);
-  }
-  if (closed) parts.push('Z');
-  return parts.join(' ');
 }
 
 function nearestPointIndex(points: [number, number][], target: [number, number]): number {

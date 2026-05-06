@@ -3,10 +3,13 @@ package designdoc
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strconv"
 
 	"github.com/vlouvet/neonbench/internal/validate"
 )
+
+func sqrt(x float64) float64 { return math.Sqrt(x) }
 
 // FromSVG parses an SVG document and returns the structured design doc. Each
 // disjoint subpath becomes a Run with no electrodes assigned.
@@ -39,6 +42,10 @@ func FromSVG(svgData []byte, defaultDiameterMM float64) (*Doc, error) {
 // viewBox in mm-canonical coordinates, no nested transforms, one <path> per
 // run. This SVG is what gets sent to the validator, the print pipeline, and
 // the inline preview.
+//
+// Closed runs with exactly two electrodes are emitted as the LIVE arc only
+// (the half of the loop the tube physically exists on), per the run's
+// direction. Validation and PDF print therefore see only the real tube.
 func ToSVG(doc *Doc) []byte {
 	var buf bytes.Buffer
 	w, h := doc.ViewBoxMM[2], doc.ViewBoxMM[3]
@@ -58,15 +65,17 @@ func ToSVG(doc *Doc) []byte {
 		if len(run.Polyline.Points) < 2 {
 			continue
 		}
+		indices, closed := liveArcIndices(run)
 		buf.WriteString(`<path fill="black" fill-rule="evenodd" stroke="none" d="`)
-		for j, p := range run.Polyline.Points {
+		for j, idx := range indices {
 			cmd := "L"
 			if j == 0 {
 				cmd = "M"
 			}
+			p := run.Polyline.Points[idx]
 			fmt.Fprintf(&buf, "%s%s %s ", cmd, fmtFloat(p[0]), fmtFloat(p[1]))
 		}
-		if run.Polyline.Closed {
+		if closed {
 			buf.WriteByte('Z')
 		}
 		buf.WriteString(`"/>`)
@@ -74,6 +83,90 @@ func ToSVG(doc *Doc) []byte {
 	}
 	buf.WriteString(`</svg>`)
 	return buf.Bytes()
+}
+
+// liveArcIndices returns the polyline indices that make up the run's live
+// tube — i.e. the actual physical tube path. For closed runs with two
+// electrodes, the loop is split at the electrodes and only one arc is live;
+// the other half exists only as design intent. For everything else, the
+// whole polyline is live.
+func liveArcIndices(run Run) (indices []int, closed bool) {
+	n := len(run.Polyline.Points)
+	if n == 0 {
+		return nil, false
+	}
+	if !run.Polyline.Closed || len(run.Electrodes) != 2 {
+		out := make([]int, n)
+		for i := range out {
+			out[i] = i
+		}
+		return out, run.Polyline.Closed
+	}
+	a := run.Electrodes[0].PointIndex
+	b := run.Electrodes[1].PointIndex
+	if a < 0 || a >= n || b < 0 || b >= n {
+		// Defensive: invalid electrode indices fall back to whole loop.
+		out := make([]int, n)
+		for i := range out {
+			out[i] = i
+		}
+		return out, true
+	}
+	dir := run.Direction
+	if dir == "" {
+		dir = defaultDirection(run)
+	}
+	if dir == "backward" {
+		return arcBackward(a, b, n), false
+	}
+	return arcForward(a, b, n), false
+}
+
+func arcForward(a, b, n int) []int {
+	out := []int{a}
+	for i := (a + 1) % n; ; i = (i + 1) % n {
+		out = append(out, i)
+		if i == b {
+			break
+		}
+	}
+	return out
+}
+
+func arcBackward(a, b, n int) []int {
+	out := []int{a}
+	for i := (a - 1 + n) % n; ; i = (i - 1 + n) % n {
+		out = append(out, i)
+		if i == b {
+			break
+		}
+	}
+	return out
+}
+
+func defaultDirection(run Run) string {
+	if !run.Polyline.Closed || len(run.Electrodes) != 2 {
+		return "forward"
+	}
+	n := len(run.Polyline.Points)
+	a := run.Electrodes[0].PointIndex
+	b := run.Electrodes[1].PointIndex
+	fwdLen := arcLengthOf(arcForward(a, b, n), run.Polyline.Points)
+	bwdLen := arcLengthOf(arcBackward(a, b, n), run.Polyline.Points)
+	if bwdLen > fwdLen {
+		return "backward"
+	}
+	return "forward"
+}
+
+func arcLengthOf(indices []int, points [][2]float64) float64 {
+	var total float64
+	for i := 1; i < len(indices); i++ {
+		dx := points[indices[i]][0] - points[indices[i-1]][0]
+		dy := points[indices[i]][1] - points[indices[i-1]][1]
+		total += sqrt(dx*dx + dy*dy)
+	}
+	return total
 }
 
 // fmtFloat trims trailing zeros so the SVG isn't bloated by 14 decimals on

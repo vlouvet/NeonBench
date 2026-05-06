@@ -13,12 +13,19 @@ type Doc struct {
 // In Phase 2 v1 the geometry is held as a flattened polyline (not Beziers);
 // adequate for selection, pan/zoom, and electrode placement. Bezier-aware
 // editing is a later slice.
+//
+// Direction matters only for closed runs with two electrodes: it tells us
+// which of the two arcs around the loop is the live tube ("forward" walks
+// indices up from electrode[0] to electrode[1]; "backward" walks down).
+// For open polylines or runs with fewer than two electrodes, direction is
+// ignored.
 type Run struct {
 	ID             string      `json:"id"`
 	Polyline       Polyline    `json:"polyline"`
 	TubeDiameterMM float64     `json:"tube_diameter_mm,omitempty"`
 	Color          string      `json:"color,omitempty"`
 	Electrodes     []Electrode `json:"electrodes,omitempty"`
+	Direction      string      `json:"direction,omitempty"` // "forward" | "backward"
 }
 
 type Polyline struct {
