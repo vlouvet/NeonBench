@@ -2,11 +2,18 @@
 /dist/
 /web/dist/
 !/web/dist/.gitkeep
+/bin/
 
 # Go
 *.test
 *.out
 coverage.*
+
+# Stray test inputs left in the repo root (PNG/JPG/SVG dropped in for quick checks)
+/*.png
+/*.jpg
+/*.jpeg
+/*.svg
 
 # Node
 /web/node_modules/
