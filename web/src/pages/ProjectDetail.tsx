@@ -81,7 +81,17 @@ export default function ProjectDetail() {
       <p>
         <Link to="/">&larr; All projects</Link>
       </p>
-      <h1>{project.name}</h1>
+      <div className="row" style={{ alignItems: 'baseline', gap: '1rem' }}>
+        <h1>{project.name}</h1>
+        <a
+          href={api.exportBundleURL(projectId)}
+          className="btn-secondary"
+          download
+          title="Download a portable .neonbench archive of this project (all design versions, SVG + design doc + validation report, plus a manifest)"
+        >
+          Export bundle
+        </a>
+      </div>
       <p className="meta">
         Tube spec:{' '}
         {tubeSpec

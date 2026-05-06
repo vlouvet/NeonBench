@@ -181,7 +181,24 @@ func TestEditorPipelineFromOpenNeon(t *testing.T) {
 		}
 	}
 
-	// 9) Print PDF must render without error and start with %PDF-.
+	// 9a) Export bundle must produce a valid zip with manifest + history.
+	bundleResp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/export.neonbench")
+	if err != nil {
+		t.Fatalf("export.neonbench: %v", err)
+	}
+	bundleBytes, _ := io.ReadAll(bundleResp.Body)
+	bundleResp.Body.Close()
+	if bundleResp.StatusCode != 200 {
+		t.Fatalf("export.neonbench status %d: %s", bundleResp.StatusCode, bundleBytes)
+	}
+	if !bytes.HasPrefix(bundleBytes, []byte("PK")) {
+		t.Errorf("export.neonbench did not return a zip (first 2 bytes: %q)", bundleBytes[:min(2, len(bundleBytes))])
+	}
+	if len(bundleBytes) < 200 {
+		t.Errorf("export.neonbench unreasonably small: %d bytes", len(bundleBytes))
+	}
+
+	// 9b) Print PDF must render without error and start with %PDF-.
 	pdfResp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(newVersionID) + "/print.pdf")
 	if err != nil {
 		t.Fatalf("print.pdf: %v", err)

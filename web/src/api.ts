@@ -207,6 +207,7 @@ export const api = {
       body: JSON.stringify({ design_doc: doc }),
       signal,
     }),
+  exportBundleURL: (projectId: number) => `/api/projects/${projectId}/export.neonbench`,
   printPDFURL: (
     projectId: number,
     versionId: number,
