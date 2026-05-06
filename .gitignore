@@ -1,0 +1,25 @@
+# Build artifacts
+/dist/
+/web/dist/
+!/web/dist/.gitkeep
+
+# Go
+*.test
+*.out
+coverage.*
+
+# Node
+/web/node_modules/
+.npm
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local dev data (when running outside the per-OS app data dir)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
