@@ -29,6 +29,7 @@ type Run struct {
 	Blockouts      []Blockout   `json:"blockouts,omitempty"`
 	Annotations    []Annotation `json:"annotations,omitempty"`
 	Bends          []Bend       `json:"bends,omitempty"`
+	Notes          string       `json:"notes,omitempty"` // free-form: transformer specs, voltage, gas, anything else worth printing on the pattern
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.

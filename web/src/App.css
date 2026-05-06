@@ -592,6 +592,17 @@
 .diameter-picker input {
   width: 6rem;
 }
+.run-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.875rem;
+}
+.run-notes textarea {
+  font-family: inherit;
+  font-size: 0.875rem;
+  resize: vertical;
+}
 .hint-line {
   margin: 0;
   font-size: 0.75rem;

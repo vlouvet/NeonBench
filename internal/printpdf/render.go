@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/phpdave11/gofpdf"
@@ -393,6 +394,15 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 		pdf.Text(mx, y, title)
 		y += 5
 		pdf.SetFont("Helvetica", "", 9)
+		if note := strings.TrimSpace(run.Notes); note != "" {
+			pdf.SetFont("Helvetica", "I", 9)
+			for _, ln := range strings.Split(note, "\n") {
+				pdf.Text(mx+4, y, "    "+ln)
+				y += 4
+			}
+			pdf.SetFont("Helvetica", "", 9)
+			y += 1
+		}
 		if len(bends) == 0 {
 			pdf.Text(mx+4, y, "  (no bends auto-detected; smooth curves below 20°)")
 			y += 6

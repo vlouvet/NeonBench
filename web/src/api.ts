@@ -71,6 +71,7 @@ export type DesignRun = {
   blockouts?: Blockout[];
   annotations?: Annotation[];
   bends?: Bend[];
+  notes?: string;
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

@@ -400,6 +400,20 @@ export default function EditorPage() {
     }));
   }
 
+  function setRunNotes(runId: string, notes: string) {
+    editDoc((prev) => ({
+      ...prev,
+      runs: prev.runs.map((r) => {
+        if (r.id !== runId) return r;
+        if (notes.trim() === '') {
+          const { notes: _drop, ...rest } = r;
+          return rest;
+        }
+        return { ...r, notes };
+      }),
+    }));
+  }
+
   function setRunDiameter(runId: string, diameterMM: number | null) {
     editDoc((prev) => {
       const runs = prev.runs.map((run) => {
@@ -599,6 +613,15 @@ export default function EditorPage() {
               <p className="meta hint-line">
                 Editor-only override. Validation still uses the project tube spec.
               </p>
+              <label className="run-notes">
+                Notes
+                <textarea
+                  rows={3}
+                  value={selectedRun.notes ?? ''}
+                  placeholder="e.g. 15kV @ 60mA, GTO HV cable, argon+phosphor"
+                  onChange={(e) => setRunNotes(selectedRun.id, e.target.value)}
+                />
+              </label>
               {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
                 <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
                   Switch live arc ({selectedRun.direction ?? 'forward'})
