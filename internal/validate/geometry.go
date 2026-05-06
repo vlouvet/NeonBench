@@ -6,6 +6,8 @@ type Point struct {
 	X, Y float64
 }
 
+func dot(a, b Point) float64 { return a.X*b.X + a.Y*b.Y }
+
 func dist(a, b Point) float64 {
 	dx := a.X - b.X
 	dy := a.Y - b.Y
@@ -47,4 +49,33 @@ func (p *Polyline) Length() float64 {
 		total += dist(p.Points[len(p.Points)-1], p.Points[0])
 	}
 	return total
+}
+
+// tangentAt returns a unit-length tangent direction at sample j, using a
+// centered finite difference. Falls back to forward/backward at the ends.
+// For closed polylines, ends wrap.
+func tangentAt(points []Point, j int, closed bool) Point {
+	n := len(points)
+	if n < 2 {
+		return Point{1, 0}
+	}
+	var prev, next int
+	switch {
+	case closed:
+		prev = (j - 1 + n) % n
+		next = (j + 1) % n
+	case j == 0:
+		prev, next = 0, 1
+	case j == n-1:
+		prev, next = n-2, n-1
+	default:
+		prev, next = j-1, j+1
+	}
+	dx := points[next].X - points[prev].X
+	dy := points[next].Y - points[prev].Y
+	d := math.Hypot(dx, dy)
+	if d == 0 {
+		return Point{1, 0}
+	}
+	return Point{dx / d, dy / d}
 }

@@ -26,3 +26,7 @@ coverage.*
 
 # Neon trade reference PDFs (kept locally; rules extracted to docs/neon-rules/)
 /docs/**/*.pdf
+
+# Neon Techniques (Miller/Strattman 1997) — Kindle page screenshots (~190 PNGs)
+# Reference material kept locally; extracted rules go in docs/neon-rules/
+/docs/shot_*

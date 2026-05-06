@@ -41,7 +41,13 @@ export type DesignVersion = {
 };
 
 export type ValidationIssue = {
-  rule: 'min_bend_radius' | 'max_segment_length' | 'min_spacing' | 'unsupported_path';
+  rule:
+    | 'min_bend_radius'
+    | 'max_segment_length'
+    | 'min_spacing'
+    | 'crossing_needs_blockout'
+    | 'splice_recommended'
+    | 'unsupported_path';
   severity: 'error' | 'warning';
   message: string;
   x_mm?: number;

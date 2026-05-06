@@ -44,15 +44,20 @@ func resampleUniform(pl Polyline, step float64) Polyline {
 }
 
 // checkBendRadiusClustered clusters bend-radius issues so a single tight
-// curve doesn't fire 30 markers along its arc.
-func checkBendRadiusClustered(polylines []Polyline, limitMM float64) []Issue {
-	raw := checkBendRadius(polylines, limitMM)
-	return clusterIssues(raw, math.Max(limitMM*1.5, 5))
+// curve doesn't fire 30 markers along its arc. Hairpin double-backs (180°
+// structural turns flanked by parallel legs, named "DB" in Blazek's
+// alphabet books) are exempted from the bend-radius failure.
+func checkBendRadiusClustered(polylines []Polyline, limits Limits) []Issue {
+	raw := checkBendRadius(polylines, limits)
+	return clusterIssues(raw, math.Max(limits.MinBendRadiusMM*1.5, 5))
 }
 
 // checkBendRadius scans each polyline using a 3-point discrete circumradius
-// and emits an issue at any vertex where r < limit.
-func checkBendRadius(polylines []Polyline, limitMM float64) []Issue {
+// and emits an issue at any vertex where r < limit, EXCEPT where the
+// vertex is the apex of a structural double-back hairpin (legitimate
+// construction, not an error).
+func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
+	limitMM := limits.MinBendRadiusMM
 	if limitMM <= 0 {
 		return nil
 	}
@@ -82,6 +87,10 @@ func checkBendRadius(polylines []Polyline, limitMM float64) []Issue {
 				if skip {
 					continue
 				}
+				if isDoubleBackHairpin(pts, sampled.Closed, i, step, limits.DiameterMM) {
+					// Legitimate 180° construction; not a bend-radius failure.
+					continue
+				}
 				emitted[i] = true
 				issues = append(issues, Issue{
 					Rule:     RuleMinBendRadius,
@@ -96,8 +105,49 @@ func checkBendRadius(polylines []Polyline, limitMM float64) []Issue {
 	return issues
 }
 
+// isDoubleBackHairpin returns true if the vertex at idx is the apex of a
+// structural 180° hairpin: a tight U-turn flanked by two roughly parallel
+// legs that sit within a few tube diameters of each other. Recognized in
+// Blazek's pattern books as "DB" — a standard construction, not a
+// fabrication error.
+//
+// Heuristic: look K samples back and forward along the polyline. If those
+// points are physically close (within ~4× tube diameter) and have tangent
+// directions that are anti-parallel (cos < -0.7), the vertex is between
+// two opposing legs, i.e. a hairpin apex.
+func isDoubleBackHairpin(points []Point, closed bool, idx int, stepMM, tubeDiameterMM float64) bool {
+	if tubeDiameterMM <= 0 {
+		return false
+	}
+	// Look ahead by enough arc length that we're past the curve onto the
+	// straight legs. ~3× tube diameter is enough for typical hairpins.
+	lookMM := math.Max(3*tubeDiameterMM, 10)
+	K := int(math.Ceil(lookMM / stepMM))
+	n := len(points)
+	if n < 2*K+1 {
+		return false
+	}
+	prev, next := idx-K, idx+K
+	if !closed {
+		if prev < 0 || next >= n {
+			return false
+		}
+	} else {
+		prev = ((prev % n) + n) % n
+		next = next % n
+	}
+	if dist(points[prev], points[next]) > 4*tubeDiameterMM {
+		return false
+	}
+	tBefore := tangentAt(points, prev, closed)
+	tAfter := tangentAt(points, next, closed)
+	cos := dot(tBefore, tAfter)
+	return cos < -0.7
+}
+
 // checkSegmentLength flags each subpath whose total arc length exceeds limit.
-func checkSegmentLength(polylines []Polyline, limitMM float64) []Issue {
+func checkSegmentLength(polylines []Polyline, limits Limits) []Issue {
+	limitMM := limits.MaxSegmentLengthMM
 	if limitMM <= 0 {
 		return nil
 	}
@@ -156,18 +206,26 @@ type indexedPoint struct {
 // the same continuous, mostly-straight section of a polyline. Uses a
 // uniform spatial grid to keep the pairwise check ~O(N).
 //
-// Same-polyline filtering is the subtle part: we want to flag two parallel
-// sides of a "U" turn (genuinely two close tubes), but not two consecutive
-// samples on the same gently-curving run. We compare arc length to
-// straight-line distance: if arc/geom is small (< arcRatioThreshold), the
-// polyline didn't fold back, so the points are on the same tube section.
+// Same-polyline filtering: we compare arc length to straight-line distance;
+// if arc/geom is small (< arcRatioThreshold), the polyline didn't fold
+// back, so the points are on the same tube section.
+//
+// Crossing demotion: when two close points come from polylines whose local
+// tangents are roughly perpendicular (|cos θ| < 0.5, i.e. > 60° angle),
+// the tubes are crossing rather than running parallel. Crossings are
+// expected in real layouts (e.g. one tube flying over another) and are
+// hidden with block-out paint; we demote these to a warning under the
+// crossing_needs_blockout rule rather than a hard spacing error.
+//
 // After detection, nearby flags get clustered to keep the marker count sane.
-func checkSpacing(polylines []Polyline, limitMM float64) []Issue {
+func checkSpacing(polylines []Polyline, limits Limits) []Issue {
+	limitMM := limits.MinSpacingMM
 	if limitMM <= 0 {
 		return nil
 	}
 	const sampleStep = 1.0 // mm
 	const arcRatioThreshold = 3.0
+	const crossingCosThreshold = 0.5 // |cos θ| < 0.5 ⇒ angle > 60° ⇒ crossing
 
 	type plSamples struct {
 		points []Point
@@ -230,10 +288,21 @@ func checkSpacing(polylines []Polyline, limitMM float64) []Issue {
 							continue
 						}
 					}
+					tp := tangentAt(plSampled[p.pl].points, p.idx, plSampled[p.pl].closed)
+					tq := tangentAt(plSampled[q.pl].points, q.idx, plSampled[q.pl].closed)
+					cos := math.Abs(dot(tp, tq))
+					rule := RuleMinSpacing
+					sev := SeverityError
+					msg := fmt.Sprintf("tubes %.1fmm apart, below minimum spacing %.1fmm", d, limitMM)
+					if cos < crossingCosThreshold {
+						rule = RuleCrossingNeedsBlockout
+						sev = SeverityWarning
+						msg = fmt.Sprintf("tubes cross at %.0f° — needs block-out paint coverage", math.Acos(cos)*180/math.Pi)
+					}
 					issues = append(issues, Issue{
-						Rule:     RuleMinSpacing,
-						Severity: SeverityError,
-						Message:  fmt.Sprintf("tubes %.1fmm apart, below minimum spacing %.1fmm", d, limitMM),
+						Rule:     rule,
+						Severity: sev,
+						Message:  msg,
 						XMM:      (p.pt.X + q.pt.X) / 2,
 						YMM:      (p.pt.Y + q.pt.Y) / 2,
 					})
@@ -286,4 +355,25 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// checkCapHeight emits a warning when the design's bbox height exceeds the
+// threshold above which Miller (1935 p.125) recommends multi-blank
+// construction with internal welds. The bbox height is a proxy for "cap
+// height" — for designs with mixed-height content this overstates, but
+// for v1 it's a useful signal to surface.
+const spliceRecommendedHeightMM = 305.0 // 12 in (Miller p.125)
+
+func checkCapHeight(bbox [4]float64) []Issue {
+	h := bbox[3] - bbox[1]
+	if h < spliceRecommendedHeightMM {
+		return nil
+	}
+	return []Issue{{
+		Rule:     RuleSpliceRecommended,
+		Severity: SeverityWarning,
+		Message:  fmt.Sprintf("design height %.0fmm ≥ %.0fmm — Miller (1935 p.125) recommends multi-blank construction with internal welds for tall letters", h, spliceRecommendedHeightMM),
+		XMM:      (bbox[0] + bbox[2]) / 2,
+		YMM:      (bbox[1] + bbox[3]) / 2,
+	}}
 }

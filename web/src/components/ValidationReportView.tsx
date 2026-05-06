@@ -5,6 +5,8 @@ const RULE_LABELS: Record<ValidationIssue['rule'], string> = {
   min_bend_radius: 'Bend radius',
   max_segment_length: 'Segment length',
   min_spacing: 'Tube spacing',
+  crossing_needs_blockout: 'Crossings (block-out paint needed)',
+  splice_recommended: 'Multi-blank splice recommended',
   unsupported_path: 'Unsupported',
 };
 
@@ -24,6 +26,8 @@ export default function ValidationReportView({
     'min_bend_radius',
     'min_spacing',
     'max_segment_length',
+    'crossing_needs_blockout',
+    'splice_recommended',
     'unsupported_path',
   ];
 

@@ -13,10 +13,12 @@ const (
 	SeverityError   = "error"
 	SeverityWarning = "warning"
 
-	RuleMinBendRadius    = "min_bend_radius"
-	RuleMaxSegmentLength = "max_segment_length"
-	RuleMinSpacing       = "min_spacing"
-	RuleUnsupportedPath  = "unsupported_path"
+	RuleMinBendRadius        = "min_bend_radius"
+	RuleMaxSegmentLength     = "max_segment_length"
+	RuleMinSpacing           = "min_spacing"
+	RuleCrossingNeedsBlockout = "crossing_needs_blockout"
+	RuleSpliceRecommended    = "splice_recommended"
+	RuleUnsupportedPath      = "unsupported_path"
 )
 
 // Report summarizes the validation pass for a design version.
