@@ -325,14 +325,18 @@ export default function EditorCanvas({
                     pointerEvents="none"
                   />
                 )}
-                {/* Hit-target stroke: invisible, wide enough that clicks
-                    don't have to land on the 1px visible line. Layered
-                    under the visible strokes so the latter render on top. */}
+                {/* Hit-target stroke: invisible but pointer-events="stroke"
+                    so SVG hit-tests it regardless of paint. Wide enough
+                    that clicks don't have to land on the 1px visible line.
+                    Layered under the visible strokes so the latter render
+                    on top. */}
                 <path
                   d={liveD}
-                  stroke="transparent"
+                  stroke="black"
+                  strokeOpacity={0}
                   strokeWidth={hitWidth}
                   fill="none"
+                  pointerEvents="stroke"
                   onClick={(e) => onRunClick(e, run)}
                   style={{ cursor }}
                 />
