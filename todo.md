@@ -103,7 +103,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Vector editor
 
 - [x] Canvas: raw SVG + custom pointer/wheel pan-zoom (lighter than Konva/Fabric, good enough for this scope)
-- [ ] Node-level path editing: add/remove/move anchor points, adjust handles
+- [x] Node-level polyline editing: drag any vertex to reshape; shift-click to delete; electrode references shift correctly. Bezier-aware control-handle editing and segment-click insert are follow-ups.
 - [ ] Path operations: split, join, reverse direction, simplify
 - [ ] Snap to grid, snap to angle, snap to existing geometry
 - [ ] Multi-select, group, layers
@@ -115,16 +115,16 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [x] **Blockout marking:** click two points on a run to mark a stretch as block-out paint; rendered dashed in editor and emitted as `data-kind="blockout"` in the saved SVG (slice 3b — backend 866ffde, frontend this slice). Validation spacing exemption for blockouts still TODO.
 - [x] **Double-back hairpin annotation:** click-to-place at a hairpin apex; rides through the SVG as `data-doubleback-mm` and suppresses bend-radius errors within max(2D, 10mm) of the marked point. Geometric `isDoubleBackHairpin` heuristic still runs as auto-detect alongside.
 - [x] **Jumps / supports:** click-to-place point annotations on the live arc; rendered as half-arch (jump) and downward triangle (support) glyphs. Informational only — bend-list export is a follow-up.
-- [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run transformer/voltage notes still TODO.
+- [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run free-text Notes field captures transformer specs, voltage, gas, etc; prints italic on the bend-list page of the PDF.
 - [x] **Per-run color (gas/phosphor):** sidebar dropdown + run-row swatch; canvas tints the live arc with the selected gas color while blockouts stay neutral. PDF stays B&W on purpose (1:1 trace pattern). (slice 3c)
 - [x] **Per-run tube-diameter override:** sidebar number input on the selected run, round-trips through the design doc. Wired into validation: bend-radius limit scales linearly with the override per the wall-thinning derivation; spacing rule stays project-wide for now.
 - [x] **Bend planning (auto-suggest + visualize):** `computeBends` walks the live arc, finds vertices whose smoothed turn-angle exceeds 20°, clusters apex points within 2× tube diameter, and emits one bend per cluster with its arc-length offset, approximate radius, and turn angle. Selected-run bends render as small orange discs on the canvas and a sorted list in the sidebar. Manual add/remove and PDF export are follow-ups.
 - [x] **Live re-validation on edit:** 500ms debounce; in-flight requests are aborted on the next tick so the user only sees results for their latest state. Status badge in the editor header summarizes errors / warnings / total tube length.
-- [ ] Annotation layer: text notes, dimensions, color/gas labels per run
+- [x] Annotation layer: doc-level text labels (click → prompt → place) and dimension lines (click two points → measured line + label) render on canvas at fixed pixel size and survive into the print PDF. Per-run gas/color is the color picker; per-run free-text is Run.Notes.
 
 ### Phase 2 export
 
-- [ ] PDF includes: bend list, electrode positions, tube run summary, total tube length per run, gas/color callouts
+- [x] PDF includes: numbered bend apex markers per run on the tile pages, electrode markers (open circle + cross), blockout segments dashed, doc-level dimension lines + text labels, and a final "Bend list" page summarizing each run's geometry, color, diameter, notes, and bend table. Total-length-per-run and gas-color callouts are still future polish.
 - [ ] Export project as a `.neonbench` bundle (zip of SVG + metadata + version history) for sharing between installs
 
 ---
