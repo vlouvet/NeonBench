@@ -19,10 +19,8 @@ type vectorizeReq struct {
 	AssetID       int64   `json:"asset_id"`
 	TargetWidthMM float64 `json:"target_width_mm"`
 	Threshold     int     `json:"threshold,omitempty"` // 0..255
-	TurnPolicy    string  `json:"turn_policy,omitempty"`
-	Turdsize      int     `json:"turdsize,omitempty"`
-	Alphamax      float64 `json:"alphamax,omitempty"`
-	Opttolerance  float64 `json:"opttolerance,omitempty"`
+	SmoothingMM   float64 `json:"smoothing_mm,omitempty"`
+	MinSpurMM     float64 `json:"min_spur_mm,omitempty"`
 	Label         string  `json:"label,omitempty"`
 }
 
@@ -82,32 +80,28 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		if threshold == 0 {
 			threshold = 128
 		}
-		params := vectorize.DefaultPotraceParams(req.TargetWidthMM)
-		if req.TurnPolicy != "" {
-			params.TurnPolicy = req.TurnPolicy
+		// Pull the project tube spec for the spur-prune sizing — the
+		// skeleton-graph extractor uses the diameter to scale "what
+		// counts as a real branch vs a Zhang-Suen spur".
+		project, err := storage.GetProject(r.Context(), s.db, pid)
+		if err != nil {
+			writeStorageError(w, err)
+			return
 		}
-		if req.Turdsize > 0 {
-			params.Turdsize = req.Turdsize
-		}
-		if req.Alphamax > 0 {
-			params.Alphamax = req.Alphamax
-		}
-		if req.Opttolerance > 0 {
-			params.Opttolerance = req.Opttolerance
+		spec, err := storage.GetTubeSpec(r.Context(), s.db, project.TubeSpecID)
+		if err != nil {
+			writeStorageError(w, err)
+			return
 		}
 		res, err := vectorize.VectorizeRaster(r.Context(), vectorize.Request{
-			SourceBytes:   data,
-			TargetWidthMM: req.TargetWidthMM,
-			Threshold:     threshold,
-			Potrace:       params,
+			SourceBytes:       data,
+			TargetWidthMM:     req.TargetWidthMM,
+			Threshold:         threshold,
+			SmoothingMM:       req.SmoothingMM,
+			MinSpurMM:         req.MinSpurMM,
+			DefaultDiameterMM: spec.DiameterMM,
 		})
 		if err != nil {
-			if errors.Is(err, vectorize.ErrPotraceMissing) {
-				writeError(w, http.StatusFailedDependency,
-					"potrace not installed. Install via: brew install potrace (macOS), "+
-						"choco install potrace (Windows), or apt install potrace (Linux).")
-				return
-			}
 			writeError(w, http.StatusUnprocessableEntity, "vectorize failed: "+err.Error())
 			return
 		}

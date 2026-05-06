@@ -24,20 +24,12 @@ books — extracted in [`docs/neon-rules/`](docs/neon-rules/)).
 
 ## Install
 
-NeonBench is a single Go binary plus a system `potrace` install.
+NeonBench is a single Go binary, no external runtime needed.
 
 ```sh
-# 1. Install potrace (vectorization engine)
-brew install potrace                         # macOS
-choco install potrace                        # Windows
-sudo apt install potrace                     # Debian/Ubuntu
-
-# 2. Build the binary
 git clone https://github.com/vlouvet/neonbench
 cd neonbench
 go build -o bin/neonbench ./cmd/neonbench
-
-# 3. Run
 ./bin/neonbench
 ```
 
@@ -68,8 +60,12 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
 
 3. **Vectorize.** Set the target width in millimeters (this is the
    physical sign width — paths are in mm internally everywhere). Tweak
-   threshold and the potrace knobs (alphamax, opttolerance, turdsize,
-   turn policy) if needed. Each vectorize run creates a new
+   threshold and, under "Advanced centerline options", the smoothing
+   ε and minimum spur length if needed (both default to values derived
+   from the project tube diameter). The vectorizer extracts a 1-pixel
+   centerline through Zhang-Suen thinning + skeleton-graph walking,
+   so each letter stroke becomes a single tube path rather than two
+   parallel outlines. Each vectorize run creates a new
    `design_versions` row, so you can branch and compare.
 
 4. **Validate.** The validator runs automatically after vectorize. It
@@ -131,7 +127,7 @@ internal/
   server/             ← HTTP API: projects, assets, vectorize, design_versions, validate_doc, print, export
   storage/            ← modernc.org/sqlite + goose migrations
   validate/           ← polyline extraction, bend-radius/spacing/length rules
-  vectorize/          ← potrace wrapper
+  vectorize/          ← skeleton-graph centerline extraction (Zhang-Suen + graph walk + RDP)
 web/
   src/                ← React + TypeScript editor (no canvas library; raw SVG + custom pan/zoom)
   src/lib/docOps.ts   ← pure-function editor mutations (vitest-tested)
@@ -144,17 +140,20 @@ scripts/test.sh       ← runs Go tests + vitest
 
 ```sh
 ./scripts/test.sh         # full suite
-go test ./...             # Go tests only (skips integration if potrace missing)
+go test ./...             # Go tests only
 cd web && npm test        # editor unit tests (vitest)
 cd web && npm run test:watch
 ```
 
 The integration test
 (`internal/server/integration_test.go`) drives the full upload →
-vectorize → edit-every-tool → save → reload → print pipeline against a
-real potrace install using
-`internal/server/testdata/open_neon.png`. The vitest suite covers
-every editor mutation as a pure function.
+vectorize → edit-every-tool → save → reload → print pipeline using
+`internal/server/testdata/open_neon.png`. A separate vectorize-package
+integration test
+(`internal/vectorize/integration_test.go`) confirms the centerline
+extractor produces ~7 polylines on the same image with no junction-weld
+spacing false positives. The vitest suite covers every editor mutation
+as a pure function.
 
 ## Roadmap
 
@@ -167,4 +166,4 @@ chunks:
   with bloom, per-gas color, blockout opacity, electrode caps,
   orbit-camera preview UI.
 - **Cross-cutting:** Windows / Linux smoke testing, bundle import,
-  potrace pre-flight + binary bundling, send-to-printer dialog.
+  send-to-printer dialog.

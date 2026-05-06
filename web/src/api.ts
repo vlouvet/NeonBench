@@ -134,10 +134,8 @@ export type VectorizeRequest = {
   asset_id: number;
   target_width_mm: number;
   threshold?: number;
-  turn_policy?: string;
-  turdsize?: number;
-  alphamax?: number;
-  opttolerance?: number;
+  smoothing_mm?: number; // RDP epsilon override; blank → auto from tube diameter
+  min_spur_mm?: number;  // skeleton spur prune length; blank → auto from tube diameter
   label?: string;
 };
 

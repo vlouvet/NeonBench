@@ -1,8 +1,6 @@
 import { useState } from 'react';
 import { api, type DesignVersion, type VectorizeRequest } from '../api';
 
-const TURN_POLICIES = ['black', 'white', 'left', 'right', 'minority', 'majority', 'random'] as const;
-
 export default function VectorizePanel({
   projectId,
   assetId,
@@ -18,10 +16,8 @@ export default function VectorizePanel({
   const [threshold, setThreshold] = useState(128);
   const [label, setLabel] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [turnPolicy, setTurnPolicy] = useState<typeof TURN_POLICIES[number]>('minority');
-  const [turdsize, setTurdsize] = useState(2);
-  const [alphamax, setAlphamax] = useState(1.0);
-  const [opttolerance, setOpttolerance] = useState(0.2);
+  const [smoothingMM, setSmoothingMM] = useState<number | ''>('');
+  const [minSpurMM, setMinSpurMM] = useState<number | ''>('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,10 +33,8 @@ export default function VectorizePanel({
     if (!isSVG) {
       body.threshold = threshold;
       if (showAdvanced) {
-        body.turn_policy = turnPolicy;
-        body.turdsize = turdsize;
-        body.alphamax = alphamax;
-        body.opttolerance = opttolerance;
+        if (smoothingMM !== '' && smoothingMM > 0) body.smoothing_mm = smoothingMM;
+        if (minSpurMM !== '' && minSpurMM > 0) body.min_spur_mm = minSpurMM;
       }
     }
     try {
@@ -94,27 +88,37 @@ export default function VectorizePanel({
 
       {!isSVG && (
         <details open={showAdvanced} onToggle={(e) => setShowAdvanced((e.target as HTMLDetailsElement).open)}>
-          <summary>Advanced potrace options</summary>
+          <summary>Advanced centerline options</summary>
           <div className="vp-grid">
-            <label>
-              Turn policy
-              <select value={turnPolicy} onChange={(e) => setTurnPolicy(e.target.value as typeof TURN_POLICIES[number])}>
-                {TURN_POLICIES.map((p) => (
-                  <option key={p} value={p}>{p}</option>
-                ))}
-              </select>
+            <label title="Ramer-Douglas-Peucker tolerance in mm. Higher values smooth more aggressively (fewer vertices, more rounded corners). Blank uses an automatic value derived from the project tube diameter.">
+              Smoothing ε (mm)
+              <input
+                type="number"
+                step={0.1}
+                min={0}
+                max={5}
+                value={smoothingMM}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSmoothingMM(v === '' ? '' : Number(v));
+                }}
+                placeholder="auto"
+              />
             </label>
-            <label>
-              Turdsize (px)
-              <input type="number" min={0} max={1000} value={turdsize} onChange={(e) => setTurdsize(Number(e.target.value))} />
-            </label>
-            <label>
-              Alphamax
-              <input type="number" step={0.05} min={0} max={1.3334} value={alphamax} onChange={(e) => setAlphamax(Number(e.target.value))} />
-            </label>
-            <label>
-              Opttolerance
-              <input type="number" step={0.05} min={0} max={5} value={opttolerance} onChange={(e) => setOpttolerance(Number(e.target.value))} />
+            <label title="Minimum branch length to keep, in mm. Skeleton spurs shorter than this get pruned. Blank uses an automatic value of about 2× the project tube diameter.">
+              Min spur (mm)
+              <input
+                type="number"
+                step={0.5}
+                min={0}
+                max={50}
+                value={minSpurMM}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setMinSpurMM(v === '' ? '' : Number(v));
+                }}
+                placeholder="auto"
+              />
             </label>
           </div>
         </details>

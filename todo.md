@@ -43,13 +43,9 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ### Vectorization
 
-- [x] Shell out to system `potrace` binary (decided — quality > single-binary purity)
-- [ ] On first launch, detect `potrace` on PATH; if missing, show install instructions per OS — currently surfaces a 424 with install instructions only on first vectorize attempt; pre-flight check is a polish item
-- [ ] Setting to override `potrace` binary path (for non-standard installs)
-- [ ] Bundle `potrace` binary alongside the Go binary in release artifacts per OS
-- [x] Wrapper: input PBM via stdin, capture SVG on stdout
-- [x] Expose vectorize parameters: turn policy, alphamax, opttolerance, threshold, target_width_mm, label
-- [x] Normalize potrace output to mm-canonical viewBox — fell out of `internal/designdoc.ToSVG` (no nested transforms, mm-native coords)
+- [x] **Centerline extraction via skeleton-graph (replaces potrace).** Pipeline: Decode → Binarize → Zhang-Suen thin → classify (arc-count test) → merge thick junction clusters → walk graph into open + closed polylines → spur prune (iterate until stable) → mm conversion → Ramer-Douglas-Peucker simplify → emit SVG. Pure Go, no third-party deps. Produces one polyline per tube stroke (instead of potrace's outline pairs), so a 600mm "OPEN" with 12mm tube goes from 11+ outline-spacing errors to 0 spacing errors and ~7 polylines (one per stroke or letter loop). Validator gained a small junction-weld exemption so polylines meeting at a weld aren't flagged as "tubes 0mm apart".
+- [x] Vectorize parameters: target_width_mm, threshold, smoothing_mm (RDP ε override), min_spur_mm, label. Smoothing/spur default to values derived from the project tube diameter when blank.
+- [x] Normalize vectorize output to mm-canonical viewBox — emitted directly by the centerline pipeline; downstream validator/print/designdoc see identity-mapped paths.
 - [ ] Live before/after preview UI (currently just shows the result inline)
 
 ### Validation rules
@@ -83,7 +79,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [x] Project list / create modal with tube spec picker
 - [ ] Edit tube spec per project (currently set on create; mutation UI is a v1.x item)
 - [x] Project detail with file upload (click to upload; drag-drop is a v1.x polish item)
-- [x] Vectorize step with target width + threshold + advanced potrace params
+- [x] Vectorize step with target width + threshold + smoothing/spur sliders
 - [x] Validation results panel with grouped issue lists, severity colors, re-validate button
 - [x] Version history list with click-to-switch preview
 - [x] Print panel with paper picker + landscape toggle + download button

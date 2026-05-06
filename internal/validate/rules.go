@@ -256,6 +256,21 @@ type indexedPoint struct {
 	pt  Point
 }
 
+type plSampledShape struct {
+	points []Point
+	closed bool
+}
+
+// isOpenEndpoint reports whether the resampled index is at the start or
+// end of an OPEN polyline. Closed polylines have no endpoints (the loop
+// is continuous), so they're never welds.
+func isOpenEndpoint(s plSampledShape, idx int) bool {
+	if s.closed {
+		return false
+	}
+	return idx == 0 || idx == len(s.points)-1
+}
+
 // checkSpacing flags pairs of points closer than limitMM that don't lie on
 // the same continuous, mostly-straight section of a polyline. Uses a
 // uniform spatial grid to keep the pairwise check ~O(N).
@@ -281,16 +296,12 @@ func checkSpacing(polylines []Polyline, limits Limits) []Issue {
 	const arcRatioThreshold = 3.0
 	const crossingCosThreshold = 0.5 // |cos θ| < 0.5 ⇒ angle > 60° ⇒ crossing
 
-	type plSamples struct {
-		points []Point
-		closed bool
-	}
-	plSampled := make([]plSamples, len(polylines))
+	plSampled := make([]plSampledShape, len(polylines))
 
 	var pts []indexedPoint
 	for plIdx, pl := range polylines {
 		s := resampleUniform(pl, sampleStep)
-		plSampled[plIdx] = plSamples{points: s.Points, closed: s.Closed}
+		plSampled[plIdx] = plSampledShape{points: s.Points, closed: s.Closed}
 		for i, p := range s.Points {
 			pts = append(pts, indexedPoint{plIdx, i, p})
 		}
@@ -305,6 +316,61 @@ func checkSpacing(polylines []Polyline, limits Limits) []Issue {
 	for i, p := range pts {
 		k := key{int(math.Floor(p.pt.X / cell)), int(math.Floor(p.pt.Y / cell))}
 		grid[k] = append(grid[k], i)
+	}
+
+	// Junction zones: any open-polyline endpoint that sits close (≤ 3mm)
+	// to a different polyline marks a tube weld. Pairs of points that
+	// both fall inside any junction zone (within ~max(tube diameter, 8mm)
+	// of the endpoint) are physical neighbors of the same weld, not
+	// "two parallel tubes" — skip them in the spacing check.
+	type junctionZone struct {
+		x, y, r2 float64
+	}
+	// Tubes diverging from a weld stay below 18mm spacing for some
+	// distance after the junction; exempt 2.5× the tube diameter so a
+	// small fan-out from a junction isn't flagged as "tubes too close".
+	weldRadius := math.Max(limits.DiameterMM*2.5, limits.MinSpacingMM)
+	weldRadius2 := weldRadius * weldRadius
+	var zones []junctionZone
+	for plIdx, s := range plSampled {
+		if s.closed || len(s.points) == 0 {
+			continue
+		}
+		for _, idx := range []int{0, len(s.points) - 1} {
+			ep := s.points[idx]
+			// Find any sample on a DIFFERENT polyline within 3mm.
+			gx := int(math.Floor(ep.X / cell))
+			gy := int(math.Floor(ep.Y / cell))
+			welded := false
+			for dx := -1; dx <= 1 && !welded; dx++ {
+				for dy := -1; dy <= 1 && !welded; dy++ {
+					for _, j := range grid[key{gx + dx, gy + dy}] {
+						q := pts[j]
+						if q.pl == plIdx {
+							continue
+						}
+						if dist(ep, q.pt) <= 3.0 {
+							welded = true
+							break
+						}
+					}
+				}
+			}
+			if welded {
+				zones = append(zones, junctionZone{ep.X, ep.Y, weldRadius2})
+			}
+		}
+	}
+
+	inJunctionZone := func(p Point) bool {
+		for _, z := range zones {
+			dx := p.X - z.x
+			dy := p.Y - z.y
+			if dx*dx+dy*dy <= z.r2 {
+				return true
+			}
+		}
+		return false
 	}
 
 	arcLengthSame := func(plIdx, i, j int) float64 {
@@ -341,6 +407,11 @@ func checkSpacing(polylines []Polyline, limits Limits) []Issue {
 						if d < 1e-6 || arc/d < arcRatioThreshold {
 							continue
 						}
+					} else if inJunctionZone(p.pt) && inJunctionZone(q.pt) {
+						// Both samples fall inside a tube weld at a
+						// junction. Adjacent tube ends meeting at a weld
+						// aren't "two parallel tubes 0mm apart".
+						continue
 					}
 					tp := tangentAt(plSampled[p.pl].points, p.idx, plSampled[p.pl].closed)
 					tq := tangentAt(plSampled[q.pl].points, q.idx, plSampled[q.pl].closed)

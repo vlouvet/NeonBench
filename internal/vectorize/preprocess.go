@@ -25,29 +25,3 @@ func DecodeImage(data []byte) (*image.Gray, error) {
 	draw.Draw(gray, bounds, src, bounds.Min, draw.Over)
 	return gray, nil
 }
-
-// EncodePBM converts a Gray image to a PBM P4 (binary) bitmap, with pixels
-// darker than `threshold` (0..255) marked as black (the bit value potrace traces).
-func EncodePBM(gray *image.Gray, threshold uint8) []byte {
-	bounds := gray.Bounds()
-	w, h := bounds.Dx(), bounds.Dy()
-	rowBytes := (w + 7) / 8
-
-	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "P4\n%d %d\n", w, h)
-
-	row := make([]byte, rowBytes)
-	for y := 0; y < h; y++ {
-		for i := range row {
-			row[i] = 0
-		}
-		for x := 0; x < w; x++ {
-			lum := gray.GrayAt(bounds.Min.X+x, bounds.Min.Y+y).Y
-			if lum < threshold {
-				row[x/8] |= 1 << (7 - uint(x%8))
-			}
-		}
-		buf.Write(row)
-	}
-	return buf.Bytes()
-}
