@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { api, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
+import { api, parseReport, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
 import VectorizePanel from '../components/VectorizePanel';
+import ValidationReportView from '../components/ValidationReportView';
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -13,6 +14,7 @@ export default function ProjectDetail() {
   const [latest, setLatest] = useState<DesignVersion | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [revalidating, setRevalidating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -144,6 +146,23 @@ export default function ProjectDetail() {
             className="svg-preview"
             dangerouslySetInnerHTML={{ __html: latest.svg_data }}
           />
+          {parseReport(latest) && (
+            <ValidationReportView
+              report={parseReport(latest)!}
+              revalidating={revalidating}
+              onRevalidate={async () => {
+                setRevalidating(true);
+                try {
+                  const updated = await api.revalidate(projectId, latest.id);
+                  setLatest(updated);
+                } catch (e) {
+                  setError((e as Error).message);
+                } finally {
+                  setRevalidating(false);
+                }
+              }}
+            />
+          )}
         </>
       )}
 

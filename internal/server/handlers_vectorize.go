@@ -1,13 +1,16 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	"github.com/vlouvet/neonbench/internal/storage"
+	"github.com/vlouvet/neonbench/internal/validate"
 	"github.com/vlouvet/neonbench/internal/vectorize"
 )
 
@@ -116,16 +119,82 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	reportJSON := s.runValidation(r, pid, svg)
+
 	dv, err := storage.CreateDesignVersion(r.Context(), s.db, storage.CreateDesignVersionParams{
-		ProjectID: pid,
-		Label:     req.Label,
-		SVGData:   string(svg),
+		ProjectID:            pid,
+		Label:                req.Label,
+		SVGData:              string(svg),
+		ValidationReportJSON: reportJSON,
 	})
 	if err != nil {
 		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, dv)
+}
+
+// runValidation loads the project's tube spec, validates the SVG, and
+// returns the report as JSON. Errors are logged but not surfaced — a missing
+// report on a design version is non-fatal (the user can re-run validation).
+func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte) string {
+	project, err := storage.GetProject(r.Context(), s.db, projectID)
+	if err != nil {
+		slog.Warn("validate: load project", "err", err)
+		return ""
+	}
+	spec, err := storage.GetTubeSpec(r.Context(), s.db, project.TubeSpecID)
+	if err != nil {
+		slog.Warn("validate: load tube spec", "err", err)
+		return ""
+	}
+	report, err := validate.ValidateSVG(svg, validate.Limits{
+		DiameterMM:         spec.DiameterMM,
+		MinBendRadiusMM:    spec.MinBendRadiusMM,
+		MaxSegmentLengthMM: spec.MaxSegmentLengthMM,
+		MinSpacingMM:       spec.MinSpacingMM,
+	})
+	if err != nil {
+		slog.Warn("validate: run", "err", err)
+		return ""
+	}
+	b, err := json.Marshal(report)
+	if err != nil {
+		slog.Warn("validate: marshal report", "err", err)
+		return ""
+	}
+	return string(b)
+}
+
+func (s *apiServer) handleRevalidate(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	vid, ok := pathID(w, r, "vid")
+	if !ok {
+		return
+	}
+	v, err := storage.GetDesignVersion(r.Context(), s.db, vid)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if v.ProjectID != pid {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	reportJSON := s.runValidation(r, pid, []byte(v.SVGData))
+	if reportJSON == "" {
+		writeError(w, http.StatusInternalServerError, "validation failed; see server logs")
+		return
+	}
+	updated, err := storage.UpdateDesignVersionReport(r.Context(), s.db, vid, reportJSON)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *apiServer) handleListDesignVersions(w http.ResponseWriter, r *http.Request) {

@@ -100,6 +100,22 @@ func ListDesignVersions(ctx context.Context, db *sql.DB, projectID int64) ([]Des
 	return out, rows.Err()
 }
 
+// UpdateDesignVersionReport replaces the validation_report_json for a
+// version. Used when re-validating a design after the tube spec changed.
+func UpdateDesignVersionReport(ctx context.Context, db *sql.DB, id int64, reportJSON string) (DesignVersion, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE design_versions SET validation_report_json = NULLIF(?, '') WHERE id = ?`,
+		reportJSON, id)
+	if err != nil {
+		return DesignVersion{}, fmt.Errorf("update design_version report: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return DesignVersion{}, ErrNotFound
+	}
+	return GetDesignVersion(ctx, db, id)
+}
+
 // LatestDesignVersion returns the most recent version for a project, or
 // ErrNotFound if none exist.
 func LatestDesignVersion(ctx context.Context, db *sql.DB, projectID int64) (DesignVersion, error) {

@@ -40,6 +40,31 @@ export type DesignVersion = {
   created_at: string;
 };
 
+export type ValidationIssue = {
+  rule: 'min_bend_radius' | 'max_segment_length' | 'min_spacing' | 'unsupported_path';
+  severity: 'error' | 'warning';
+  message: string;
+  x_mm?: number;
+  y_mm?: number;
+};
+
+export type ValidationReport = {
+  issues: ValidationIssue[];
+  tube_runs: number;
+  total_length_mm: number;
+  bounding_box_mm: [number, number, number, number];
+  generated_at: string;
+};
+
+export function parseReport(dv: DesignVersion | null | undefined): ValidationReport | null {
+  if (!dv?.validation_report_json) return null;
+  try {
+    return JSON.parse(dv.validation_report_json) as ValidationReport;
+  } catch {
+    return null;
+  }
+}
+
 export type VectorizeRequest = {
   asset_id: number;
   target_width_mm: number;
@@ -97,4 +122,8 @@ export const api = {
     req<DesignVersion | null>(`/api/projects/${projectId}/design_versions/latest`),
   getDesignVersion: (projectId: number, versionId: number) =>
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}`),
+  revalidate: (projectId: number, versionId: number) =>
+    req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}/validate`, {
+      method: 'POST',
+    }),
 };
