@@ -132,4 +132,24 @@ export const api = {
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}/validate`, {
       method: 'POST',
     }),
+  printPDFURL: (
+    projectId: number,
+    versionId: number,
+    opts: { paper?: string; landscape?: boolean } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.paper) params.set('paper', opts.paper);
+    if (opts.landscape) params.set('landscape', '1');
+    const qs = params.toString();
+    return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
+  },
 };
+
+export const PAPER_OPTIONS = [
+  { value: 'letter', label: 'US Letter (8.5 × 11 in)' },
+  { value: 'legal', label: 'US Legal (8.5 × 14 in)' },
+  { value: 'tabloid', label: 'US Tabloid (11 × 17 in)' },
+  { value: 'a4', label: 'A4 (210 × 297 mm)' },
+  { value: 'a3', label: 'A3 (297 × 420 mm)' },
+  { value: 'a2', label: 'A2 (420 × 594 mm)' },
+] as const;

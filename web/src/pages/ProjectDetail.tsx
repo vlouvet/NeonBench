@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api, parseReport, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
 import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
+import PrintPanel from '../components/PrintPanel';
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -163,6 +164,11 @@ export default function ProjectDetail() {
               }}
             />
           )}
+          <PrintPanel
+            projectId={projectId}
+            versionId={latest.id}
+            report={parseReport(latest)}
+          />
         </>
       )}
 

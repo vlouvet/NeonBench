@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// ExtractMMPolylines parses an SVG document and returns all path geometry as
+// flattened polylines in millimeter coordinates. Exported for use by sibling
+// packages (e.g. printpdf) that need the same SVG → mm pipeline.
+func ExtractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error) {
+	return extractMMPolylines(svgData)
+}
+
 // extractMMPolylines parses an SVG document and returns all path geometry as
 // flattened polylines in millimeter coordinates. issues collects any
 // non-fatal warnings (unsupported commands, missing dimensions).
