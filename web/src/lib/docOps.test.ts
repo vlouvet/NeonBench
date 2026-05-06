@@ -206,6 +206,73 @@ describe('label/dimension ops', () => {
   });
 });
 
+describe('path-op simplify', () => {
+  it('drops collinear vertices below epsilon', () => {
+    // Long straight line with a single bump: simplify should keep ends + bump.
+    const pts: [number, number][] = [
+      [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 5], [6, 0], [7, 0], [8, 0], [9, 0],
+    ];
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [{ id: 'run-1', polyline: { points: pts, closed: false } }],
+    };
+    const next = ops.simplifyRun(doc, 'run-1', 0.5);
+    expect(next.runs[0].polyline.points.length).toBeLessThan(pts.length);
+    // Endpoints + bump apex must survive.
+    expect(next.runs[0].polyline.points[0]).toEqual([0, 0]);
+    expect(next.runs[0].polyline.points.at(-1)).toEqual([9, 0]);
+    expect(next.runs[0].polyline.points.some((p) => p[0] === 5 && p[1] === 5)).toBe(true);
+  });
+
+  it('preserves electrode positions through the index remap', () => {
+    const pts: [number, number][] = [
+      [0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [5, 5], [6, 0], [7, 0], [8, 0], [9, 0],
+    ];
+    let doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [{ id: 'run-1', polyline: { points: pts, closed: false }, electrodes: [{ point_index: 5 }] }],
+    };
+    doc = ops.simplifyRun(doc, 'run-1', 0.5);
+    const r = doc.runs[0];
+    const ePoint = r.polyline.points[r.electrodes![0].point_index];
+    expect(ePoint).toEqual([5, 5]);
+  });
+
+  it('no-op when epsilon <= 0', () => {
+    const pts: [number, number][] = [[0, 0], [1, 1], [2, 2], [3, 3]];
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 5, 5],
+      runs: [{ id: 'run-1', polyline: { points: pts, closed: false } }],
+    };
+    const next = ops.simplifyRun(doc, 'run-1', 0);
+    expect(next).toBe(doc);
+  });
+});
+
+describe('path-op reverse', () => {
+  it('reverses point order and flips electrode anchors', () => {
+    let doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 4 }],
+        },
+      ],
+    };
+    doc = ops.reverseRun(doc, 'run-1');
+    expect(doc.runs[0].polyline.points).toEqual([[4, 0], [3, 0], [2, 0], [1, 0], [0, 0]]);
+    // Electrodes still point at the same physical [0,0] and [4,0] points.
+    const flip = doc.runs[0].electrodes!.map((e) => doc.runs[0].polyline.points[e.point_index]);
+    expect(flip).toEqual(expect.arrayContaining([[0, 0], [4, 0]]));
+  });
+});
+
 describe('vertex ops', () => {
   it('moveVertex updates the indexed point', () => {
     const doc = ops.moveVertex(makeDoc(), 'run-1', 0, 1.5, 1.5);

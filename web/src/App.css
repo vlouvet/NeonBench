@@ -603,6 +603,20 @@
   font-size: 0.875rem;
   resize: vertical;
 }
+.path-ops-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px dashed var(--border);
+}
+.path-ops-buttons {
+  display: flex;
+  gap: 0.25rem;
+}
+.path-ops-buttons .btn-secondary {
+  flex: 1;
+}
 .hint-line {
   margin: 0;
   font-size: 0.75rem;

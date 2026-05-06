@@ -316,6 +316,16 @@ export default function EditorPage() {
     editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
   }
 
+  function simplifySelected(epsilonMM: number) {
+    if (!selected) return;
+    editDoc((prev) => ops.simplifyRun(prev, selected, epsilonMM));
+  }
+
+  function reverseSelected() {
+    if (!selected) return;
+    editDoc((prev) => ops.reverseRun(prev, selected));
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -535,6 +545,11 @@ export default function EditorPage() {
                   onChange={(e) => setRunNotes(selectedRun.id, e.target.value)}
                 />
               </label>
+              <PathOpsRow
+                onSimplify={simplifySelected}
+                onReverse={reverseSelected}
+                pointCount={selectedRun.polyline.points.length}
+              />
               {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
                 <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
                   Switch live arc ({selectedRun.direction ?? 'forward'})
@@ -650,6 +665,40 @@ export default function EditorPage() {
         </aside>
       </div>
     </section>
+  );
+}
+
+function PathOpsRow({
+  onSimplify,
+  onReverse,
+  pointCount,
+}: {
+  onSimplify: (epsilonMM: number) => void;
+  onReverse: () => void;
+  pointCount: number;
+}) {
+  const [eps, setEps] = useState(0.5);
+  return (
+    <div className="path-ops-row">
+      <label className="diameter-picker">
+        Simplify ε (mm)
+        <input
+          type="number"
+          step="0.1"
+          min="0"
+          value={eps}
+          onChange={(e) => setEps(Number(e.target.value))}
+        />
+      </label>
+      <div className="path-ops-buttons">
+        <button type="button" className="btn-secondary" onClick={() => onSimplify(eps)} title={`Run Douglas-Peucker on this run's polyline (${pointCount} pts) with ε = ${eps}mm. Higher ε = fewer vertices.`}>
+          Simplify
+        </button>
+        <button type="button" className="btn-secondary" onClick={onReverse} title="Reverse this run's polyline order. Flips electrode anchors so they keep pointing at the same physical points.">
+          Reverse
+        </button>
+      </div>
+    </div>
   );
 }
 
