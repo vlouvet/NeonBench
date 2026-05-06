@@ -23,3 +23,6 @@ coverage.*
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Neon trade reference PDFs (~84MB, kept locally; rules extracted to docs/neon-rules/)
+/docs/*.pdf
