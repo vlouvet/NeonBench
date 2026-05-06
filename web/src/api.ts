@@ -47,6 +47,11 @@ export type DesignDoc = {
   runs: DesignRun[];
 };
 
+export type Blockout = {
+  start_live_index: number;
+  end_live_index: number;
+};
+
 export type DesignRun = {
   id: string;
   polyline: { points: [number, number][]; closed: boolean };
@@ -54,6 +59,7 @@ export type DesignRun = {
   color?: string;
   electrodes?: { point_index: number }[];
   direction?: 'forward' | 'backward';
+  blockouts?: Blockout[];
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

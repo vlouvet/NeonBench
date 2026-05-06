@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun } from '../api';
-import { runArcs, indicesToD } from '../lib/runArcs';
+import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 
 type Transform = { tx: number; ty: number; k: number };
 
-export type EditorTool = 'select' | 'electrode';
+export type EditorTool = 'select' | 'electrode' | 'blockout';
+
+type StagedBlockout = { runId: string; liveIndex: number };
 
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 200;
@@ -16,6 +18,7 @@ export default function EditorCanvas({
   onSelectRun,
   onPlaceElectrode,
   onDeleteElectrode,
+  onPlaceBlockout,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -23,11 +26,19 @@ export default function EditorCanvas({
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
+  onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
+  const [staged, setStaged] = useState<StagedBlockout | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
+
+  // Drop the staged blockout when leaving blockout mode so a stale start
+  // doesn't surprise the user when they come back later.
+  useEffect(() => {
+    if (tool !== 'blockout') setStaged(null);
+  }, [tool]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -134,6 +145,23 @@ export default function EditorCanvas({
       onPlaceElectrode(run.id, idx);
       return;
     }
+    if (tool === 'blockout') {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const arcs = runArcs(run);
+      if (arcs.live.length < 2) return;
+      const liveIdx = nearestLiveArcIndex(arcs.live, run.polyline.points, world);
+      // Clicking a different run resets the staged start onto the new run.
+      if (!staged || staged.runId !== run.id) {
+        setStaged({ runId: run.id, liveIndex: liveIdx });
+        onSelectRun(run.id);
+        return;
+      }
+      // Same run, second click → commit.
+      onPlaceBlockout(run.id, staged.liveIndex, liveIdx);
+      setStaged(null);
+      return;
+    }
     onSelectRun(run.id);
   }
 
@@ -177,10 +205,14 @@ export default function EditorCanvas({
           {doc.runs.map((run) => {
             const selected = run.id === selectedRunId;
             const arcs = runArcs(run);
-            const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
             const inactiveD = arcs.inactive.length > 1
               ? indicesToD(arcs.inactive, run.polyline.points, false)
               : '';
+            const segs = blockoutSegments(arcs.live, run.blockouts, arcs.liveClosed);
+            const liveStroke = selected ? '#ff3b6b' : '#222';
+            const liveWidth = (selected ? 1.6 : 0.8) / transform.k;
+            const cursor =
+              tool === 'electrode' || tool === 'blockout' ? 'crosshair' : 'pointer';
             return (
               <g key={run.id}>
                 {inactiveD && (
@@ -193,17 +225,61 @@ export default function EditorCanvas({
                     pointerEvents="none"
                   />
                 )}
-                <path
-                  d={liveD}
-                  stroke={selected ? '#ff3b6b' : '#222'}
-                  strokeWidth={(selected ? 1.6 : 0.8) / transform.k}
-                  fill="none"
-                  onClick={(e) => onRunClick(e, run)}
-                  style={{ cursor: tool === 'electrode' ? 'crosshair' : 'pointer' }}
-                />
+                {segs.map((seg, si) => {
+                  const d = indicesToD(
+                    seg.liveIndices,
+                    run.polyline.points,
+                    arcs.liveClosed && segs.length === 1 && !seg.isBlockout,
+                  );
+                  if (seg.isBlockout) {
+                    return (
+                      <path
+                        key={`bo-${si}`}
+                        d={d}
+                        stroke={liveStroke}
+                        strokeWidth={liveWidth}
+                        strokeDasharray={`${1.6 / transform.k} ${1 / transform.k}`}
+                        fill="none"
+                        onClick={(e) => onRunClick(e, run)}
+                        style={{ cursor }}
+                      />
+                    );
+                  }
+                  return (
+                    <path
+                      key={`alive-${si}`}
+                      d={d}
+                      stroke={liveStroke}
+                      strokeWidth={liveWidth}
+                      fill="none"
+                      onClick={(e) => onRunClick(e, run)}
+                      style={{ cursor }}
+                    />
+                  );
+                })}
               </g>
             );
           })}
+          {staged && (() => {
+            const run = doc.runs.find((r) => r.id === staged.runId);
+            if (!run) return null;
+            const arcs = runArcs(run);
+            const polyIdx = arcs.live[staged.liveIndex];
+            const p = polyIdx != null ? run.polyline.points[polyIdx] : null;
+            if (!p) return null;
+            const r = (6 / transform.k);
+            return (
+              <circle
+                cx={p[0]}
+                cy={p[1]}
+                r={r}
+                fill="none"
+                stroke="#ff8a00"
+                strokeWidth={2 / transform.k}
+                pointerEvents="none"
+              />
+            );
+          })()}
           {doc.runs.flatMap((run) =>
             (run.electrodes ?? []).map((e, ei) => {
               const p = run.polyline.points[e.point_index];
@@ -228,6 +304,11 @@ export default function EditorCanvas({
         </span>
         {tool === 'electrode' && (
           <span className="meta hint">Click on a path to place an electrode</span>
+        )}
+        {tool === 'blockout' && (
+          <span className="meta hint">
+            {staged ? 'Click again on the same run to set the end' : 'Click on a path to set the blockout start'}
+          </span>
         )}
       </div>
     </div>

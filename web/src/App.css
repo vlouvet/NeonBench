@@ -519,8 +519,35 @@
   border-color: var(--accent);
 }
 
-.editor-canvas.tool-electrode svg {
+.editor-canvas.tool-electrode svg,
+.editor-canvas.tool-blockout svg {
   cursor: crosshair;
+}
+
+.blockout-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.blockout-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.25rem;
+}
+.btn-link:hover {
+  text-decoration: underline;
 }
 
 .dirty-dot {

@@ -118,6 +118,49 @@ export default function EditorPage() {
     setDirty(true);
   }
 
+  function placeBlockout(runId: string, startLiveIndex: number, endLiveIndex: number) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        // Normalize so start <= end for non-wrapping intent. (For closed runs
+        // the renderer will still walk the live arc the right way around.)
+        const s = Math.min(startLiveIndex, endLiveIndex);
+        const e = Math.max(startLiveIndex, endLiveIndex);
+        const blockouts = [...(run.blockouts ?? []), { start_live_index: s, end_live_index: e }];
+        return { ...run, blockouts };
+      });
+      return { ...prev, runs };
+    });
+    setSelected(runId);
+    setDirty(true);
+  }
+
+  function deleteBlockout(runId: string, blockoutIndex: number) {
+    setDoc((prev) => {
+      if (!prev) return prev;
+      const runs = prev.runs.map((run) => {
+        if (run.id !== runId) return run;
+        const blockouts = (run.blockouts ?? []).filter((_, i) => i !== blockoutIndex);
+        return { ...run, blockouts };
+      });
+      return { ...prev, runs };
+    });
+    setDirty(true);
+  }
+
+  function clearBlockoutsOnSelected() {
+    if (!selected) return;
+    setDoc((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        runs: prev.runs.map((r) => (r.id === selected ? { ...r, blockouts: [] } : r)),
+      };
+    });
+    setDirty(true);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -166,6 +209,12 @@ export default function EditorPage() {
               onClick={() => setTool('electrode')}
               title="Place electrode (click on a path)"
             >Place electrode</button>
+            <button
+              type="button"
+              className={tool === 'blockout' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('blockout')}
+              title="Mark blockout (click two points on the same run)"
+            >Mark blockout</button>
           </div>
         </div>
         <p className="meta">
@@ -180,6 +229,7 @@ export default function EditorPage() {
           onSelectRun={setSelected}
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
+          onPlaceBlockout={placeBlockout}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>
@@ -217,6 +267,26 @@ export default function EditorPage() {
                 <button type="button" className="btn-secondary" onClick={clearElectrodesOnSelected}>
                   Clear electrodes
                 </button>
+              )}
+              {(selectedRun.blockouts?.length ?? 0) > 0 && (
+                <>
+                  <h5 className="meta">Blockouts</h5>
+                  <ul className="blockout-list">
+                    {selectedRun.blockouts!.map((b, bi) => (
+                      <li key={bi}>
+                        <span className="meta">[{b.start_live_index}, {b.end_live_index}]</span>
+                        <button
+                          type="button"
+                          className="btn-link"
+                          onClick={() => deleteBlockout(selectedRun.id, bi)}
+                        >Remove</button>
+                      </li>
+                    ))}
+                  </ul>
+                  <button type="button" className="btn-secondary" onClick={clearBlockoutsOnSelected}>
+                    Clear blockouts
+                  </button>
+                </>
               )}
             </div>
           )}

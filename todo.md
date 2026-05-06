@@ -28,11 +28,11 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ### Project model
 
-- [ ] `projects` table: id, name, created_at, updated_at, tube_spec_id, units
-- [ ] `tube_specs` table: id, name, diameter_mm, min_bend_radius_mm, max_segment_length_mm, min_spacing_mm
-- [ ] Seed 3–5 default tube specs (common diameters: 8mm, 10mm, 12mm, 15mm)
-- [ ] `assets` table: project_id, kind (source_image | vector | print_output), blob/path, mime
-- [ ] `design_versions` table: project_id, version_no, label, svg_data, validation_report_json, created_at — **enables cross-session undo & named versions** (key gap vs NeonWizard)
+- [x] `projects` table: id, name, created_at, updated_at, tube_spec_id, units
+- [x] `tube_specs` table: id, name, diameter_mm, min_bend_radius_mm, max_segment_length_mm, min_spacing_mm
+- [x] Seed 3–5 default tube specs (common diameters: 8mm, 10mm, 12mm, 15mm)
+- [x] `assets` table: project_id, kind (source_image | vector | print_output), blob/path, mime
+- [x] `design_versions` table: project_id, version_no, label, svg_data, design_doc_json, validation_report_json, created_at — **enables cross-session undo & named versions** (key gap vs NeonWizard)
 
 ### Image input
 
@@ -49,7 +49,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [ ] Bundle `potrace` binary alongside the Go binary in release artifacts per OS
 - [x] Wrapper: input PBM via stdin, capture SVG on stdout
 - [x] Expose vectorize parameters: turn policy, alphamax, opttolerance, threshold, target_width_mm, label
-- [ ] Normalize potrace output to mm-canonical viewBox (currently keeps potrace's pt-units viewBox; bake transform into path coords) — needed for SVG marker overlay (Phase 2 prereq)
+- [x] Normalize potrace output to mm-canonical viewBox — fell out of `internal/designdoc.ToSVG` (no nested transforms, mm-native coords)
 - [ ] Live before/after preview UI (currently just shows the result inline)
 
 ### Validation rules
@@ -102,19 +102,22 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ### Vector editor
 
-- [ ] Choose canvas lib: **Konva** or **Fabric.js** for 2D editor (Konva is leaner, better perf for many nodes); or roll on raw SVG + d3-zoom
+- [x] Canvas: raw SVG + custom pointer/wheel pan-zoom (lighter than Konva/Fabric, good enough for this scope)
 - [ ] Node-level path editing: add/remove/move anchor points, adjust handles
 - [ ] Path operations: split, join, reverse direction, simplify
 - [ ] Snap to grid, snap to angle, snap to existing geometry
 - [ ] Multi-select, group, layers
-- [ ] Cross-session undo/redo backed by `design_versions` (every meaningful op = checkpoint, with coalescing)
+- [x] Cross-session checkpoints: every Save writes a new `design_versions` row (history list lets you switch back). In-session undo/redo with coalescing still TODO.
 
 ### Neon-specific features
 
-- [ ] **Electrodes:** placeable nodes marking tube ends; each continuous run must have exactly 2; visualize as standard electrode symbol
-- [ ] **Double-back / blockout:** mark sections where tube doubles back on itself and should be coated black so it doesn't glow
+- [x] **Electrodes:** click-to-place markers on any run; closed runs with 2 electrodes auto-pick the longer arc as live and expose a "Switch live arc" button (slice 2 + 3a)
+- [x] **Blockout marking:** click two points on a run to mark a stretch as block-out paint; rendered dashed in editor and emitted as `data-kind="blockout"` in the saved SVG (slice 3b — backend 866ffde, frontend this slice). Validation spacing exemption for blockouts still TODO.
+- [ ] Double-back hairpin **annotation** (the validation exemption already exists — this is about letting the user explicitly mark intent rather than relying on geometric detection)
 - [ ] **Jumps / supports:** mark where tube crosses without connecting (jump-over) vs structural supports
-- [ ] **Tube run assignment:** group path segments into named runs, each with its own transformer/voltage notes
+- [x] **Tube run assignment:** runs are auto-named (`run-1`, `run-2`, …) and editable as units in the sidebar. Per-run transformer/voltage notes still TODO.
+- [ ] **Per-run color (gas/phosphor):** sidebar dropdown driving canvas + PDF tint (slice 3c)
+- [ ] **Per-run tube-diameter override:** sidebar number input (slice 3d)
 - [ ] **Bend planning:** mark each bend point; auto-suggest based on curvature; export bend list as part of pattern
 - [ ] Live re-validation on edit (debounced)
 - [ ] Annotation layer: text notes, dimensions, color/gas labels per run
@@ -156,12 +159,12 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 These are flagged inline above; collected here so they don't get lost:
 
-1. **PDF library** — gopdf vs gofpdf vs unipdf (path fidelity + tiling support is the gating factor)
-2. **2D editor canvas** — Konva vs Fabric vs raw SVG (Phase 2)
-3. **3D engine** — Three.js (+ react-three-fiber) vs Babylon (Phase 3)
-4. **App data directory** — confirm OS-conventional paths and whether to support `--data-dir` override
+1. **3D engine** — Three.js (+ react-three-fiber) vs Babylon (Phase 3)
 
 ## Resolved decisions
 
 - **Vectorization engine** → shell out to system `potrace`, bundle binary in releases per OS, fall back to install instructions if missing. Single-binary purity sacrificed for quality.
 - **Inputs** → PNG, JPG, SVG. BMP deferred (add only if requested).
+- **PDF library** → `github.com/phpdave11/gofpdf` (mm-native, path-friendly, mature).
+- **2D editor canvas** → raw SVG with custom pointer/wheel pan-zoom. Lighter than Konva/Fabric and adequate for the run-level interactions Phase 2 needs.
+- **App data directory** → OS-conventional paths via `internal/appdata` with `--data-dir` override.

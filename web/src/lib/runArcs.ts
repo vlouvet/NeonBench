@@ -86,3 +86,84 @@ export function indicesToD(indices: number[], points: [number, number][], closed
   if (closed) parts.push('Z');
   return parts.join(' ');
 }
+
+// nearestLiveArcIndex finds the position WITHIN the live arc closest to the
+// given world-space point. Blockouts are stored in live-arc index space (not
+// raw polyline indices), so this is what the click→mark flow needs.
+export function nearestLiveArcIndex(
+  liveIndices: number[],
+  points: [number, number][],
+  target: [number, number],
+): number {
+  let best = 0;
+  let bestD = Infinity;
+  for (let li = 0; li < liveIndices.length; li++) {
+    const p = points[liveIndices[li]];
+    if (!p) continue;
+    const dx = p[0] - target[0];
+    const dy = p[1] - target[1];
+    const d = dx * dx + dy * dy;
+    if (d < bestD) {
+      bestD = d;
+      best = li;
+    }
+  }
+  return best;
+}
+
+// blockoutSegments mirrors the Go splitByBlockouts logic: walk the live
+// indices and emit alternating alive/blockout sub-runs. The renderer uses
+// this to overlay dashed segments on the live arc at the marked positions.
+export type BlockoutSegment = {
+  liveIndices: number[];
+  isBlockout: boolean;
+};
+
+export function blockoutSegments(
+  liveIndices: number[],
+  blockouts: { start_live_index: number; end_live_index: number }[] | undefined,
+  liveClosed: boolean,
+): BlockoutSegment[] {
+  const n = liveIndices.length;
+  if (n === 0) return [];
+  if (!blockouts || blockouts.length === 0) {
+    return [{ liveIndices, isBlockout: false }];
+  }
+  const mask = new Array<boolean>(n).fill(false);
+  for (const b of blockouts) {
+    const s = clamp(b.start_live_index, n);
+    const e = clamp(b.end_live_index, n);
+    if (s === e) {
+      mask[s] = true;
+      continue;
+    }
+    let i = s;
+    for (;;) {
+      mask[i] = true;
+      if (i === e) break;
+      i++;
+      if (i >= n) {
+        if (!liveClosed) break;
+        i = 0;
+      }
+    }
+  }
+  const out: BlockoutSegment[] = [];
+  let cur: BlockoutSegment = { liveIndices: [], isBlockout: mask[0] };
+  for (let j = 0; j < n; j++) {
+    if (mask[j] !== cur.isBlockout && cur.liveIndices.length > 0) {
+      out.push(cur);
+      cur = { liveIndices: [liveIndices[j - 1]], isBlockout: mask[j] };
+    }
+    cur.liveIndices.push(liveIndices[j]);
+  }
+  if (cur.liveIndices.length > 0) out.push(cur);
+  return out;
+}
+
+function clamp(i: number, n: number): number {
+  if (n === 0) return 0;
+  if (i < 0) return 0;
+  if (i >= n) return n - 1;
+  return i;
+}
