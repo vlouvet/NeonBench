@@ -11,9 +11,9 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
-import { defaultDirection } from '../lib/runArcs';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
-import { computeBends, effectiveBends } from '../lib/bends';
+import { effectiveBends } from '../lib/bends';
+import * as ops from '../lib/docOps';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -207,92 +207,34 @@ export default function EditorPage() {
     );
   }
 
+  const projDiam = tubeSpec?.diameter_mm ?? 10;
+
   function placeElectrode(runId: string, pointIndex: number) {
     if (!doc) return;
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const existing = run.electrodes ?? [];
-        let nextElectrodes;
-        if (existing.length >= 2) {
-          // Replace the closer of the two existing electrodes.
-          const dist = (idx: number) => Math.abs(idx - pointIndex);
-          const replaceIdx = dist(existing[0].point_index) < dist(existing[1].point_index) ? 0 : 1;
-          nextElectrodes = [...existing];
-          nextElectrodes[replaceIdx] = { point_index: pointIndex };
-        } else {
-          nextElectrodes = [...existing, { point_index: pointIndex }];
-        }
-        const next = { ...run, electrodes: nextElectrodes };
-        // When we just gave a closed run its second electrode, default the
-        // direction to whichever arc is longer (typically the visible part
-        // of a glyph perimeter).
-        if (run.polyline.closed && nextElectrodes.length === 2 && !run.direction) {
-          next.direction = defaultDirection(next);
-        }
-        return next;
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.placeElectrode(prev, runId, pointIndex));
     setSelected(runId);
   }
 
   function flipDirection(runId: string) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const cur = run.direction ?? defaultDirection(run);
-        const next: 'forward' | 'backward' = cur === 'forward' ? 'backward' : 'forward';
-        return { ...run, direction: next };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.flipDirection(prev, runId));
   }
 
   function deleteElectrode(runId: string, electrodeIndex: number) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const electrodes = (run.electrodes ?? []).filter((_, i) => i !== electrodeIndex);
-        return { ...run, electrodes };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.deleteElectrode(prev, runId, electrodeIndex));
   }
 
   function clearElectrodesOnSelected() {
     if (!selected) return;
-    editDoc((prev) => ({
-      ...prev,
-      runs: prev.runs.map((r) => (r.id === selected ? { ...r, electrodes: [] } : r)),
-    }));
+    editDoc((prev) => ops.clearElectrodes(prev, selected));
   }
 
   function placeBlockout(runId: string, startLiveIndex: number, endLiveIndex: number) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        // Normalize so start <= end for non-wrapping intent. (For closed runs
-        // the renderer will still walk the live arc the right way around.)
-        const s = Math.min(startLiveIndex, endLiveIndex);
-        const e = Math.max(startLiveIndex, endLiveIndex);
-        const blockouts = [...(run.blockouts ?? []), { start_live_index: s, end_live_index: e }];
-        return { ...run, blockouts };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.placeBlockout(prev, runId, startLiveIndex, endLiveIndex));
     setSelected(runId);
   }
 
   function deleteBlockout(runId: string, blockoutIndex: number) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const blockouts = (run.blockouts ?? []).filter((_, i) => i !== blockoutIndex);
-        return { ...run, blockouts };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.deleteBlockout(prev, runId, blockoutIndex));
   }
 
   function clearBlockoutsOnSelected() {
@@ -304,41 +246,16 @@ export default function EditorPage() {
   }
 
   function setRunColor(runId: string, color: string) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        // Empty value collapses to omitted field so the JSON stays clean.
-        if (color === '') {
-          const { color: _drop, ...rest } = run;
-          return rest;
-        }
-        return { ...run, color };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.setRunColor(prev, runId, color));
   }
 
   function placeAnnotation(runId: string, kind: 'jump' | 'support' | 'doubleback', liveIndex: number) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const annotations = [...(run.annotations ?? []), { kind, live_index: liveIndex }];
-        return { ...run, annotations };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.placeAnnotation(prev, runId, kind, liveIndex));
     setSelected(runId);
   }
 
   function deleteAnnotation(runId: string, annotationIndex: number) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const annotations = (run.annotations ?? []).filter((_, i) => i !== annotationIndex);
-        return { ...run, annotations };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.deleteAnnotation(prev, runId, annotationIndex));
   }
 
   function clearAnnotationsOnSelected() {
@@ -350,154 +267,53 @@ export default function EditorPage() {
   }
 
   function placeBend(runId: string, liveIndex: number) {
-    editDoc((prev) => {
-      const projDiam = tubeSpec?.diameter_mm ?? 10;
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        // First manual add snapshots the current auto-detected list so the
-        // user can edit on top of it instead of starting from blank.
-        const seed = run.bends && run.bends.length > 0
-          ? run.bends
-          : computeBends(run, projDiam).map((b) => ({ live_index: b.liveIndex }));
-        // Avoid trivial duplicates within a few samples of an existing bend.
-        if (seed.some((b) => Math.abs(b.live_index - liveIndex) < 2)) {
-          return { ...run, bends: seed };
-        }
-        const bends = [...seed, { live_index: liveIndex }].sort(
-          (a, b) => a.live_index - b.live_index,
-        );
-        return { ...run, bends };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.placeBend(prev, runId, liveIndex, projDiam));
     setSelected(runId);
   }
 
   function deleteBend(runId: string, bendIndex: number) {
-    editDoc((prev) => {
-      const projDiam = tubeSpec?.diameter_mm ?? 10;
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const seed = run.bends && run.bends.length > 0
-          ? run.bends
-          : computeBends(run, projDiam).map((b) => ({ live_index: b.liveIndex }));
-        const bends = seed.filter((_, i) => i !== bendIndex);
-        return { ...run, bends };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.deleteBend(prev, runId, bendIndex, projDiam));
   }
 
   function resetBendsOnSelected() {
     if (!selected) return;
-    editDoc((prev) => ({
-      ...prev,
-      runs: prev.runs.map((r) => {
-        if (r.id !== selected) return r;
-        const { bends: _drop, ...rest } = r;
-        return rest;
-      }),
-    }));
+    editDoc((prev) => ops.resetBends(prev, selected));
   }
 
   function placeLabel(x: number, y: number) {
     const text = window.prompt('Label text:', '')?.trim();
     if (!text) return;
-    editDoc((prev) => ({
-      ...prev,
-      labels: [...(prev.labels ?? []), { x, y, text }],
-    }));
+    editDoc((prev) => ops.placeLabel(prev, x, y, text));
   }
 
   function deleteLabel(index: number) {
-    editDoc((prev) => ({
-      ...prev,
-      labels: (prev.labels ?? []).filter((_, i) => i !== index),
-    }));
+    editDoc((prev) => ops.deleteLabel(prev, index));
   }
 
   function placeDimension(x1: number, y1: number, x2: number, y2: number) {
     if (Math.hypot(x2 - x1, y2 - y1) < 0.5) return; // ignore misclicks <0.5mm apart
     const note = window.prompt('Optional note (blank to skip):', '')?.trim() || undefined;
-    editDoc((prev) => ({
-      ...prev,
-      dimensions: [...(prev.dimensions ?? []), { x1, y1, x2, y2, ...(note ? { note } : {}) }],
-    }));
+    editDoc((prev) => ops.placeDimension(prev, x1, y1, x2, y2, note));
   }
 
   function deleteDimension(index: number) {
-    editDoc((prev) => ({
-      ...prev,
-      dimensions: (prev.dimensions ?? []).filter((_, i) => i !== index),
-    }));
+    editDoc((prev) => ops.deleteDimension(prev, index));
   }
 
   function moveVertex(runId: string, pointIndex: number, x: number, y: number) {
-    editDoc((prev) => ({
-      ...prev,
-      runs: prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        const points = run.polyline.points.slice();
-        if (pointIndex < 0 || pointIndex >= points.length) return run;
-        if (points[pointIndex][0] === x && points[pointIndex][1] === y) return run;
-        points[pointIndex] = [x, y];
-        return { ...run, polyline: { ...run.polyline, points } };
-      }),
-    }));
+    editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y));
   }
 
   function deleteVertex(runId: string, pointIndex: number) {
-    editDoc((prev) => ({
-      ...prev,
-      runs: prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        // Closed polylines need at least 3 points to remain meaningful;
-        // open polylines need at least 2.
-        const minPts = run.polyline.closed ? 3 : 2;
-        if (run.polyline.points.length <= minPts) return run;
-        const points = run.polyline.points.filter((_, i) => i !== pointIndex);
-        // Electrodes / blockouts / annotations / bends reference indices
-        // that may have shifted. Drop entries that pointed at the deleted
-        // vertex, and decrement any that pointed past it.
-        const shift = (i: number) => (i > pointIndex ? i - 1 : i);
-        const electrodes = (run.electrodes ?? [])
-          .filter((e) => e.point_index !== pointIndex)
-          .map((e) => ({ ...e, point_index: shift(e.point_index) }));
-        return {
-          ...run,
-          polyline: { ...run.polyline, points },
-          electrodes,
-        };
-      }),
-    }));
+    editDoc((prev) => ops.deleteVertex(prev, runId, pointIndex));
   }
 
   function setRunNotes(runId: string, notes: string) {
-    editDoc((prev) => ({
-      ...prev,
-      runs: prev.runs.map((r) => {
-        if (r.id !== runId) return r;
-        if (notes.trim() === '') {
-          const { notes: _drop, ...rest } = r;
-          return rest;
-        }
-        return { ...r, notes };
-      }),
-    }));
+    editDoc((prev) => ops.setRunNotes(prev, runId, notes));
   }
 
   function setRunDiameter(runId: string, diameterMM: number | null) {
-    editDoc((prev) => {
-      const runs = prev.runs.map((run) => {
-        if (run.id !== runId) return run;
-        if (diameterMM == null || Number.isNaN(diameterMM) || diameterMM <= 0) {
-          const { tube_diameter_mm: _drop, ...rest } = run;
-          return rest;
-        }
-        return { ...run, tube_diameter_mm: diameterMM };
-      });
-      return { ...prev, runs };
-    });
+    editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
   }
 
   async function save() {
