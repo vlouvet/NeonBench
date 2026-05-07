@@ -805,3 +805,90 @@ describe('insertDoubleback', () => {
     expect(pts[3][1]).toBeCloseTo(-15, 6);
   });
 });
+
+describe('neonize', () => {
+  function squareDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'sq',
+          polyline: {
+            points: [
+              [0, 0],
+              [100, 0],
+              [100, 100],
+              [0, 100],
+            ],
+            closed: true,
+          },
+          color: 'classic-red',
+          tube_diameter_mm: 12,
+          notes: '15kV @ 60mA',
+        },
+      ],
+    };
+  }
+
+  it('replaces a closed square run with two parallel offset runs (outer 120×120, inner 80×80)', () => {
+    const { doc, warning } = ops.neonize(squareDoc(), 'sq', 20);
+    expect(warning).toBeUndefined();
+    expect(doc.runs.length).toBe(2);
+    expect(doc.runs.find((r) => r.id === 'sq')).toBeUndefined();
+    const outer = doc.runs.find((r) => r.id === 'sq-outer')!;
+    const inner = doc.runs.find((r) => r.id === 'sq-inner')!;
+    expect(outer.polyline.closed).toBe(true);
+    expect(inner.polyline.closed).toBe(true);
+    // Outer bbox = -10..110 each axis (square + 10mm halo).
+    const oXs = outer.polyline.points.map((p) => p[0]);
+    const oYs = outer.polyline.points.map((p) => p[1]);
+    expect(Math.min(...oXs)).toBeCloseTo(-10, 6);
+    expect(Math.max(...oXs)).toBeCloseTo(110, 6);
+    expect(Math.min(...oYs)).toBeCloseTo(-10, 6);
+    expect(Math.max(...oYs)).toBeCloseTo(110, 6);
+    // Inner bbox = 10..90 each axis (square - 10mm inset).
+    const iXs = inner.polyline.points.map((p) => p[0]);
+    const iYs = inner.polyline.points.map((p) => p[1]);
+    expect(Math.min(...iXs)).toBeCloseTo(10, 6);
+    expect(Math.max(...iXs)).toBeCloseTo(90, 6);
+    expect(Math.min(...iYs)).toBeCloseTo(10, 6);
+    expect(Math.max(...iYs)).toBeCloseTo(90, 6);
+  });
+
+  it('returns a warning and leaves the doc untouched when the run is open', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'open',
+          polyline: { points: [[0, 0], [50, 0], [100, 0]], closed: false },
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'open', 10);
+    expect(result.warning).toBeDefined();
+    expect(result.warning!.length).toBeGreaterThan(0);
+    expect(result.doc).toBe(doc); // strict identity: no-op
+  });
+
+  it('preserves color, tube_diameter_mm, and notes on both new runs', () => {
+    const { doc } = ops.neonize(squareDoc(), 'sq', 20);
+    const outer = doc.runs.find((r) => r.id === 'sq-outer')!;
+    const inner = doc.runs.find((r) => r.id === 'sq-inner')!;
+    expect(outer.color).toBe('classic-red');
+    expect(inner.color).toBe('classic-red');
+    expect(outer.tube_diameter_mm).toBe(12);
+    expect(inner.tube_diameter_mm).toBe(12);
+    expect(outer.notes).toBe('15kV @ 60mA');
+    expect(inner.notes).toBe('15kV @ 60mA');
+  });
+
+  it('non-existent runId returns the doc unchanged with no warning', () => {
+    const doc = squareDoc();
+    const result = ops.neonize(doc, 'does-not-exist', 10);
+    expect(result.warning).toBeUndefined();
+    expect(result.doc).toBe(doc);
+  });
+});

@@ -146,10 +146,21 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      and vertex drag (run-path picks always snap to the nearest
      polyline vertex).
    Per-run sidebar: gas/phosphor color, diameter override, free-text
-   notes (transformer specs, gas, voltage), simplify / reverse path
-   ops.
+   notes (transformer specs, gas, voltage), simplify / reverse / neonize
+   path ops.
    Validation re-runs 500 ms after the last edit; the header badge
    shows error/warning counts.
+
+   **Neonize** — for double-stroke channel letters: select a closed run
+   (e.g. a face outline drawn with the pen tool or imported from an
+   SVG), click **Neonize**, set the spacing in mm. The single closed
+   run is replaced with two parallel offset runs that follow the inside
+   and outside of the original outline — that's the tube path the
+   bender will fabricate. Tip: stroke width = 2 × tube diameter +
+   spacing. If the geometry has acute corners (beveled by a miter
+   clamp) or self-intersections after offset, you'll get a warning;
+   the runs are still emitted and you can clean up with the node
+   editor.
 
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.

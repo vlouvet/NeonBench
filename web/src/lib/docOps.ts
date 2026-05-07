@@ -17,6 +17,7 @@ import type {
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
 import { defaultDirection } from './runArcs';
+import { offsetPolygon } from './shapes/offset';
 
 type Electrode = { point_index: number };
 
@@ -916,4 +917,96 @@ export function insertDoubleback(
         : run.bends,
     };
   });
+}
+
+// neonize turns a single closed run into a pair of parallel-offset runs
+// — the "double-stroke" / "Auto Tube Layout" / "Parallel Tube Layout"
+// primitive that channel-letter shops use to fabricate a thick stroke
+// out of two parallel tubes (NW #123, #131, #141 parity).
+//
+// The source run is replaced by two new runs `<id>-outer` and
+// `<id>-inner`, each offset by ±spacingMM/2 from the original outline
+// using the angle-bisector miter construction in offset.ts. Color,
+// diameter override, and notes are inherited; electrodes / blockouts /
+// annotations / bends are NOT carried over (they refer to indices on
+// the original polyline, which doesn't survive the geometry rewrite —
+// the user re-places them on the offset runs as needed).
+//
+// Failure modes:
+//   - Open polyline → returns the doc unchanged with a warning. Open-
+//     polyline neonize needs different geometry (parallel offset with
+//     butt caps); deferred to Tier 3.
+//   - <3 vertices (or run not found) → returns the doc unchanged.
+//   - Self-intersection on either offset → emits both runs anyway and
+//     surfaces a warning so the user can clean up with the node editor.
+//   - Acute corners that triggered the miter clamp → counted in the
+//     warning if the count is high enough to be worth flagging.
+//
+// Architectural choice: the original run is destroyed, not preserved as
+// a guide layer. Adding a "this run is a guide" flag would touch the
+// design-doc schema, the canvas renderer, and the print/DXF emitters —
+// out of scope for V1. Users who want a guide preview can copy the run
+// before neonizing.
+export function neonize(
+  doc: DesignDoc,
+  runId: string,
+  spacingMM: number,
+): { doc: DesignDoc; warning?: string } {
+  const idx = doc.runs.findIndex((r) => r.id === runId);
+  if (idx < 0) return { doc };
+  const src = doc.runs[idx];
+
+  if (!src.polyline.closed) {
+    return {
+      doc,
+      warning:
+        'Neonize requires a closed polyline (head and tail must coincide). Open polylines are deferred to a future release.',
+    };
+  }
+  if (!(spacingMM > 0) || !Number.isFinite(spacingMM)) {
+    return { doc, warning: 'Neonize spacing must be a positive number.' };
+  }
+  if (src.polyline.points.length < 3) {
+    return { doc, warning: 'Polyline is degenerate (fewer than 3 vertices).' };
+  }
+
+  const half = spacingMM / 2;
+  const outer = offsetPolygon(src.polyline.points, +half);
+  const inner = offsetPolygon(src.polyline.points, -half);
+
+  // Build the two replacement runs. Inheritance: only carry forward the
+  // run-level properties that aren't index-bound. Electrodes, blockouts,
+  // annotations, and bends point at vertex indices on the original
+  // polyline — they don't survive the geometry rewrite, so we drop them.
+  function withMeta(id: string, points: [number, number][], closed: boolean): DesignRun {
+    const r: DesignRun = { id, polyline: { points, closed } };
+    if (src.tube_diameter_mm != null) r.tube_diameter_mm = src.tube_diameter_mm;
+    if (src.color != null) r.color = src.color;
+    if (src.notes != null) r.notes = src.notes;
+    return r;
+  }
+
+  const outerRun = withMeta(`${src.id}-outer`, outer.points, true);
+  const innerRun = withMeta(`${src.id}-inner`, inner.points, true);
+
+  const nextRuns = doc.runs.slice();
+  nextRuns.splice(idx, 1, outerRun, innerRun);
+
+  // Stitch any non-empty warnings into a single user-facing string.
+  const warnings: string[] = [];
+  if (outer.selfIntersected) {
+    warnings.push('Outer offset self-intersects — clean up with the node editor.');
+  }
+  if (inner.selfIntersected) {
+    warnings.push('Inner offset self-intersects — clean up with the node editor.');
+  }
+  const totalClamps = outer.miterClampedCount + inner.miterClampedCount;
+  if (totalClamps >= 3) {
+    warnings.push(`${totalClamps} acute corners were beveled — visually verify.`);
+  }
+
+  return {
+    doc: { ...doc, runs: nextRuns },
+    warning: warnings.length > 0 ? warnings.join(' ') : undefined,
+  };
 }
