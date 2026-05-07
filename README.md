@@ -165,6 +165,19 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    layered per run id) for feeding to CNC tube benders; geometry
    only, no annotations.
 
+   **Channel-letter workflow.** For 3D channel letters (a flat metal
+   face plus a "return strip" wrapped around the perimeter to form
+   the side wall), set the project's **Channel letter depth (mm)**
+   field on the project page (defaults to 100 mm ≈ 4 in per
+   Strattman NT Ch.5; Miller p.88). In the editor sidebar, tick the
+   **Channel letter face** box on each run that represents a face
+   silhouette. The print PDF then emits one extra page per
+   face-flagged run with the unfolded return strip drawn as a
+   `perimeter × depth` rectangle, plus a vertical tick at every
+   polyline vertex labelled with the cumulative arc length and
+   signed interior turn angle so the operator knows exactly where
+   to bend the strip (NW #106).
+
 8. **Export / import.** Need to share the project with another install?
    The project page's "Export bundle" button downloads
    `<projectName>.neonbench` — a portable zip of every design version
