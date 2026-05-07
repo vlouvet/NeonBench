@@ -27,7 +27,7 @@ git checkout -b task/26-channel-letter-polish origin/main
 **Modify:**
 
 - `internal/designdoc/types.go` — add `ChannelLetterDepthMM *float64 \`json:"channel_letter_depth_mm,omitempty"\`` and `RacewayID string \`json:"raceway_id,omitempty"\`` to `Run`. Both optional, both backwards-compatible with existing docs.
-- `internal/storage/migrations/0008_project_strip_overlap.sql` — new migration adding `projects.strip_overlap_mm REAL` (nullable, default 12.7 mm = 0.5"). Reversible Down.
+- `internal/storage/migrations/0011_project_strip_overlap.sql` — new migration adding `projects.strip_overlap_mm REAL` (nullable, default 12.7 mm = 0.5"). Reversible Down. (Original spec reserved 0008 but PRs #35/#42 already shipped 0009/0010 since this spec was drafted; we use the next unused monotonic number to avoid goose "missing migration" failures on existing installs.)
 - `internal/storage/storage.go` — read/write the new column on Project.
 - `internal/server/handlers_projects.go` — same three-state PATCH semantics as `tube_end_gap_mm` (omitted / null / value) for `strip_overlap_mm`. Validate range [0, 100] mm.
 - `internal/printpdf/render.go` — `emitReturnStrip` reads the per-run depth override (falls back to project default → 100 mm shop default). Extend the strip page to draw the overlap allowance as a dashed shear line at one end.
