@@ -26,8 +26,14 @@ type Project struct {
 	Designer  string `json:"designer"`
 	DueDate   string `json:"due_date"`
 	JobNumber string `json:"job_number"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	// Optional tube end gap in millimeters. Distance from the tube's
+	// actual endpoint to the inside edge of the channel letter or
+	// substrate it sits in (NW #135). Pointer so that nil means "no
+	// per-project override; consumers should fall back to the shop
+	// default of 6.35 mm (¼ in, Miller App I §126)".
+	TubeEndGapMM *float64 `json:"tube_end_gap_mm,omitempty"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
 }
 
 type AssetKind string
