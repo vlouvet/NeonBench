@@ -1275,11 +1275,42 @@ func TestMigration0007Reversible(t *testing.T) {
 	if _, err := db.Exec("SELECT channel_letter_depth_mm FROM projects"); err != nil {
 		t.Fatalf("post-up SELECT failed: %v", err)
 	}
-	if err := goose.Down(db, "migrations"); err != nil {
-		t.Fatalf("down 1: %v", err)
+	// Roll back every migration newer than 0007, then 0007 itself, so this
+	// test doesn't break each time a later migration lands.
+	if err := goose.DownTo(db, "migrations", 6); err != nil {
+		t.Fatalf("down to 6: %v", err)
 	}
 	if _, err := db.Exec("SELECT channel_letter_depth_mm FROM projects"); err == nil {
 		t.Errorf("column channel_letter_depth_mm still present after down migration")
+	}
+}
+
+// TestMigration0009Reversible exercises the goose Down step for the
+// 0009_tube_spec_lead_in migration so we catch any future SQLite/driver
+// breakage that would brick a user mid-rollback. Mirrors the 0005 / 0006
+// / 0007 reversibility test pattern.
+func TestMigration0009Reversible(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if _, err := db.Exec("SELECT min_lead_in_mm, sharp_bend_angle_deg FROM tube_specs"); err != nil {
+		t.Fatalf("post-up SELECT failed: %v", err)
+	}
+	// Roll back every migration newer than 0009, then 0009 itself, so this
+	// test doesn't break each time a later migration lands.
+	if err := goose.DownTo(db, "migrations", 8); err != nil {
+		t.Fatalf("down to 8: %v", err)
+	}
+	for _, col := range []string{"min_lead_in_mm", "sharp_bend_angle_deg"} {
+		if _, err := db.Exec("SELECT " + col + " FROM tube_specs"); err == nil {
+			t.Errorf("column %q still present after down migration", col)
+		}
 	}
 }
 
