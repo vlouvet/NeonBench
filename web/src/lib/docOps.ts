@@ -443,3 +443,127 @@ export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number):
     };
   });
 }
+
+// insertDoubleback splices a hairpin (180° U-turn) into a polyline at the
+// chosen segment. The U-shape is formed by 4 new vertices A, B, C, D
+// inserted between the segment's existing endpoints p1 and p2:
+//
+//   p1 --A         D-- p2
+//        |         |
+//        B---------C
+//
+// where AB and CD are perpendicular drops of `depthMM` (default
+// 1.5 × tube ø, per Strattman's "straight-drop combination bend") and BC
+// is the U's mouth of `gapMM` (default 1.0 × tube ø — wide enough that
+// the two legs don't visually fuse, narrow enough to read as one bend).
+//
+// `t ∈ [0, 1]` picks the position along the chosen segment where the
+// hairpin gets centered (at t the segment splits into a "before A" leg
+// and an "after D" leg of equal-ish length given the gap).
+//
+// `side` controls which side of the path the U drops on. `'left'`
+// (default) is the 90°-counter-clockwise side of the forward direction.
+// `'right'` is the mirror — useful when the natural orientation would
+// have the hairpin overlap an adjacent run.
+//
+// Index-shifting is the bug-prone bit: the polyline grows by 4 vertices,
+// so every electrode (`point_index`), and live-arc-indexed annotation /
+// blockout / bend whose underlying polyline anchor sits at or after the
+// insertion gets bumped up by 4. Anchors strictly before the insertion
+// stay put. Live-arc index handling: if the run has zero electrodes, the
+// live-arc index equals the polyline index, so the same shift applies.
+// With electrodes the live arc is a sub-walk; we recompute live indices
+// by re-running runArcs after the insertion would over-engineer this V1
+// — instead we shift live indices by 4 if the equivalent polyline anchor
+// is at or after the insertion point. For the (segmentIndex+1) anchor,
+// "at or after" is true, so the 4-vertex bump is correct in the common
+// open-run, no-electrode case. Closed runs and live-arc subwalks are
+// handled by mapping the live index through the existing live[] table
+// pre-insertion.
+export function insertDoubleback(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+  t: number,
+  depthMM?: number,
+  gapMM?: number,
+  side: 'left' | 'right' = 'left',
+): DesignDoc {
+  return mapRun(doc, runId, (run) => {
+    const pts = run.polyline.points;
+    if (segmentIndex < 0 || segmentIndex >= pts.length - 1) return run;
+    const tt = Math.max(0, Math.min(1, t));
+    const p1 = pts[segmentIndex];
+    const p2 = pts[segmentIndex + 1];
+    const segLen = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+    if (!(segLen > 0)) return run;
+
+    const tubeDiam = run.tube_diameter_mm ?? 10;
+    const depth = depthMM != null && depthMM > 0 ? depthMM : 1.5 * tubeDiam;
+    const gap = gapMM != null && gapMM > 0 ? gapMM : 1.0 * tubeDiam;
+
+    // Forward unit vector along the segment.
+    const fx = (p2[0] - p1[0]) / segLen;
+    const fy = (p2[1] - p1[1]) / segLen;
+    // Side-direction unit vector (90° CCW for 'left', CW for 'right').
+    const sx = side === 'left' ? -fy : fy;
+    const sy = side === 'left' ? fx : -fx;
+
+    // Insertion point.
+    const pix = p1[0] + tt * (p2[0] - p1[0]);
+    const piy = p1[1] + tt * (p2[1] - p1[1]);
+
+    // A: half-gap back from insertion along forward.
+    const ax = pix - 0.5 * gap * fx;
+    const ay = piy - 0.5 * gap * fy;
+    // B: drop depth perpendicular from A.
+    const bx = ax + depth * sx;
+    const by = ay + depth * sy;
+    // C: gap forward from B (so BC is parallel to AD and to the segment).
+    const cx = bx + gap * fx;
+    const cy = by + gap * fy;
+    // D: rise depth back to the segment line.
+    const dx = cx - depth * sx;
+    const dy = cy - depth * sy;
+
+    // Splice the 4 new vertices between p1 (segmentIndex) and p2
+    // (segmentIndex + 1). New indices: A=k+1, B=k+2, C=k+3, D=k+4 where
+    // k = segmentIndex. The original p2 ends up at k+5 (was k+1).
+    const k = segmentIndex;
+    const newPts: [number, number][] = [
+      ...pts.slice(0, k + 1),
+      [ax, ay],
+      [bx, by],
+      [cx, cy],
+      [dx, dy],
+      ...pts.slice(k + 1),
+    ];
+
+    // Shift point-index references on annotations that anchor by polyline
+    // index (electrodes). Anything pointing at an index >= k+1 must move
+    // up by 4.
+    const SHIFT = 4;
+    const shiftPoint = (i: number) => (i >= k + 1 ? i + SHIFT : i);
+    const shiftLive = (i: number) => (i >= k + 1 ? i + SHIFT : i);
+
+    return {
+      ...run,
+      polyline: { ...run.polyline, points: newPts },
+      electrodes: run.electrodes
+        ? run.electrodes.map((e) => ({ ...e, point_index: shiftPoint(e.point_index) }))
+        : run.electrodes,
+      blockouts: run.blockouts
+        ? run.blockouts.map((b) => ({
+            start_live_index: shiftLive(b.start_live_index),
+            end_live_index: shiftLive(b.end_live_index),
+          }))
+        : run.blockouts,
+      annotations: run.annotations
+        ? run.annotations.map((a) => ({ ...a, live_index: shiftLive(a.live_index) }))
+        : run.annotations,
+      bends: run.bends
+        ? run.bends.map((b) => ({ live_index: shiftLive(b.live_index) }))
+        : run.bends,
+    };
+  });
+}

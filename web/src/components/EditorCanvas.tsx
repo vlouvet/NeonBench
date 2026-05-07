@@ -16,6 +16,7 @@ export type EditorTool =
   | 'jump'
   | 'support'
   | 'doubleback'
+  | 'insert-doubleback'
   | 'bend'
   | 'label'
   | 'dimension'
@@ -52,6 +53,7 @@ export default function EditorCanvas({
   onDeleteDimension,
   onMoveVertex,
   onDeleteVertex,
+  onInsertDoubleback,
   onCommitShape,
 }: {
   doc: DesignDoc;
@@ -73,6 +75,10 @@ export default function EditorCanvas({
   onDeleteDimension: (index: number) => void;
   onMoveVertex: (runId: string, pointIndex: number, x: number, y: number) => void;
   onDeleteVertex: (runId: string, pointIndex: number) => void;
+  // Splice a hairpin into the run's polyline at the picked segment + t.
+  // `side` mirrors the U onto the opposite side of the segment when set
+  // — surfaced as a shift-click in the canvas.
+  onInsertDoubleback: (runId: string, segmentIndex: number, t: number, side: 'left' | 'right') => void;
   // Commit a freshly drawn shape as a new run. EditorPage owns the
   // appendRuns / id-prefix logic; the canvas just hands up the geometry
   // and the kind so the parent can pick the right id prefix and decide on
@@ -101,6 +107,15 @@ export default function EditorCanvas({
   // While at 1 or 2 vertices, the canvas hover updates the preview shape.
   const [arcPoints, setArcPoints] = useState<[number, number][]>([]);
   const [arcHover, setArcHover] = useState<[number, number] | null>(null);
+  // Insert-doubleback tool: hover-tracked nearest segment + parametric
+  // position so the canvas can render a ghost preview of the hairpin
+  // before the user commits.
+  const [dbHover, setDbHover] = useState<{
+    runId: string;
+    segmentIndex: number;
+    t: number;
+    side: 'left' | 'right';
+  } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
   // Drop staged state when leaving the corresponding tool so a previously
@@ -119,6 +134,9 @@ export default function EditorCanvas({
     if (tool !== 'arc') {
       setArcPoints([]);
       setArcHover(null);
+    }
+    if (tool !== 'insert-doubleback') {
+      setDbHover(null);
     }
   }, [tool]);
 
@@ -443,7 +461,33 @@ export default function EditorCanvas({
       onSelectRun(run.id);
       return;
     }
+    if (tool === 'insert-doubleback') {
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const { segmentIndex, t } = nearestSegmentT(run.polyline.points, world);
+      const side: 'left' | 'right' = e.shiftKey ? 'right' : 'left';
+      onInsertDoubleback(run.id, segmentIndex, t, side);
+      onSelectRun(run.id);
+      setDbHover(null);
+      return;
+    }
     onSelectRun(run.id);
+  }
+
+  // Track which segment the cursor is closest to while the
+  // insert-doubleback tool is active. Dispatched from the run's hit-path
+  // pointer-move so we only update on hover over a real run.
+  function onRunPointerMoveForDB(e: React.PointerEvent<SVGPathElement>, run: DesignRun) {
+    if (tool !== 'insert-doubleback') return;
+    const world = clientToWorld(e.clientX, e.clientY);
+    if (!world) return;
+    const { segmentIndex, t } = nearestSegmentT(run.polyline.points, world);
+    const side: 'left' | 'right' = e.shiftKey ? 'right' : 'left';
+    setDbHover((prev) =>
+      prev && prev.runId === run.id && prev.segmentIndex === segmentIndex && Math.abs(prev.t - t) < 1e-3 && prev.side === side
+        ? prev
+        : { runId: run.id, segmentIndex, t, side },
+    );
   }
 
   function onAnnotationClick(e: React.MouseEvent, runId: string, annotationIndex: number) {
@@ -546,6 +590,10 @@ export default function EditorCanvas({
                   fill="none"
                   pointerEvents="stroke"
                   onClick={(e) => onRunClick(e, run)}
+                  onPointerMove={(e) => onRunPointerMoveForDB(e, run)}
+                  onPointerLeave={() => {
+                    if (tool === 'insert-doubleback') setDbHover(null);
+                  }}
                   style={{ cursor }}
                 />
                 {segs.map((seg, si) => {
@@ -734,6 +782,51 @@ export default function EditorCanvas({
               </g>
             );
           })()}
+          {tool === 'insert-doubleback' && dbHover && (() => {
+            const run = doc.runs.find((r) => r.id === dbHover.runId);
+            if (!run) return null;
+            const pts = run.polyline.points;
+            const seg = dbHover.segmentIndex;
+            if (seg < 0 || seg >= pts.length - 1) return null;
+            const tubeDiam = run.tube_diameter_mm ?? projectDiameterMM;
+            const depth = 1.5 * tubeDiam;
+            const gap = 1.0 * tubeDiam;
+            const verts = doublebackPreviewVertices(
+              pts[seg],
+              pts[seg + 1],
+              dbHover.t,
+              depth,
+              gap,
+              dbHover.side,
+            );
+            if (!verts) return null;
+            // Build the same polyline that the helper would splice in:
+            // p1 → A → B → C → D → p2.
+            const path = [pts[seg], ...verts, pts[seg + 1]];
+            const d = path
+              .map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]} ${p[1]}`)
+              .join(' ');
+            return (
+              <g pointerEvents="none">
+                <path
+                  d={d}
+                  stroke="#ff8a00"
+                  strokeWidth={1.6 / transform.k}
+                  strokeDasharray={`${3 / transform.k} ${2 / transform.k}`}
+                  fill="none"
+                />
+                {verts.map((p, i) => (
+                  <circle
+                    key={`db-v-${i}`}
+                    cx={p[0]}
+                    cy={p[1]}
+                    r={3 / transform.k}
+                    fill="#ff8a00"
+                  />
+                ))}
+              </g>
+            );
+          })()}
           {staged && (() => {
             const run = doc.runs.find((r) => r.id === staged.runId);
             if (!run) return null;
@@ -842,6 +935,11 @@ export default function EditorCanvas({
         )}
         {tool === 'doubleback' && (
           <span className="meta hint">Click the apex of a hairpin to mark it as an intentional double-back</span>
+        )}
+        {tool === 'insert-doubleback' && (
+          <span className="meta hint">
+            Click a polyline segment to splice in a hairpin (1.5× ø deep). Shift-click to flip the U to the other side.
+          </span>
         )}
         {tool === 'bend' && (
           <span className="meta hint">Click on a path to add a manual bend (overrides auto-detect for that run)</span>
@@ -1144,4 +1242,75 @@ function nearestPointIndex(points: [number, number][], target: [number, number])
     }
   }
   return best;
+}
+
+// Given a polyline and a target world-space point, find which segment is
+// closest and where on that segment the foot of the perpendicular falls
+// (parametric t ∈ [0,1]). Used by the Insert-DB tool to map a click into
+// the (segmentIndex, t) coordinates the docOps helper expects.
+function nearestSegmentT(
+  points: [number, number][],
+  target: [number, number],
+): { segmentIndex: number; t: number } {
+  let bestSeg = 0;
+  let bestT = 0;
+  let bestD = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const ax = points[i][0];
+    const ay = points[i][1];
+    const bx = points[i + 1][0];
+    const by = points[i + 1][1];
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len2 = dx * dx + dy * dy;
+    if (len2 === 0) continue;
+    const tRaw = ((target[0] - ax) * dx + (target[1] - ay) * dy) / len2;
+    const tClamped = Math.max(0, Math.min(1, tRaw));
+    const px = ax + tClamped * dx;
+    const py = ay + tClamped * dy;
+    const ddx = target[0] - px;
+    const ddy = target[1] - py;
+    const d = ddx * ddx + ddy * ddy;
+    if (d < bestD) {
+      bestD = d;
+      bestSeg = i;
+      bestT = tClamped;
+    }
+  }
+  return { segmentIndex: bestSeg, t: bestT };
+}
+
+// Compute the four hairpin vertices for the canvas ghost preview. Mirrors
+// the arithmetic in docOps.insertDoubleback so the preview matches what
+// will actually get spliced in — keep these in sync.
+function doublebackPreviewVertices(
+  p1: [number, number],
+  p2: [number, number],
+  t: number,
+  depthMM: number,
+  gapMM: number,
+  side: 'left' | 'right',
+): [number, number][] | null {
+  const segLen = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+  if (!(segLen > 0)) return null;
+  const fx = (p2[0] - p1[0]) / segLen;
+  const fy = (p2[1] - p1[1]) / segLen;
+  const sx = side === 'left' ? -fy : fy;
+  const sy = side === 'left' ? fx : -fx;
+  const pix = p1[0] + t * (p2[0] - p1[0]);
+  const piy = p1[1] + t * (p2[1] - p1[1]);
+  const ax = pix - 0.5 * gapMM * fx;
+  const ay = piy - 0.5 * gapMM * fy;
+  const bx = ax + depthMM * sx;
+  const by = ay + depthMM * sy;
+  const cx = bx + gapMM * fx;
+  const cy = by + gapMM * fy;
+  const dx = cx - depthMM * sx;
+  const dy = cy - depthMM * sy;
+  return [
+    [ax, ay],
+    [bx, by],
+    [cx, cy],
+    [dx, dy],
+  ];
 }

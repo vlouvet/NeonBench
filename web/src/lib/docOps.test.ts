@@ -380,3 +380,140 @@ describe('vertex ops', () => {
     expect(next.runs[0].polyline.points.length).toBe(3);
   });
 });
+
+describe('insertDoubleback', () => {
+  // A simple horizontal three-vertex run we can drop a hairpin into. Tube
+  // diameter 10mm so the project-default math is easy to reason about
+  // (1.5× = 15mm depth, 1.0× = 10mm gap mouth).
+  function horizDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [100, 0], [100, 50]], closed: false },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+  }
+
+  it('inserts 4 new vertices forming a downward U on a horizontal segment', () => {
+    // Segment 0 runs from (0,0) → (100,0); insertion at t=0.5 should
+    // drop a hairpin centered at x=50 toward +y (the "left" side of
+    // forward = (1,0) is (-fy,fx) = (0,1), which is +y).
+    const doc = ops.insertDoubleback(horizDoc(), 'run-1', 0, 0.5);
+    const pts = doc.runs[0].polyline.points;
+    // Original 3 + 4 inserted = 7.
+    expect(pts.length).toBe(7);
+    // Endpoints unchanged.
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts[6]).toEqual([100, 50]);
+    // Hairpin vertices A=1, B=2, C=3, D=4.
+    const [ax, ay] = pts[1];
+    const [bx, by] = pts[2];
+    const [cx, cy] = pts[3];
+    const [dx, dy] = pts[4];
+    // A and D sit on the segment line (y=0); B and C drop down by 15mm.
+    expect(ay).toBeCloseTo(0, 6);
+    expect(dy).toBeCloseTo(0, 6);
+    expect(by).toBeCloseTo(15, 6);
+    expect(cy).toBeCloseTo(15, 6);
+    // The U is centered on x=50 with mouth width = gap = 10mm.
+    expect(ax).toBeCloseTo(45, 6);
+    expect(bx).toBeCloseTo(45, 6);
+    expect(cx).toBeCloseTo(55, 6);
+    expect(dx).toBeCloseTo(55, 6);
+  });
+
+  it('default depth = 1.5× run tube diameter', () => {
+    // Tube diameter 8 → depth should be 12mm.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r',
+          polyline: { points: [[0, 0], [100, 0]], closed: false },
+          tube_diameter_mm: 8,
+        },
+      ],
+    };
+    const next = ops.insertDoubleback(doc, 'r', 0, 0.5);
+    const pts = next.runs[0].polyline.points;
+    // B is at index 2; its y is the U-depth.
+    expect(pts[2][1]).toBeCloseTo(12, 6);
+    // Gap is 1.0× = 8mm; A=(46,0), D=(54,0).
+    expect(pts[1][0]).toBeCloseTo(46, 6);
+    expect(pts[4][0]).toBeCloseTo(54, 6);
+  });
+
+  it('custom depth + gap params override the defaults', () => {
+    const doc = ops.insertDoubleback(horizDoc(), 'run-1', 0, 0.5, 30, 4);
+    const pts = doc.runs[0].polyline.points;
+    // B at index 2 dropped by depth=30.
+    expect(pts[2][1]).toBeCloseTo(30, 6);
+    // U mouth = 4mm centered at x=50 → A=48, D=52.
+    expect(pts[1][0]).toBeCloseTo(48, 6);
+    expect(pts[4][0]).toBeCloseTo(52, 6);
+  });
+
+  it('shifts electrodes / blockouts / annotations / bends past the insertion by 4', () => {
+    // Build a run with an electrode before the insertion and one after,
+    // plus a blockout, annotation, and bend on each side. Insertion at
+    // segment 0 (between point indices 0 and 1) should leave the
+    // before-insertion anchors untouched and bump the after-insertion
+    // ones up by 4.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            // 5 vertices: indices 0..4. Segment 0 is (0,0)→(25,0); the
+            // hairpin gets spliced between vertices 0 and 1.
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 0 }, { point_index: 4 }],
+          blockouts: [{ start_live_index: 0, end_live_index: 2 }, { start_live_index: 3, end_live_index: 4 }],
+          annotations: [
+            { kind: 'jump', live_index: 0 },
+            { kind: 'support', live_index: 3 },
+          ],
+          bends: [{ live_index: 0 }, { live_index: 2 }],
+        },
+      ],
+    };
+    const next = ops.insertDoubleback(doc, 'run-1', 0, 0.5);
+    const r = next.runs[0];
+    // 5 + 4 inserted = 9 vertices.
+    expect(r.polyline.points.length).toBe(9);
+    // Electrode at point_index 0 stayed (it's BEFORE the insertion, which
+    // splices between indices 0 and 1). Electrode at 4 shifted to 8.
+    expect(r.electrodes).toEqual([{ point_index: 0 }, { point_index: 8 }]);
+    // Blockout starting at live 0 stays; the end at live 2 (>=1) bumps
+    // by 4 to 6. The second blockout (3..4) bumps to (7..8).
+    expect(r.blockouts).toEqual([
+      { start_live_index: 0, end_live_index: 6 },
+      { start_live_index: 7, end_live_index: 8 },
+    ]);
+    expect(r.annotations).toEqual([
+      { kind: 'jump', live_index: 0 },
+      { kind: 'support', live_index: 7 },
+    ]);
+    expect(r.bends).toEqual([{ live_index: 0 }, { live_index: 6 }]);
+  });
+
+  it('side="right" mirrors the U onto the opposite side of the segment', () => {
+    const doc = ops.insertDoubleback(horizDoc(), 'run-1', 0, 0.5, undefined, undefined, 'right');
+    const pts = doc.runs[0].polyline.points;
+    // Right side of forward (1,0) is (fy,-fx) = (0,-1), so B and C drop
+    // to negative y instead of positive.
+    expect(pts[2][1]).toBeCloseTo(-15, 6);
+    expect(pts[3][1]).toBeCloseTo(-15, 6);
+  });
+});
