@@ -23,6 +23,8 @@ export default function EditorPage() {
 
   const [project, setProject] = useState<Project | null>(null);
   const [tubeSpec, setTubeSpec] = useState<TubeSpec | null>(null);
+  const [allSpecs, setAllSpecs] = useState<TubeSpec[]>([]);
+  const [specSwitching, setSpecSwitching] = useState(false);
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setTool] = useState<EditorTool>('select');
@@ -122,6 +124,7 @@ export default function EditorPage() {
         setVersion(v);
         setDoc(parseDoc(v));
         setReport(parseReport(v));
+        setAllSpecs(specs);
         setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
         setDirty(false);
         resetHistory();
@@ -328,6 +331,32 @@ export default function EditorPage() {
     editDoc((prev) => ops.reverseRun(prev, selected));
   }
 
+  // Switching the project's tube spec from inside the editor needs to do
+  // two things atomically from the user's perspective: persist the new
+  // tube_spec_id, then re-run validation against the *new* spec so the
+  // displayed errors/warnings stop reflecting the old bend-radius/spacing
+  // limits. Without the revalidate the user would silently see a stale
+  // (and possibly falsely-green) report. The dropdown is disabled while
+  // either request is in flight to avoid double-fires.
+  async function changeTubeSpec(nextSpecId: number) {
+    if (specSwitching) return;
+    if (!project || nextSpecId === project.tube_spec_id) return;
+    setSpecSwitching(true);
+    setError(null);
+    try {
+      const updatedProject = await api.updateProject(projectId, { tube_spec_id: nextSpecId });
+      setProject(updatedProject);
+      setTubeSpec(allSpecs.find((s) => s.id === updatedProject.tube_spec_id) ?? null);
+      const revalidated = await api.revalidate(projectId, versionId);
+      setVersion(revalidated);
+      setReport(parseReport(revalidated));
+    } catch (e) {
+      setError(`change tube spec: ${(e as Error).message}`);
+    } finally {
+      setSpecSwitching(false);
+    }
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -465,9 +494,26 @@ export default function EditorPage() {
           </div>
         </div>
         <p className="meta">
+          <label className="editor-tube-spec">
+            Tube spec:{' '}
+            <select
+              value={project.tube_spec_id}
+              disabled={specSwitching || allSpecs.length === 0}
+              onChange={(e) => changeTubeSpec(Number(e.target.value))}
+              title="Switch the project's tube spec. Saves the change and re-runs validation against the new spec."
+            >
+              {allSpecs.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name} — Ø{s.diameter_mm}mm, min bend {s.min_bend_radius_mm}mm
+                </option>
+              ))}
+            </select>
+            {specSwitching && <span className="meta"> · Saving…</span>}
+          </label>
+          {' · '}
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
-        <ValidationBadge report={report} validating={validating} />
+        <ValidationBadge report={report} validating={validating || specSwitching} />
       </header>
       <div className="editor-layout">
         <EditorCanvas

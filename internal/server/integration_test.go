@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"math"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -517,6 +519,219 @@ func TestDeleteDesignVersion(t *testing.T) {
 	if wrongResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("DELETE wrong project: want 404, got %d", wrongResp.StatusCode)
 	}
+}
+
+// TestRevalidateAfterTubeSpecSwap is the regression guard for the
+// "silently stale validation report" failure mode that the editor's
+// tube-spec switcher (Tier 1 #5) is built to prevent. The flow:
+//
+//  1. Create a project pointing at a small-diameter tube spec (loose
+//     bend-radius limit) with a design version whose only path is a
+//     gentle 25mm-radius arc that the loose spec accepts.
+//  2. Confirm the saved report has zero bend-radius issues, and that the
+//     report's bend-radius messages (if any) cite the loose spec's
+//     limit.
+//  3. PATCH the project to a larger-diameter tube spec whose tighter
+//     bend-radius limit the same 25mm arc cannot satisfy.
+//  4. POST /validate to re-run validation. The new report MUST cite the
+//     stricter spec's limit and MUST flag the arc.
+//
+// Without auto-revalidate after the switch, step 4's report would still
+// match step 2's — the regression we're protecting against.
+func TestRevalidateAfterTubeSpecSwap(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	// Locate the loose ("8mm clear", limit 18mm) and tight ("12mm clear",
+	// limit 27mm) seeded specs by name. Hard-coded IDs would be fragile
+	// to seed re-orderings.
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var looseID, tightID int64
+	var looseLimit, tightLimit float64
+	for _, s := range specs {
+		switch s["name"].(string) {
+		case "8mm clear":
+			looseID = int64(s["id"].(float64))
+			looseLimit = s["min_bend_radius_mm"].(float64)
+		case "12mm clear":
+			tightID = int64(s["id"].(float64))
+			tightLimit = s["min_bend_radius_mm"].(float64)
+		}
+	}
+	if looseID == 0 || tightID == 0 {
+		t.Fatalf("expected seeded 8mm/12mm specs; got %v", specs)
+	}
+	if !(looseLimit < 25 && tightLimit > 25) {
+		t.Fatalf("seeded specs no longer bracket 25mm radius (loose=%v, tight=%v)", looseLimit, tightLimit)
+	}
+
+	// Project + design version. The test SVG is a closed polyline that
+	// samples a 25mm-radius circle at 1° intervals, encoded as M+L+Z
+	// path commands. SVG `A` (elliptical-arc) commands are approximated
+	// as straight lines by the validator's path parser, so we cannot
+	// rely on `A 25,25 …` here; explicit polyline samples make the
+	// curvature deterministic.
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "tube-spec swap regression",
+		"tube_spec_id": looseID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	const radius = 25.0
+	circleSVG := buildCirclePolylineSVG(radius, 50, 50, 100, 1)
+	dv, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		Label:     "circle r=25",
+		SVGData:   circleSVG,
+	})
+	if err != nil {
+		t.Fatalf("create design version: %v", err)
+	}
+
+	revalURL := base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(dv.ID) + "/validate"
+
+	// Step 1: validate against the LOOSE spec. radius=25mm > 18mm limit
+	// → no bend-radius errors expected.
+	var looseDV map[string]any
+	postJSON(t, client, revalURL, nil, &looseDV)
+	looseReportJSON, _ := looseDV["validation_report_json"].(string)
+	if looseReportJSON == "" {
+		t.Fatal("loose-spec revalidate produced no report")
+	}
+	if got := countBendRadiusIssues(t, looseReportJSON); got != 0 {
+		t.Errorf("loose spec (limit %vmm) on r=25mm arc: want 0 bend errors, got %d (report=%s)",
+			looseLimit, got, looseReportJSON)
+	}
+	// Whatever issues the loose-spec report does mention, none of them
+	// should reference the TIGHT spec's limit value — that's the marker
+	// of a stale report leaking through after a swap.
+	if strings.Contains(looseReportJSON, formatLimit(tightLimit)) {
+		t.Errorf("loose-spec report unexpectedly references tight limit %vmm: %s", tightLimit, looseReportJSON)
+	}
+
+	// Step 2: PATCH the project to the tight spec.
+	patchURL := base + "/api/projects/" + itoa(projectID)
+	patchBody, _ := json.Marshal(map[string]any{"tube_spec_id": tightID})
+	patchReq, _ := http.NewRequest("PATCH", patchURL, bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH project: %v", err)
+	}
+	if patchResp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(patchResp.Body)
+		patchResp.Body.Close()
+		t.Fatalf("PATCH project status %d: %s", patchResp.StatusCode, body)
+	}
+	patchResp.Body.Close()
+
+	// Critical: read back the version BEFORE revalidate. The stored
+	// report should still be the loose-spec one — we have not yet asked
+	// the server to refresh it. If a future change starts auto-
+	// revalidating in the PATCH handler this assertion will catch it
+	// and prompt a reviewer to verify the editor's flow still makes
+	// sense.
+	var preReval map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions/"+itoa(dv.ID), &preReval)
+	preRevalReport, _ := preReval["validation_report_json"].(string)
+	if countBendRadiusIssues(t, preRevalReport) != 0 {
+		t.Errorf("pre-revalidate report should still match loose spec (no bend errors); got %s", preRevalReport)
+	}
+
+	// Step 3: revalidate. r=25mm < 27mm limit → at least one bend error
+	// expected, and the message must cite the tight spec's limit.
+	var tightDV map[string]any
+	postJSON(t, client, revalURL, nil, &tightDV)
+	tightReportJSON, _ := tightDV["validation_report_json"].(string)
+	if tightReportJSON == "" {
+		t.Fatal("tight-spec revalidate produced no report")
+	}
+	if got := countBendRadiusIssues(t, tightReportJSON); got == 0 {
+		t.Errorf("tight spec (limit %vmm) on r=%vmm arc: want >=1 bend error, got 0 (report=%s)",
+			tightLimit, radius, tightReportJSON)
+	}
+	if !strings.Contains(tightReportJSON, formatLimit(tightLimit)) {
+		t.Errorf("tight-spec report should reference limit %vmm; got %s", tightLimit, tightReportJSON)
+	}
+	if strings.Contains(tightReportJSON, formatLimit(looseLimit)) {
+		t.Errorf("tight-spec report still references loose limit %vmm — stale report: %s", looseLimit, tightReportJSON)
+	}
+}
+
+// countBendRadiusIssues counts validation issues with rule "min_bend_radius"
+// in a marshaled validation_report_json blob.
+func countBendRadiusIssues(t *testing.T, reportJSON string) int {
+	t.Helper()
+	if reportJSON == "" {
+		return 0
+	}
+	var rep struct {
+		Issues []struct {
+			Rule string `json:"rule"`
+		} `json:"issues"`
+	}
+	if err := json.Unmarshal([]byte(reportJSON), &rep); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	n := 0
+	for _, iss := range rep.Issues {
+		if iss.Rule == "min_bend_radius" {
+			n++
+		}
+	}
+	return n
+}
+
+// formatLimit renders a tube-spec bend-radius limit the way the
+// validator embeds it in issue messages ("below tube minimum 27.0mm")
+// so substring-matching against the report is deterministic.
+func formatLimit(mm float64) string {
+	return fmt.Sprintf("%.1fmm", mm)
+}
+
+// buildCirclePolylineSVG returns an SVG document whose only path is a
+// closed polyline sampling a circle of given radius around (cx, cy).
+// stepDeg controls sample density. The doc has a 1:1 mm viewBox so the
+// validator's coordinate transform is the identity — path coordinates
+// are interpreted directly as millimeters. Used by the tube-spec swap
+// regression test, which needs a curve of known constant radius.
+func buildCirclePolylineSVG(radius, cx, cy, sideMM, stepDeg float64) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, `<svg xmlns="http://www.w3.org/2000/svg" width="%vmm" height="%vmm" viewBox="0 0 %v %v">`,
+		sideMM, sideMM, sideMM, sideMM)
+	b.WriteString(`<path d="`)
+	first := true
+	for ang := 0.0; ang < 360.0; ang += stepDeg {
+		rad := ang * math.Pi / 180
+		x := cx + radius*math.Cos(rad)
+		y := cy + radius*math.Sin(rad)
+		if first {
+			fmt.Fprintf(&b, "M %.4f,%.4f", x, y)
+			first = false
+		} else {
+			fmt.Fprintf(&b, " L %.4f,%.4f", x, y)
+		}
+	}
+	b.WriteString(` Z" fill="none" stroke="black"/>`)
+	b.WriteString(`</svg>`)
+	return b.String()
 }
 
 // keep imports honest
