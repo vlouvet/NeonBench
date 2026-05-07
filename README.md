@@ -73,7 +73,14 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    physical sign width — paths are in mm internally everywhere). Tweak
    threshold and, under "Advanced centerline options", the smoothing
    ε and minimum spur length if needed (both default to values derived
-   from the project tube diameter). The vectorizer extracts a 1-pixel
+   from the project tube diameter). For messy sources (slightly-skewed
+   phone photos, faint scans, busy backgrounds), open the **Image
+   adjustments** panel for rotation (-45° to +45°), crop, brightness
+   (-100..+100), and contrast (0.5×..2.0×). These run before the
+   binarize step in the documented order — rotate → crop → brightness
+   → contrast → threshold — and the live before/after preview reflects
+   each adjustment as you drag, so you can dial in straight, clean
+   input before committing. The vectorizer then extracts a 1-pixel
    centerline through Zhang-Suen thinning + skeleton-graph walking,
    so each letter stroke becomes a single tube path rather than two
    parallel outlines. Each vectorize run creates a new
@@ -138,7 +145,10 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    the editor sidebar), blockout dashed segments, doc-level
    labels/dimensions, and a final "Bend list" page summarizing each
    run's bends with arc-length offsets, turn angles, and per-run
-   notes.
+   notes. The same panel offers a **Download DXF** button — an
+   AutoCAD R12 ASCII file with one polyline per run (millimeters,
+   layered per run id) for feeding to CNC tube benders; geometry
+   only, no annotations.
 
 8. **Export / import.** Need to share the project with another install?
    The project page's "Export bundle" button downloads
