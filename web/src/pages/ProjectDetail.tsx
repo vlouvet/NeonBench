@@ -69,6 +69,27 @@ export default function ProjectDetail() {
     }
   }
 
+  async function handleDeleteVersion(v: DesignVersion) {
+    if (!window.confirm(`Delete v${v.version_no} permanently? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await api.deleteDesignVersion(projectId, v.id);
+      const vs = await api.listDesignVersions(projectId);
+      setVersions(vs);
+      if (latest?.id === v.id) {
+        if (vs.length === 0) {
+          setLatest(null);
+        } else {
+          const fresh = await api.latestDesignVersion(projectId);
+          setLatest(fresh);
+        }
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   if (error) return <p className="error">{error}</p>;
   if (!project) return <p className="meta">Loading…</p>;
 
@@ -220,6 +241,14 @@ export default function ProjectDetail() {
                   <strong>v{v.version_no}</strong>
                   <span>{v.label || '(no label)'}</span>
                   <span className="meta">{new Date(v.created_at).toLocaleString()}</span>
+                </button>
+                <button
+                  type="button"
+                  className="btn-danger"
+                  onClick={() => handleDeleteVersion(v)}
+                  title={`Delete v${v.version_no} permanently`}
+                >
+                  Delete
                 </button>
               </li>
             ))}

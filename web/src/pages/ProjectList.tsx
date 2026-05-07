@@ -17,6 +17,20 @@ export default function ProjectList() {
       .catch((e: Error) => setError(e.message));
   }, []);
 
+  async function handleDelete(p: Project) {
+    const ok = window.confirm(
+      `Delete project '${p.name}' permanently? This will erase all assets and design versions and cannot be undone.`,
+    );
+    if (!ok) return;
+    try {
+      await api.deleteProject(p.id);
+      const fresh = await api.listProjects();
+      setProjects(fresh);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
   if (error) return <p className="error">{error}</p>;
   if (!projects || !tubeSpecs) return <p className="meta">Loading…</p>;
 
@@ -42,6 +56,14 @@ export default function ProjectList() {
                   {new Date(p.updated_at).toLocaleString()}
                 </span>
               </Link>
+              <button
+                type="button"
+                className="btn-danger"
+                onClick={() => handleDelete(p)}
+                title={`Delete project '${p.name}'`}
+              >
+                Delete project
+              </button>
             </li>
           ))}
         </ul>
