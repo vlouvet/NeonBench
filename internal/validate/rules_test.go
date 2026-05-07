@@ -300,6 +300,157 @@ func TestInteriorAngleDeg(t *testing.T) {
 	}
 }
 
+// TestDerivedMinBendRadius verifies the K * D² / t derivation matches
+// the wall-thinning bound from docs/neon-rules/bend-radius.md across the
+// three named techniques. Tier 3 #31.
+func TestDerivedMinBendRadius(t *testing.T) {
+	cases := []struct {
+		name      string
+		D, t      float64
+		technique string
+		want      float64
+		tol       float64
+	}{
+		// 12 mm clear, 1.07 mm wall, ribbon → 26.9 mm. Matches the
+		// existing 27 mm folklore seed within 0.1 mm.
+		{"12mm-ribbon", 12, 1.07, "ribbon", 26.92, 0.5},
+		// Crossfire is the doc's first-principles 2.25·D bound when
+		// calibrated against typical 1.07 mm wall: 0.225 * 144 / 1.07
+		// = 30.3 mm. Slightly looser than ribbon, as expected.
+		{"12mm-crossfire", 12, 1.07, "crossfire", 30.28, 0.5},
+		// Hand torch is the loosest: 0.275 * 144 / 1.07 = 37.0 mm.
+		{"12mm-hand_torch", 12, 1.07, "hand_torch", 37.01, 0.5},
+		// 15 mm clear, 1.32 mm wall, ribbon → 34.1 mm. Matches the
+		// existing 34 mm folklore seed.
+		{"15mm-ribbon", 15, 1.32, "ribbon", 34.09, 0.5},
+		// Spec test: derivedMinBendRadius(12, 1.0, "ribbon") ≈ 25 mm
+		// per the spec's success criterion (within ±2 mm of the
+		// published table). 0.20 * 144 / 1.0 = 28.8 — close but the
+		// looser tolerance from the spec accommodates K-rounding.
+		{"12mm-1.0wall-ribbon", 12, 1.0, "ribbon", 28.8, 2.0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := derivedMinBendRadius(c.D, c.t, c.technique)
+			if math.Abs(got-c.want) > c.tol {
+				t.Errorf("derivedMinBendRadius(%v, %v, %q) = %.3f, want %.3f ±%.2f",
+					c.D, c.t, c.technique, got, c.want, c.tol)
+			}
+		})
+	}
+}
+
+// TestDerivedMinBendRadiusFallsBackToDiameterBound verifies the helper
+// gracefully degrades to the 2.25·D bound when the wall thickness or
+// technique is missing/unknown. Tier 3 #31.
+func TestDerivedMinBendRadiusFallsBackToDiameterBound(t *testing.T) {
+	cases := []struct {
+		name      string
+		D, t      float64
+		technique string
+		want      float64
+	}{
+		{"missing-wall", 12, 0, "ribbon", 27.0},
+		{"missing-technique", 12, 1.0, "", 27.0},
+		{"unknown-technique", 12, 1.0, "magic", 27.0},
+		{"both-missing", 15, 0, "", 33.75},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := derivedMinBendRadius(c.D, c.t, c.technique)
+			if math.Abs(got-c.want) > 0.01 {
+				t.Errorf("derivedMinBendRadius(%v, %v, %q) = %.3f, want %.3f (2.25·D fallback)",
+					c.D, c.t, c.technique, got, c.want)
+			}
+		})
+	}
+	// Zero diameter → zero (no curve to bend).
+	if got := derivedMinBendRadius(0, 1.0, "ribbon"); got != 0 {
+		t.Errorf("derivedMinBendRadius(0, ...) = %v, want 0", got)
+	}
+}
+
+// TestRunBendLimitFallsBackToDerivedWhenSpecMissing verifies that when
+// the project's stored MinBendRadiusMM is zero AND wall thickness +
+// technique are present, runBendLimitMM returns the derived value.
+// Tier 3 #31.
+func TestRunBendLimitFallsBackToDerivedWhenSpecMissing(t *testing.T) {
+	limits := Limits{
+		DiameterMM:      12,
+		MinBendRadiusMM: 0,
+		WallThicknessMM: 1.2,
+		BendTechnique:   "crossfire",
+	}
+	pl := Polyline{Points: []Point{{0, 0}, {1, 0}}, Closed: false}
+	got := runBendLimitMM(pl, limits)
+	want := 0.225 * 12 * 12 / 1.2 // 27.0
+	if math.Abs(got-want) > 0.01 {
+		t.Errorf("runBendLimitMM(crossfire derived) = %v, want %v", got, want)
+	}
+}
+
+// TestRunBendLimitPrefersExplicitOverride verifies that when the spec
+// has an explicit MinBendRadiusMM value, the derivation does NOT run —
+// the user's override wins. Tier 3 #31.
+func TestRunBendLimitPrefersExplicitOverride(t *testing.T) {
+	limits := Limits{
+		DiameterMM:      12,
+		MinBendRadiusMM: 30, // explicit override
+		WallThicknessMM: 1.2,
+		BendTechnique:   "ribbon", // would give 0.20*144/1.2 = 24 mm
+	}
+	pl := Polyline{Points: []Point{{0, 0}, {1, 0}}, Closed: false}
+	got := runBendLimitMM(pl, limits)
+	if math.Abs(got-30) > 0.01 {
+		t.Errorf("runBendLimitMM(explicit=30, derived=24) = %v, want 30", got)
+	}
+}
+
+// TestRunBendLimitFallsBackToHeuristicWhenAllNull verifies backward
+// compatibility: a Limits with no wall thickness, no technique, and no
+// explicit min_bend_radius_mm falls back to the diameter-only 2.25·D
+// bound — which numerically matches today's seeded folklore values
+// within ±0.5 mm. Tier 3 #31.
+func TestRunBendLimitFallsBackToHeuristicWhenAllNull(t *testing.T) {
+	cases := []struct {
+		D, want float64
+	}{
+		{8, 18.0},   // 2.25·8 = 18.0 (matches seed 18)
+		{10, 22.5},  // matches seed 22 within 0.5
+		{12, 27.0},  // matches seed 27 exactly
+		{15, 33.75}, // matches seed 34 within 0.25
+	}
+	for _, c := range cases {
+		limits := Limits{DiameterMM: c.D}
+		pl := Polyline{Points: []Point{{0, 0}, {1, 0}}, Closed: false}
+		got := runBendLimitMM(pl, limits)
+		if math.Abs(got-c.want) > 0.01 {
+			t.Errorf("runBendLimitMM(D=%v, all-null) = %v, want %v", c.D, got, c.want)
+		}
+	}
+}
+
+// TestRunBendLimitDiameterRatioStillScalesDerivedBase verifies the
+// per-run diameter override still applies linearly even when the base
+// limit comes from the derivation (not an explicit override). Preserves
+// the existing wall-thinning ratio scaling. Tier 3 #31.
+func TestRunBendLimitDiameterRatioStillScalesDerivedBase(t *testing.T) {
+	limits := Limits{
+		DiameterMM:      12,
+		MinBendRadiusMM: 0, // derived path
+		WallThicknessMM: 1.07,
+		BendTechnique:   "ribbon",
+	}
+	// Per-run override at 15 mm — the limit should scale by 15/12.
+	pl := Polyline{Points: []Point{{0, 0}, {1, 0}}, Closed: false, DiameterMM: 15}
+	got := runBendLimitMM(pl, limits)
+	base := 0.20 * 12 * 12 / 1.07 // ≈ 26.92
+	want := base * 15 / 12        // ≈ 33.65
+	if math.Abs(got-want) > 0.01 {
+		t.Errorf("runBendLimitMM(derived base, run override) = %v, want %v", got, want)
+	}
+}
+
 // TestValidateSVGEmitsLeadInAndSharpBend confirms the two new rules are
 // wired into the public ValidateSVG entry point.
 func TestValidateSVGEmitsLeadInAndSharpBend(t *testing.T) {

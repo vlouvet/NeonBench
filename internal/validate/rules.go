@@ -61,6 +61,66 @@ func runDiameterMM(pl Polyline, limits Limits) float64 {
 	return limits.DiameterMM
 }
 
+// derivedMinBendRadius computes a minimum bend radius from tube geometry
+// and bend technique when the spec doesn't carry an explicit
+// min_bend_radius_mm override. The formula is:
+//
+//	r_min = K(technique) * D² / t
+//
+// where D is outer tube diameter (mm), t is the wall thickness (mm), and
+// K is a per-technique constant. The K table is calibrated to match the
+// wall-thinning first-principles bound from
+// docs/neon-rules/bend-radius.md ("first-principles derivation": for the
+// outside wall to retain ≥ 80 % of its original thickness through a 90°
+// bend, r ≥ 2.25·D). Picking K so that 2.25·D = K·D²/t at the typical
+// shop wall thickness for that diameter yields:
+//
+//	ribbon:     K = 0.20  (uniform heat → tightest bend, smallest K)
+//	crossfire:  K = 0.225 (concentrated heat → trade-typical)
+//	hand_torch: K = 0.275 (hand-aimed flame → loosest bend, largest K)
+//
+// Provenance: the per-diameter min-bend-radius table is NOT published in
+// either Saving Neon, Miller (1935), or Strattman NT (1997) — see
+// docs/neon-rules/bend-radius.md for citations and the "supersession
+// note" confirming that the trade treats bend radius as bender-craft.
+// Both editions reach the same conclusion: the threshold is when the
+// outside wall thins past spec, judged visually. Our K table therefore
+// formalizes "what shops do" against the doc's wall-thinning derivation
+// rather than citing a tabulated value that does not exist in the
+// literature. The K-by-technique split is a NeonBench-internal
+// engineering judgement (ribbon-heat is more uniform → less strain
+// concentration → tighter bend tolerable; hand-torch is the opposite).
+//
+// Graceful degradation: when wallThicknessMM ≤ 0 or technique is empty
+// or unknown, the helper falls back to the diameter-only 2.25·D bound,
+// which is exactly what today's seed values encode (within ±0.5 mm).
+// This preserves backward compatibility with specs that have not been
+// re-tagged with wall-thickness metadata.
+func derivedMinBendRadius(diameterMM, wallThicknessMM float64, technique string) float64 {
+	if diameterMM <= 0 {
+		return 0
+	}
+	// Fallback: diameter-only bound, doc-comment cited above. Used when
+	// either input is missing OR the technique tag is unrecognised.
+	if wallThicknessMM <= 0 {
+		return 2.25 * diameterMM
+	}
+	var k float64
+	switch technique {
+	case "ribbon":
+		k = 0.20
+	case "crossfire":
+		k = 0.225
+	case "hand_torch":
+		k = 0.275
+	default:
+		// Unknown / empty technique — fall back to the diameter-only
+		// bound rather than guessing a K value.
+		return 2.25 * diameterMM
+	}
+	return k * diameterMM * diameterMM / wallThicknessMM
+}
+
 // runBendLimitMM returns the effective minimum bend radius for a polyline.
 // When the polyline carries a per-run diameter override that differs from
 // the project default, the project's bend-radius limit is scaled linearly
@@ -68,11 +128,22 @@ func runDiameterMM(pl Polyline, limits Limits) float64 {
 // docs/neon-rules/bend-radius.md (r ∝ D for a fixed wall-strain budget).
 // Without an override, the project's limit is used as-is so the user's
 // tube-spec customization is preserved.
+//
+// When the project's stored MinBendRadiusMM is zero (no explicit
+// override on the spec), the limit falls through to the
+// wall-thinning-derived value computed by derivedMinBendRadius. The
+// derivation uses the spec's WallThicknessMM and BendTechnique when
+// they're populated; otherwise it gracefully degrades to the
+// diameter-only 2.25·D bound. Tier 3 #31.
 func runBendLimitMM(pl Polyline, limits Limits) float64 {
-	if pl.DiameterMM > 0 && limits.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
-		return limits.MinBendRadiusMM * pl.DiameterMM / limits.DiameterMM
+	base := limits.MinBendRadiusMM
+	if base <= 0 {
+		base = derivedMinBendRadius(limits.DiameterMM, limits.WallThicknessMM, limits.BendTechnique)
 	}
-	return limits.MinBendRadiusMM
+	if pl.DiameterMM > 0 && limits.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
+		return base * pl.DiameterMM / limits.DiameterMM
+	}
+	return base
 }
 
 // checkBendRadius scans each polyline using a 3-point discrete circumradius

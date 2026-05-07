@@ -42,6 +42,12 @@ type Report struct {
 // Miller App I §126 and Saving Neon), and SharpBendAngleDeg falls back to
 // 85° (the trade-standard threshold below which a hand-bender starts
 // fighting stress concentration on round tube).
+//
+// WallThicknessMM and BendTechnique are optional Tier 3 #31 inputs to the
+// bend-radius derivation. When MinBendRadiusMM is zero, runBendLimitMM
+// consults derivedMinBendRadius(DiameterMM, WallThicknessMM, BendTechnique)
+// — see internal/validate/rules.go for the K-table and provenance. Both
+// fields gracefully degrade to a diameter-only fallback when empty.
 type Limits struct {
 	DiameterMM         float64
 	MinBendRadiusMM    float64
@@ -49,6 +55,8 @@ type Limits struct {
 	MinSpacingMM       float64
 	MinLeadInMM        float64
 	SharpBendAngleDeg  float64
+	WallThicknessMM    float64
+	BendTechnique      string
 }
 
 // HasErrors returns true if any issue has SeverityError.

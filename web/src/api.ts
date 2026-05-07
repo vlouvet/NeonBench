@@ -5,9 +5,63 @@ export type TubeSpec = {
   min_bend_radius_mm: number;
   max_segment_length_mm: number;
   min_spacing_mm: number;
+  // Optional bend-radius derivation inputs (Tier 3 #31). When the
+  // project leaves min_bend_radius_mm blank, the validator computes
+  // r_min = K * D² / t where K is a per-technique constant and t is
+  // wall_thickness_mm. The fields are nullable on the server; the JSON
+  // omits them entirely when the column is NULL, so consumers should
+  // treat undefined as "no spec metadata; the validator will fall
+  // through to the diameter-only 2.25·D bound". See
+  // docs/neon-rules/bend-radius.md and internal/validate/rules.go's
+  // derivedMinBendRadius helper for provenance and the K table.
+  wall_thickness_mm?: number;
+  bend_technique?: 'ribbon' | 'crossfire' | 'hand_torch';
   is_default: boolean;
   created_at: string;
 };
+
+// Bend technique vocabulary, surfaced to the editor's <select>. Order
+// is "tightest bend → loosest", matching the K-constant table:
+//
+//   ribbon     — uniform ribbon-burner heat, K = 0.20 (tightest bend)
+//   crossfire  — concentrated crossfire heat, K = 0.225 (typical)
+//   hand_torch — hand-aimed flame, K = 0.275 (loosest)
+//
+// When the spec has no technique set the editor shows "(unset)" and
+// the derived radius computation falls back to the diameter-only 2.25·D
+// bound.
+export const BEND_TECHNIQUES = [
+  { value: 'ribbon', label: 'Ribbon burner (K=0.20, tightest)' },
+  { value: 'crossfire', label: 'Crossfire (K=0.225, typical)' },
+  { value: 'hand_torch', label: 'Hand torch (K=0.275, loosest)' },
+] as const;
+
+export type BendTechnique = (typeof BEND_TECHNIQUES)[number]['value'];
+
+// K constants for derivedMinBendRadiusMM, kept in lock-step with the
+// Go-side derivedMinBendRadius helper so the editor's "Derived: …"
+// indicator matches what the validator will compute.
+const BEND_TECHNIQUE_K: Record<BendTechnique, number> = {
+  ribbon: 0.20,
+  crossfire: 0.225,
+  hand_torch: 0.275,
+};
+
+// derivedMinBendRadiusMM mirrors the Go-side helper for editor preview.
+// Returns 0 when the diameter is missing; falls back to the
+// diameter-only 2.25·D bound when wall thickness or technique is
+// missing/unknown.
+export function derivedMinBendRadiusMM(
+  diameterMM: number,
+  wallThicknessMM: number | null | undefined,
+  technique: BendTechnique | null | undefined,
+): number {
+  if (!Number.isFinite(diameterMM) || diameterMM <= 0) return 0;
+  if (!wallThicknessMM || wallThicknessMM <= 0) return 2.25 * diameterMM;
+  if (!technique || !(technique in BEND_TECHNIQUE_K)) return 2.25 * diameterMM;
+  const k = BEND_TECHNIQUE_K[technique];
+  return (k * diameterMM * diameterMM) / wallThicknessMM;
+}
 
 export type Project = {
   id: number;
