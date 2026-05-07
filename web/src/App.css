@@ -795,3 +795,82 @@
 .save-section .btn-primary {
   text-align: center;
 }
+
+/* Tier 3 #24 — bitmap adjustments polish: draggable crop overlay + auto-
+   rotate hint. The overlay sits on top of the source preview canvas inside
+   .vp-source-stack. The canvas paints normally; the overlay catches pointer
+   events when interactive (rubber-banding from empty, or moving / resizing
+   an existing rectangle). The four .vp-crop-mask quads dim the area
+   outside the crop so the live region stays visually dominant. */
+.vp-source-stack {
+  position: relative;
+  display: block;
+}
+.vp-source-stack > .vp-preview-canvas {
+  display: block;
+}
+.vp-crop-overlay {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  /* When no crop is set, the entire overlay is a rubber-band target. When
+     a crop IS set the overlay container itself stops capturing — the
+     .vp-crop-rect (body) and .vp-crop-handle children handle their own
+     pointerdown via stopPropagation. */
+}
+.vp-crop-overlay.has-crop {
+  cursor: default;
+}
+.vp-crop-mask {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+}
+.vp-crop-rect {
+  position: absolute;
+  border: 1px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+  cursor: move;
+  box-sizing: border-box;
+}
+.vp-crop-handle {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  box-sizing: border-box;
+}
+.vp-crop-handle.h-tl { left: -5px; top: -5px; cursor: nwse-resize; }
+.vp-crop-handle.h-tr { right: -5px; top: -5px; cursor: nesw-resize; }
+.vp-crop-handle.h-bl { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.vp-crop-handle.h-br { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.vp-crop-handle.h-t  { left: 50%; top: -5px; transform: translateX(-50%); cursor: ns-resize; }
+.vp-crop-handle.h-b  { left: 50%; bottom: -5px; transform: translateX(-50%); cursor: ns-resize; }
+.vp-crop-handle.h-l  { left: -5px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.vp-crop-handle.h-r  { right: -5px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+
+/* Auto-rotate button + hint sit inside the rotation grid cell. The hint
+   line slides under the row when present so it doesn't reflow the
+   surrounding layout while displayed. */
+.vp-rotation-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+.vp-rotation-row input[type='number'] {
+  flex: 1;
+  min-width: 0;
+}
+.vp-auto-rotate {
+  white-space: nowrap;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
+.vp-auto-rotate-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
+}

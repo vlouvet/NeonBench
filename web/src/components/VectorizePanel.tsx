@@ -1,5 +1,6 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DesignVersion, type VectorizeRequest } from '../api';
+import { estimateSkewDegrees } from '../lib/hough';
 
 // Max dimension we'll render the preview at. Source images larger than this
 // are downsampled before being binarized — this is a UI hint, not the actual
@@ -215,6 +216,78 @@ function cropBuffer(
     out.set(src.pixels.subarray(si, si + w * 4), di);
   }
   return { pixels: out, width: w, height: h };
+}
+
+// Minimum crop rectangle dimension in CACHE-pixel space. Smaller than this
+// and the rectangle becomes hard to grab + degenerate to vectorize.
+const MIN_CROP_PX = 8;
+
+// Crop drag interaction modes. The crop overlay is the first interactive
+// layer on the source preview canvas, so we own the state directly.
+type CropDragMode =
+  | { kind: 'none' }
+  | {
+      kind: 'create';
+      startCacheX: number;
+      startCacheY: number;
+    }
+  | {
+      kind: 'move';
+      startCropX: number;
+      startCropY: number;
+      cropW: number;
+      cropH: number;
+      pointerStartCacheX: number;
+      pointerStartCacheY: number;
+    }
+  | {
+      kind: 'resize';
+      // The four corners of the rectangle at drag start, in cache-pixel
+      // coords. For a corner drag, the anchor is the opposite corner; the
+      // dragged corner is replaced by the pointer position. For an edge
+      // drag, two corners share an axis with the anchor and don't move on
+      // that axis; we encode this via `axis`:
+      //   'both' = corner drag (free X and Y)
+      //   'x'    = vertical edge drag (free X only — Y locked)
+      //   'y'    = horizontal edge drag (free Y only — X locked)
+      anchorCacheX: number;
+      anchorCacheY: number;
+      // For edge drags, the OPPOSITE-side coordinate that must stay fixed
+      // on the locked axis. (Unused for 'both'.)
+      lockedOppositeX: number;
+      lockedOppositeY: number;
+      axis: 'both' | 'x' | 'y';
+      pointerStartCacheX: number;
+      pointerStartCacheY: number;
+      // For aspect-ratio lock: the original aspect ratio of the rectangle
+      // when the drag started (W / H). Read when shiftKey is held during
+      // pointermove on a corner drag.
+      startAspect: number;
+    };
+
+type CropRect = { x: number; y: number; w: number; h: number };
+
+// Clamp a cache-pixel rectangle to the buffer bounds and the MIN_CROP_PX
+// minimum. Returns the clamped rectangle; preserves the (top-left, bottom-
+// right) orientation supplied (the caller is responsible for normalising
+// "dragged through anchor" before calling this).
+function clampCrop(
+  rect: CropRect,
+  bufferW: number,
+  bufferH: number,
+): CropRect {
+  let x = Math.max(0, Math.min(bufferW - MIN_CROP_PX, rect.x));
+  let y = Math.max(0, Math.min(bufferH - MIN_CROP_PX, rect.y));
+  let w = Math.max(MIN_CROP_PX, Math.min(bufferW - x, rect.w));
+  let h = Math.max(MIN_CROP_PX, Math.min(bufferH - y, rect.h));
+  // Round to integer cache pixels — the typed inputs are integer-only too.
+  x = Math.round(x);
+  y = Math.round(y);
+  w = Math.round(w);
+  h = Math.round(h);
+  if (x + w > bufferW) w = bufferW - x;
+  if (y + h > bufferH) h = bufferH - y;
+  return { x, y, w, h };
 }
 
 function applyBrightnessContrast(
@@ -449,6 +522,324 @@ export default function VectorizePanel({
     setAdjustments((a) => ({ ...a, cropX: '', cropY: '', cropW: '', cropH: '' }));
   }
 
+  // Crop overlay drag state. Component-local — the spec disallows
+  // persistence to URL / localStorage. We keep it in a ref because the
+  // pointermove handlers run on the window and don't need to re-render.
+  const cropDragRef = useRef<CropDragMode>({ kind: 'none' });
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const [autoRotateHint, setAutoRotateHint] = useState<string | null>(null);
+  const autoRotateTimerRef = useRef<number | null>(null);
+
+  // Resolve the current crop rectangle from `adjustments`. Returns null when
+  // any of the four fields is unset — the overlay then renders the rubber-
+  // band-only state.
+  const cropRect: CropRect | null = useMemo(() => {
+    const { cropX, cropY, cropW, cropH } = adjustments;
+    if (cropX === '' || cropY === '' || cropW === '' || cropH === '') return null;
+    const x = Number(cropX);
+    const y = Number(cropY);
+    const w = Number(cropW);
+    const h = Number(cropH);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(w) || !Number.isFinite(h)) return null;
+    if (w <= 0 || h <= 0) return null;
+    return { x, y, w, h };
+  }, [adjustments]);
+
+  // Pointer-event → cache-pixel conversion. We measure the overlay's
+  // bounding rect on each pointer event because CSS resizes the canvas as
+  // the adjusted buffer changes (rotation grows it, crop shrinks it).
+  const pointerToCache = useCallback(
+    (clientX: number, clientY: number) => {
+      const overlay = overlayRef.current;
+      if (!overlay || !adjustedBuffer) return null;
+      const rect = overlay.getBoundingClientRect();
+      const dx = clientX - rect.left;
+      const dy = clientY - rect.top;
+      const sx = adjustedBuffer.width / Math.max(1, rect.width);
+      const sy = adjustedBuffer.height / Math.max(1, rect.height);
+      return { x: dx * sx, y: dy * sy };
+    },
+    [adjustedBuffer],
+  );
+
+  // Commit a (cache-pixel) rectangle to adjustments, clamped + rounded.
+  const commitCropRect = useCallback(
+    (rect: CropRect) => {
+      if (!adjustedBuffer) return;
+      const clamped = clampCrop(rect, adjustedBuffer.width, adjustedBuffer.height);
+      setAdjustments((a) => ({
+        ...a,
+        cropX: clamped.x,
+        cropY: clamped.y,
+        cropW: clamped.w,
+        cropH: clamped.h,
+      }));
+    },
+    [adjustedBuffer],
+  );
+
+  // Pointermove / pointerup are bound at the window level so a drag stays
+  // smooth even when the cursor leaves the overlay. The single useEffect
+  // below installs them whenever a drag is in progress.
+  const [dragActive, setDragActive] = useState(false);
+  useEffect(() => {
+    if (!dragActive) return;
+    function onMove(e: PointerEvent) {
+      const drag = cropDragRef.current;
+      if (drag.kind === 'none') return;
+      const cur = pointerToCache(e.clientX, e.clientY);
+      if (!cur || !adjustedBuffer) return;
+      if (drag.kind === 'create') {
+        const x = Math.min(drag.startCacheX, cur.x);
+        const y = Math.min(drag.startCacheY, cur.y);
+        const w = Math.abs(cur.x - drag.startCacheX);
+        const h = Math.abs(cur.y - drag.startCacheY);
+        // Only commit if user has dragged far enough that the rectangle
+        // exceeds the minimum size — avoids a stray click leaving a tiny
+        // crop. Below the minimum we keep the previous (null) crop and
+        // wait for them to drag further.
+        if (w >= MIN_CROP_PX && h >= MIN_CROP_PX) {
+          commitCropRect({ x, y, w, h });
+        }
+        return;
+      }
+      if (drag.kind === 'move') {
+        const dx = cur.x - drag.pointerStartCacheX;
+        const dy = cur.y - drag.pointerStartCacheY;
+        // For a translate, preserve the size and clamp x/y so the
+        // rectangle stays inside the buffer. clampCrop's generic logic
+        // would shrink the rect at the boundary, which is wrong for a
+        // pure move — handle it explicitly here.
+        const maxX = Math.max(0, adjustedBuffer.width - drag.cropW);
+        const maxY = Math.max(0, adjustedBuffer.height - drag.cropH);
+        const nx = Math.max(0, Math.min(maxX, drag.startCropX + dx));
+        const ny = Math.max(0, Math.min(maxY, drag.startCropY + dy));
+        commitCropRect({
+          x: nx,
+          y: ny,
+          w: drag.cropW,
+          h: drag.cropH,
+        });
+        return;
+      }
+      // Resize: anchor stays fixed. For corner drags both axes follow the
+      // pointer; for edge drags only one axis follows and the other holds
+      // its drag-start size via lockedOppositeX/Y.
+      let oppX = drag.axis === 'y' ? drag.lockedOppositeX : cur.x;
+      let oppY = drag.axis === 'x' ? drag.lockedOppositeY : cur.y;
+      // Aspect-ratio lock with Shift on a true corner drag. For edge drags
+      // Shift has no effect — there's only one free dimension.
+      if (e.shiftKey && drag.axis === 'both' && drag.startAspect > 0) {
+        const dx = oppX - drag.anchorCacheX;
+        const dy = oppY - drag.anchorCacheY;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        if (absDx >= absDy) {
+          const sign = dy < 0 ? -1 : 1;
+          oppY = drag.anchorCacheY + sign * (absDx / drag.startAspect);
+        } else {
+          const sign = dx < 0 ? -1 : 1;
+          oppX = drag.anchorCacheX + sign * absDy * drag.startAspect;
+        }
+      }
+      const x = Math.min(drag.anchorCacheX, oppX);
+      const y = Math.min(drag.anchorCacheY, oppY);
+      const w = Math.max(MIN_CROP_PX, Math.abs(oppX - drag.anchorCacheX));
+      const h = Math.max(MIN_CROP_PX, Math.abs(oppY - drag.anchorCacheY));
+      commitCropRect({ x, y, w, h });
+    }
+    function onUp() {
+      cropDragRef.current = { kind: 'none' };
+      setDragActive(false);
+    }
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [dragActive, pointerToCache, adjustedBuffer, commitCropRect]);
+
+  // Pointerdown on the overlay container: either start rubber-banding (if
+  // no crop is set) or fall through (the crop body / handles install their
+  // own pointerdown listeners and stopPropagation here).
+  const onOverlayPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!adjustedBuffer) return;
+      if (cropRect) return; // body / handles handle their own events
+      const cur = pointerToCache(e.clientX, e.clientY);
+      if (!cur) return;
+      cropDragRef.current = {
+        kind: 'create',
+        startCacheX: cur.x,
+        startCacheY: cur.y,
+      };
+      setDragActive(true);
+      e.preventDefault();
+    },
+    [adjustedBuffer, cropRect, pointerToCache],
+  );
+
+  const onCropBodyPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!adjustedBuffer || !cropRect) return;
+      const cur = pointerToCache(e.clientX, e.clientY);
+      if (!cur) return;
+      cropDragRef.current = {
+        kind: 'move',
+        startCropX: cropRect.x,
+        startCropY: cropRect.y,
+        cropW: cropRect.w,
+        cropH: cropRect.h,
+        pointerStartCacheX: cur.x,
+        pointerStartCacheY: cur.y,
+      };
+      setDragActive(true);
+      e.stopPropagation();
+      e.preventDefault();
+    },
+    [adjustedBuffer, cropRect, pointerToCache],
+  );
+
+  // Begin a resize. `anchor` names the corner / edge that STAYS FIXED.
+  const onHandlePointerDown = useCallback(
+    (
+      e: React.PointerEvent<HTMLDivElement>,
+      anchor: 'tl' | 'tr' | 'bl' | 'br' | 't' | 'b' | 'l' | 'r',
+    ) => {
+      if (!adjustedBuffer || !cropRect) return;
+      const cur = pointerToCache(e.clientX, e.clientY);
+      if (!cur) return;
+      const { x, y, w, h } = cropRect;
+      // Anchor is the opposite corner / edge of the one being dragged.
+      // For edge drags, the locked-opposite encodes the side that must keep
+      // its current coord on the locked axis (e.g. dragging the top edge
+      // moves Y but neither X side moves; we encode anchor at one X side
+      // and lockedOppositeX at the other).
+      let anchorX = x;
+      let anchorY = y;
+      let lockedOppositeX = x + w;
+      let lockedOppositeY = y + h;
+      let axis: 'both' | 'x' | 'y' = 'both';
+      switch (anchor) {
+        case 'tl': // dragging top-left → anchor bottom-right
+          anchorX = x + w;
+          anchorY = y + h;
+          break;
+        case 'tr': // dragging top-right → anchor bottom-left
+          anchorX = x;
+          anchorY = y + h;
+          break;
+        case 'bl': // dragging bottom-left → anchor top-right
+          anchorX = x + w;
+          anchorY = y;
+          break;
+        case 'br': // dragging bottom-right → anchor top-left
+          anchorX = x;
+          anchorY = y;
+          break;
+        case 't': // top edge: Y follows pointer, both X sides locked
+          anchorX = x + w;
+          anchorY = y + h;
+          lockedOppositeX = x;
+          axis = 'x';
+          break;
+        case 'b': // bottom edge
+          anchorX = x + w;
+          anchorY = y;
+          lockedOppositeX = x;
+          axis = 'x';
+          break;
+        case 'l': // left edge: X follows pointer, both Y sides locked
+          anchorX = x + w;
+          anchorY = y + h;
+          lockedOppositeY = y;
+          axis = 'y';
+          break;
+        case 'r': // right edge
+          anchorX = x;
+          anchorY = y + h;
+          lockedOppositeY = y;
+          axis = 'y';
+          break;
+      }
+      cropDragRef.current = {
+        kind: 'resize',
+        anchorCacheX: anchorX,
+        anchorCacheY: anchorY,
+        lockedOppositeX,
+        lockedOppositeY,
+        axis,
+        pointerStartCacheX: cur.x,
+        pointerStartCacheY: cur.y,
+        startAspect: h > 0 ? w / h : 1,
+      };
+      setDragActive(true);
+      e.stopPropagation();
+      e.preventDefault();
+    },
+    [adjustedBuffer, cropRect, pointerToCache],
+  );
+
+  // Auto-rotate. Runs synchronously — the Hough estimator on a 1024×768
+  // cache buffer takes < 30 ms in dev, well under the 500 ms budget.
+  const onAutoRotate = useCallback(() => {
+    if (!adjustedBuffer) return;
+    const result = estimateSkewDegrees(
+      adjustedBuffer.pixels,
+      adjustedBuffer.width,
+      adjustedBuffer.height,
+      { searchRangeDeg: 15 },
+    );
+    if (autoRotateTimerRef.current !== null) {
+      window.clearTimeout(autoRotateTimerRef.current);
+      autoRotateTimerRef.current = null;
+    }
+    if (!result) {
+      setAutoRotateHint('No clear skew detected (try cropping first).');
+    } else {
+      // Negate: we want to apply the rotation that UNDOES the detected skew.
+      const target = Math.round(-result.angleDeg * 10) / 10;
+      setAdjustments((a) => ({ ...a, rotationDeg: target }));
+      const sign = result.angleDeg >= 0 ? '' : '−';
+      const absSkew = Math.abs(result.angleDeg).toFixed(1);
+      const targetSign = target >= 0 ? '+' : '−';
+      const absTarget = Math.abs(target).toFixed(1);
+      setAutoRotateHint(
+        `Detected ${sign}${absSkew}° skew → ${targetSign}${absTarget}°`,
+      );
+    }
+    autoRotateTimerRef.current = window.setTimeout(() => {
+      setAutoRotateHint(null);
+      autoRotateTimerRef.current = null;
+    }, 4000);
+  }, [adjustedBuffer]);
+
+  useEffect(() => {
+    return () => {
+      if (autoRotateTimerRef.current !== null) {
+        window.clearTimeout(autoRotateTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Compute the overlay's pixel-space rectangle from the cache-space crop
+  // and the displayed canvas size. Used both for rendering and for the
+  // mask overlay's clip-path.
+  const overlayRect = useMemo(() => {
+    if (!cropRect || !adjustedBuffer) return null;
+    const sx = previewSize.w / Math.max(1, adjustedBuffer.width);
+    const sy = previewSize.h / Math.max(1, adjustedBuffer.height);
+    return {
+      left: cropRect.x * sx,
+      top: cropRect.y * sy,
+      width: cropRect.w * sx,
+      height: cropRect.h * sy,
+    };
+  }, [cropRect, adjustedBuffer, previewSize]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -555,14 +946,91 @@ export default function VectorizePanel({
           {source.kind === 'ready' && (
             <div className="vp-preview-pair">
               <figure className="vp-preview-figure">
-                <canvas
-                  ref={sourceCanvasRef}
-                  className="vp-preview-canvas"
-                  style={{
-                    width: previewSize.w,
-                    height: previewSize.h,
-                  }}
-                />
+                <div
+                  className="vp-source-stack"
+                  style={{ width: previewSize.w, height: previewSize.h }}
+                >
+                  <canvas
+                    ref={sourceCanvasRef}
+                    className="vp-preview-canvas"
+                    style={{
+                      width: previewSize.w,
+                      height: previewSize.h,
+                    }}
+                  />
+                  <div
+                    ref={overlayRef}
+                    className={`vp-crop-overlay${cropRect ? ' has-crop' : ''}`}
+                    onPointerDown={onOverlayPointerDown}
+                    style={{ width: previewSize.w, height: previewSize.h }}
+                    role="presentation"
+                  >
+                    {overlayRect && (
+                      <>
+                        {/* Four masking quads that dim everything outside
+                            the crop. Using four divs (rather than SVG +
+                            clip-path) keeps the markup simple and the dim
+                            shade falls behind the rectangle stroke. */}
+                        <div
+                          className="vp-crop-mask"
+                          style={{
+                            left: 0,
+                            top: 0,
+                            width: '100%',
+                            height: overlayRect.top,
+                          }}
+                        />
+                        <div
+                          className="vp-crop-mask"
+                          style={{
+                            left: 0,
+                            top: overlayRect.top + overlayRect.height,
+                            width: '100%',
+                            bottom: 0,
+                          }}
+                        />
+                        <div
+                          className="vp-crop-mask"
+                          style={{
+                            left: 0,
+                            top: overlayRect.top,
+                            width: overlayRect.left,
+                            height: overlayRect.height,
+                          }}
+                        />
+                        <div
+                          className="vp-crop-mask"
+                          style={{
+                            left: overlayRect.left + overlayRect.width,
+                            top: overlayRect.top,
+                            right: 0,
+                            height: overlayRect.height,
+                          }}
+                        />
+                        <div
+                          className="vp-crop-rect"
+                          onPointerDown={onCropBodyPointerDown}
+                          style={{
+                            left: overlayRect.left,
+                            top: overlayRect.top,
+                            width: overlayRect.width,
+                            height: overlayRect.height,
+                          }}
+                        >
+                          {(['tl', 'tr', 'bl', 'br', 't', 'b', 'l', 'r'] as const).map(
+                            (h) => (
+                              <div
+                                key={h}
+                                className={`vp-crop-handle h-${h}`}
+                                onPointerDown={(e) => onHandlePointerDown(e, h)}
+                              />
+                            ),
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
                 <figcaption>Source (after adjustments)</figcaption>
               </figure>
               <figure className="vp-preview-figure">
@@ -613,19 +1081,33 @@ export default function VectorizePanel({
                   }))
                 }
               />
-              <input
-                type="number"
-                min={-45}
-                max={45}
-                step={0.5}
-                value={adjustments.rotationDeg}
-                onChange={(e) =>
-                  setAdjustments((a) => ({
-                    ...a,
-                    rotationDeg: Number(e.target.value),
-                  }))
-                }
-              />
+              <div className="vp-rotation-row">
+                <input
+                  type="number"
+                  min={-45}
+                  max={45}
+                  step={0.5}
+                  value={adjustments.rotationDeg}
+                  onChange={(e) =>
+                    setAdjustments((a) => ({
+                      ...a,
+                      rotationDeg: Number(e.target.value),
+                    }))
+                  }
+                />
+                <button
+                  type="button"
+                  className="vp-auto-rotate"
+                  onClick={onAutoRotate}
+                  disabled={source.kind !== 'ready'}
+                  title="Estimate the dominant skew of the (cropped) image and rotate to level it. Crop to a region first if the image has a clear feature you want straightened."
+                >
+                  Auto-rotate
+                </button>
+              </div>
+              {autoRotateHint && (
+                <span className="vp-auto-rotate-hint">{autoRotateHint}</span>
+              )}
             </label>
             <label title="Brightness offset added to each channel. Negative darkens, positive brightens.">
               Brightness ({adjustments.brightness >= 0 ? '+' : ''}
