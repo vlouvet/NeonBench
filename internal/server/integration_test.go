@@ -210,6 +210,39 @@ func TestEditorPipelineFromOpenNeon(t *testing.T) {
 		t.Errorf("print.pdf did not return a PDF document (first 8 bytes: %q)", pdfBytes[:min(8, len(pdfBytes))])
 	}
 	t.Logf("print.pdf: %d bytes", len(pdfBytes))
+
+	// 9c) DXF export must emit a valid R12 ASCII file with one
+	// LWPOLYLINE per run. Tier 2 #11 — the bender feed.
+	dxfResp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(newVersionID) + "/print.dxf")
+	if err != nil {
+		t.Fatalf("print.dxf: %v", err)
+	}
+	defer dxfResp.Body.Close()
+	if dxfResp.StatusCode != 200 {
+		body, _ := io.ReadAll(dxfResp.Body)
+		t.Fatalf("print.dxf status %d: %s", dxfResp.StatusCode, body)
+	}
+	if got := dxfResp.Header.Get("content-type"); got != "application/dxf" {
+		t.Errorf("print.dxf content-type: want application/dxf, got %q", got)
+	}
+	dxfBytes, _ := io.ReadAll(dxfResp.Body)
+	dxf := string(dxfBytes)
+	if !strings.HasPrefix(dxf, "0\nSECTION\n2\nHEADER\n") {
+		t.Errorf("print.dxf missing HEADER preamble (first 80 bytes: %q)", dxf[:min(80, len(dxf))])
+	}
+	if !strings.Contains(dxf, "$ACADVER\n1\nAC1009\n") {
+		t.Errorf("print.dxf missing $ACADVER=AC1009")
+	}
+	if !strings.Contains(dxf, "$INSUNITS\n70\n4\n") {
+		t.Errorf("print.dxf missing $INSUNITS=4 (mm)")
+	}
+	if got := strings.Count(dxf, "LWPOLYLINE"); got != len(reDoc.Runs) {
+		t.Errorf("print.dxf LWPOLYLINE count: want %d (one per run), got %d", len(reDoc.Runs), got)
+	}
+	if !strings.HasSuffix(strings.TrimRight(dxf, "\n"), "0\nEOF") {
+		t.Errorf("print.dxf missing EOF terminator")
+	}
+	t.Logf("print.dxf: %d bytes, %d runs", len(dxfBytes), len(reDoc.Runs))
 }
 
 // applyOpenRunEdits exercises every editor tool that needs an open run:
