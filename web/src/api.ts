@@ -14,6 +14,12 @@ export type Project = {
   name: string;
   tube_spec_id: number;
   units: 'mm' | 'in';
+  // Optional Job Manager fields. The server returns empty string when the
+  // column is NULL, so consumers can treat falsy as "unset" uniformly.
+  customer: string;
+  designer: string;
+  due_date: string;
+  job_number: string;
   created_at: string;
   updated_at: string;
 };
@@ -158,7 +164,15 @@ export const api = {
   listTubeSpecs: () => req<TubeSpec[]>('/api/tube_specs'),
   listProjects: () => req<Project[]>('/api/projects'),
   getProject: (id: number) => req<Project>(`/api/projects/${id}`),
-  createProject: (body: { name: string; tube_spec_id: number; units?: string }) =>
+  createProject: (body: {
+    name: string;
+    tube_spec_id: number;
+    units?: string;
+    customer?: string;
+    designer?: string;
+    due_date?: string;
+    job_number?: string;
+  }) =>
     req<Project>('/api/projects', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -167,7 +181,15 @@ export const api = {
   deleteProject: (id: number) => req<void>(`/api/projects/${id}`, { method: 'DELETE' }),
   updateProject: (
     id: number,
-    body: { name?: string; tube_spec_id?: number; units?: 'mm' | 'in' },
+    body: {
+      name?: string;
+      tube_spec_id?: number;
+      units?: 'mm' | 'in';
+      customer?: string;
+      designer?: string;
+      due_date?: string;
+      job_number?: string;
+    },
   ) =>
     req<Project>(`/api/projects/${id}`, {
       method: 'PATCH',
