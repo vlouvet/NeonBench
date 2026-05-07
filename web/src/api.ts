@@ -130,6 +130,8 @@ export function parseReport(dv: DesignVersion | null | undefined): ValidationRep
   }
 }
 
+export type VectorizeCrop = { x: number; y: number; w: number; h: number };
+
 export type VectorizeRequest = {
   asset_id: number;
   target_width_mm: number;
@@ -137,6 +139,12 @@ export type VectorizeRequest = {
   smoothing_mm?: number; // RDP epsilon override; blank → auto from tube diameter
   min_spur_mm?: number;  // skeleton spur prune length; blank → auto from tube diameter
   label?: string;
+  // Pre-binarize bitmap adjustments. Apply order on the server is:
+  // rotate → crop → brightness → contrast → luminance → threshold.
+  rotation_deg?: number; // -45..+45 (positive = counter-clockwise)
+  crop?: VectorizeCrop;  // source-pixel rectangle, post-rotation
+  brightness?: number;   // -100..+100, channel offset
+  contrast?: number;     // 0.5..2.0, multiplicative around mid-128
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
