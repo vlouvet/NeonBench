@@ -84,6 +84,12 @@ export type Project = {
   // omits the field when NULL; renderers fall back to the 100 mm
   // (≈ 4 in) shop default.
   channel_letter_depth_mm?: number;
+  // Optional channel-letter strip-overlap allowance in millimeters
+  // (Tier 3 #26). Drawn as a dashed shear line on each unfolded
+  // return-strip page so the fabricator knows where to cut for the
+  // doubled-back seam. Server omits the field when NULL; renderers
+  // fall back to the 12.7 mm (½ in) shop default.
+  strip_overlap_mm?: number;
   created_at: string;
   updated_at: string;
 };
@@ -98,6 +104,11 @@ export const DEFAULT_TUBE_END_GAP_MM = 6.35;
 // Ch.5; Miller p.88). Used wherever the project hasn't set its own
 // override.
 export const DEFAULT_CHANNEL_LETTER_DEPTH_MM = 100;
+
+// Default strip-overlap allowance, in millimeters. ½ in (12.7 mm) is
+// the trade-typical doubled-seam allowance (Strattman NT Ch.5). Used
+// wherever the project hasn't set its own override.
+export const DEFAULT_STRIP_OVERLAP_MM = 12.7;
 
 export type AssetKind = 'source_image' | 'vector' | 'print_output';
 
@@ -174,6 +185,18 @@ export type DesignRun = {
   // strip" page so the operator can fold a metal strip around
   // the perimeter to form the side wall (NW #106).
   is_channel_letter_face?: boolean;
+  // Optional per-run channel-letter depth override in millimeters
+  // (Tier 3 #26). When set, the run's return strip is emitted at
+  // this depth instead of the project default. Only meaningful
+  // when is_channel_letter_face is true. Lets one project mix
+  // tall and shallow returns.
+  channel_letter_depth_mm?: number;
+  // Optional raceway grouping label (Tier 3 #26). Runs sharing
+  // the same non-empty raceway_id are emitted as ONE combined
+  // unfolded return strip in declaration order — Strattman
+  // raceway construction (e.g. all letters in "OPEN" share one
+  // continuous back-channel). Empty / missing = ungrouped.
+  raceway_id?: string;
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {
@@ -192,6 +215,9 @@ export type ValidationIssue = {
     | 'min_spacing'
     | 'crossing_needs_blockout'
     | 'splice_recommended'
+    | 'min_lead_in'
+    | 'sharp_bend_angle'
+    | 'face_perimeter_exceeds_blank'
     | 'unsupported_path';
   severity: 'error' | 'warning';
   message: string;
@@ -293,6 +319,7 @@ export const api = {
     job_number?: string;
     tube_end_gap_mm?: number;
     channel_letter_depth_mm?: number;
+    strip_overlap_mm?: number;
   }) =>
     req<Project>('/api/projects', {
       method: 'POST',
@@ -315,6 +342,8 @@ export const api = {
       tube_end_gap_mm?: number | null;
       // Same three-state semantics as tube_end_gap_mm.
       channel_letter_depth_mm?: number | null;
+      // Same three-state semantics as the two above (Tier 3 #26).
+      strip_overlap_mm?: number | null;
     },
   ) =>
     req<Project>(`/api/projects/${id}`, {

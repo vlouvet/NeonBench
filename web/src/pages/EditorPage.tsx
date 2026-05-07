@@ -414,6 +414,14 @@ export default function EditorPage() {
     editDoc((prev) => ops.setRunChannelLetterFace(prev, runId, isFace));
   }
 
+  function setRunChannelLetterDepth(runId: string, depthMM: number | null) {
+    editDoc((prev) => ops.setRunChannelLetterDepth(prev, runId, depthMM));
+  }
+
+  function setRunRacewayID(runId: string, racewayID: string) {
+    editDoc((prev) => ops.setRunRacewayID(prev, runId, racewayID));
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (!selected) return;
     editDoc((prev) => ops.simplifyRun(prev, selected, epsilonMM));
@@ -876,6 +884,46 @@ export default function EditorPage() {
                 />
                 {' '}Channel letter face
               </label>
+              {selectedRun.is_channel_letter_face && (
+                <>
+                  <label
+                    className="run-channel-letter-depth"
+                    title="Optional per-run depth (mm) override for this face's return strip. Empty = use the project default. Lets you mix tall and shallow returns in one project (Tier 3 #26)."
+                  >
+                    Depth (mm)
+                    <input
+                      type="number"
+                      step="1"
+                      min="10"
+                      max="500"
+                      value={selectedRun.channel_letter_depth_mm ?? ''}
+                      placeholder="project default"
+                      onChange={(e) => {
+                        const raw = e.target.value.trim();
+                        setRunChannelLetterDepth(
+                          selectedRun.id,
+                          raw === '' ? null : Number(raw),
+                        );
+                      }}
+                    />
+                  </label>
+                  <label
+                    className="run-raceway-id"
+                    title="Optional raceway grouping label. Runs sharing the same value are emitted as ONE combined unfolded return strip on the print PDF (Strattman raceway construction). Empty = ungrouped. Tier 3 #26."
+                  >
+                    Raceway id
+                    <input
+                      type="text"
+                      maxLength={32}
+                      value={selectedRun.raceway_id ?? ''}
+                      placeholder="(none — individual strip)"
+                      onChange={(e) =>
+                        setRunRacewayID(selectedRun.id, e.target.value)
+                      }
+                    />
+                  </label>
+                </>
+              )}
               <PathOpsRow
                 onSimplify={simplifySelected}
                 onReverse={reverseSelected}

@@ -7,6 +7,9 @@ const RULE_LABELS: Record<ValidationIssue['rule'], string> = {
   min_spacing: 'Tube spacing',
   crossing_needs_blockout: 'Crossings (block-out paint needed)',
   splice_recommended: 'Multi-blank splice recommended',
+  min_lead_in: 'Electrode lead-in',
+  sharp_bend_angle: 'Sharp bend angle',
+  face_perimeter_exceeds_blank: 'Face perimeter exceeds blank',
   unsupported_path: 'Unsupported',
 };
 
@@ -28,6 +31,9 @@ export default function ValidationReportView({
     'max_segment_length',
     'crossing_needs_blockout',
     'splice_recommended',
+    'min_lead_in',
+    'sharp_bend_angle',
+    'face_perimeter_exceeds_blank',
     'unsupported_path',
   ];
 
