@@ -35,6 +35,7 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("GET /api/projects/{id}/design_versions", s.handleListDesignVersions)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/latest", s.handleLatestDesignVersion)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}", s.handleGetDesignVersion)
+	mux.HandleFunc("DELETE /api/projects/{id}/design_versions/{vid}", s.handleDeleteDesignVersion)
 	mux.HandleFunc("POST /api/projects/{id}/design_versions/{vid}/validate", s.handleRevalidate)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.pdf", s.handlePrintPDF)
 	mux.HandleFunc("GET /api/projects/{id}/export.neonbench", s.handleExportBundle)

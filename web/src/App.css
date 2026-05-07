@@ -407,6 +407,40 @@
   color: var(--accent);
 }
 
+.btn-danger {
+  display: inline-block;
+  padding: 0.4rem 0.875rem;
+  background: var(--panel);
+  color: #c0392b;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+.btn-danger:hover {
+  border-color: #c0392b;
+  color: #fff;
+  background: #c0392b;
+}
+
+.project-list li {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding-right: 0.75rem;
+}
+.project-list li a {
+  flex: 1;
+}
+.version-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.version-list li .version-row {
+  flex: 1;
+}
+
 .editor-section {
   display: flex;
   flex-direction: column;

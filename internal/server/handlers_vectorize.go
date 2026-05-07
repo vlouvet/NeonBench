@@ -286,3 +286,30 @@ func (s *apiServer) handleGetDesignVersion(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, http.StatusOK, v)
 }
+
+func (s *apiServer) handleDeleteDesignVersion(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	vid, ok := pathID(w, r, "vid")
+	if !ok {
+		return
+	}
+	// Confirm the version belongs to this project before deleting so a
+	// stale URL can't reach across projects.
+	v, err := storage.GetDesignVersion(r.Context(), s.db, vid)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if v.ProjectID != pid {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if err := storage.DeleteDesignVersion(r.Context(), s.db, vid); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

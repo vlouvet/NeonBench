@@ -194,6 +194,8 @@ export const api = {
     req<DesignVersion | null>(`/api/projects/${projectId}/design_versions/latest`),
   getDesignVersion: (projectId: number, versionId: number) =>
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}`),
+  deleteDesignVersion: (projectId: number, versionId: number) =>
+    req<void>(`/api/projects/${projectId}/design_versions/${versionId}`, { method: 'DELETE' }),
   revalidate: (projectId: number, versionId: number) =>
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}/validate`, {
       method: 'POST',
