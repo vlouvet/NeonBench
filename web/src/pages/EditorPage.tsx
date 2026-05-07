@@ -30,7 +30,7 @@ export default function EditorPage() {
   const [specSwitching, setSpecSwitching] = useState(false);
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
-  const [tool, setTool] = useState<EditorTool>('select');
+  const [tool, setToolRaw] = useState<EditorTool>('select');
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -42,6 +42,20 @@ export default function EditorPage() {
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
   const [hersheyOpen, setHersheyOpen] = useState(false);
+  // Join-arming state for the node tool: stores the first endpoint the
+  // user picked (via the "Join from head/tail" sidebar buttons). The
+  // second click in the canvas commits the join + clears this.
+  const [joinArm, setJoinArm] = useState<{ runId: string; endpoint: 'head' | 'tail' } | null>(null);
+  // Wrapped tool setter — clears the join-arm whenever the user leaves
+  // the node tool so a stale arm doesn't ambush them when they come
+  // back. Inline (rather than via an effect) so we don't trip the
+  // setState-in-effect lint rule.
+  function setTool(next: EditorTool) {
+    setToolRaw((prev) => {
+      if (prev === 'node' && next !== 'node') setJoinArm(null);
+      return next;
+    });
+  }
 
   // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
   // edits that land within COALESCE_MS of the previous edit into a single
@@ -199,6 +213,24 @@ export default function EditorPage() {
     };
   }, [doc, dirty, projectId]);
 
+  // Esc disarms a pending join (matches the cancel semantics of the
+  // other in-progress drawing tools). Tool-change disarm is handled in
+  // the tool-button click sites so we don't have to setState in an
+  // effect.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      if (joinArm) {
+        e.preventDefault();
+        setJoinArm(null);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [joinArm]);
+
   if (error) return <p className="error">{error}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
   if (!doc) {
@@ -316,6 +348,32 @@ export default function EditorPage() {
   function deleteVertex(runId: string, pointIndex: number) {
     editDoc((prev) => ops.deleteVertex(prev, runId, pointIndex));
   }
+
+  function insertVertex(runId: string, segmentIndex: number, t: number) {
+    editDoc((prev) => ops.insertVertex(prev, runId, segmentIndex, t));
+    setSelected(runId);
+  }
+
+  function splitRun(runId: string, pointIndex: number) {
+    editDoc((prev) => ops.splitRun(prev, runId, pointIndex));
+    // After split, the original id no longer exists. Select the first
+    // half so the user keeps a meaningful selection.
+    setSelected(`${runId}-a`);
+    setJoinArm(null);
+  }
+
+  function armJoin(runId: string, endpoint: 'head' | 'tail') {
+    setJoinArm({ runId, endpoint });
+  }
+
+  function pickJoinEndpoint(runId: string, endpoint: 'head' | 'tail') {
+    if (!joinArm) return; // sidebar should have armed first
+    const a = joinArm;
+    setJoinArm(null);
+    editDoc((prev) => ops.joinRuns(prev, a.runId, a.endpoint, runId, endpoint));
+    setSelected(a.runId);
+  }
+
 
   function insertDoubleback(runId: string, segmentIndex: number, t: number, side: 'left' | 'right') {
     // Default depth = 1.5× tube ø, gap = 1.0× tube ø. We honor a per-run
@@ -632,6 +690,10 @@ export default function EditorPage() {
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
           onDeleteVertex={deleteVertex}
+          onInsertVertex={insertVertex}
+          onSplitRun={splitRun}
+          joinArm={joinArm}
+          onPickJoinEndpoint={pickJoinEndpoint}
           onInsertDoubleback={insertDoubleback}
           onCommitShape={commitShape}
           snapEnabled={snapEnabled}
@@ -719,6 +781,45 @@ export default function EditorPage() {
                 onReverse={reverseSelected}
                 pointCount={selectedRun.polyline.points.length}
               />
+              {!selectedRun.polyline.closed && (
+                <div className="path-ops-row" title="Arm a join: pick this run's head or tail, then click another open run's endpoint in the canvas (node tool active) to merge them. Cancel by switching tools or pressing Esc.">
+                  <span className="meta">Join from</span>
+                  <div className="path-ops-buttons">
+                    <button
+                      type="button"
+                      className={
+                        joinArm && joinArm.runId === selectedRun.id && joinArm.endpoint === 'head'
+                          ? 'btn-secondary active'
+                          : 'btn-secondary'
+                      }
+                      onClick={() => {
+                        setTool('node');
+                        if (joinArm && joinArm.runId === selectedRun.id && joinArm.endpoint === 'head') {
+                          setJoinArm(null);
+                        } else {
+                          armJoin(selectedRun.id, 'head');
+                        }
+                      }}
+                    >Head</button>
+                    <button
+                      type="button"
+                      className={
+                        joinArm && joinArm.runId === selectedRun.id && joinArm.endpoint === 'tail'
+                          ? 'btn-secondary active'
+                          : 'btn-secondary'
+                      }
+                      onClick={() => {
+                        setTool('node');
+                        if (joinArm && joinArm.runId === selectedRun.id && joinArm.endpoint === 'tail') {
+                          setJoinArm(null);
+                        } else {
+                          armJoin(selectedRun.id, 'tail');
+                        }
+                      }}
+                    >Tail</button>
+                  </div>
+                </div>
+              )}
               {selectedRun.polyline.closed && (selectedRun.electrodes?.length ?? 0) === 2 && (
                 <button type="button" className="btn-secondary" onClick={() => flipDirection(selectedRun.id)}>
                   Switch live arc ({selectedRun.direction ?? 'forward'})

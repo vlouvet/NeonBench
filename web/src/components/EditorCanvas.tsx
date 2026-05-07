@@ -53,6 +53,10 @@ export default function EditorCanvas({
   onDeleteDimension,
   onMoveVertex,
   onDeleteVertex,
+  onInsertVertex,
+  onSplitRun,
+  joinArm,
+  onPickJoinEndpoint,
   onInsertDoubleback,
   onCommitShape,
 }: {
@@ -75,6 +79,21 @@ export default function EditorCanvas({
   onDeleteDimension: (index: number) => void;
   onMoveVertex: (runId: string, pointIndex: number, x: number, y: number) => void;
   onDeleteVertex: (runId: string, pointIndex: number) => void;
+  // Insert a new vertex on the run's polyline at the picked segment + t.
+  // Surfaced as alt-click on a polyline path (away from existing vertex
+  // handles) while the node tool is active.
+  onInsertVertex: (runId: string, segmentIndex: number, t: number) => void;
+  // Split a run into two new runs at the chosen vertex. Surfaced as
+  // alt-click on a NodeHandle while the node tool is active.
+  onSplitRun: (runId: string, pointIndex: number) => void;
+  // The currently-armed first endpoint of a join, if any. EditorPage's
+  // sidebar arms it (e.g. "Join from head" on the selected open run).
+  // While set, the canvas highlights every other open-run endpoint so
+  // the user can click the second one to commit.
+  joinArm: { runId: string; endpoint: 'head' | 'tail' } | null;
+  // Called when the user clicks an endpoint while joinArm is set. The
+  // parent commits the join op + clears the arm.
+  onPickJoinEndpoint: (runId: string, endpoint: 'head' | 'tail') => void;
   // Splice a hairpin into the run's polyline at the picked segment + t.
   // `side` mirrors the U onto the opposite side of the segment when set
   // — surfaced as a shift-click in the canvas.
@@ -469,6 +488,21 @@ export default function EditorCanvas({
       onInsertDoubleback(run.id, segmentIndex, t, side);
       onSelectRun(run.id);
       setDbHover(null);
+      return;
+    }
+    if (tool === 'node') {
+      // Alt-click on the polyline (not on a vertex handle) inserts a new
+      // vertex at the click point. The selected run must match the
+      // clicked run; otherwise just select the new run so the user can
+      // see its existing vertices first.
+      if (e.altKey && run.id === selectedRunId) {
+        const world = clientToWorld(e.clientX, e.clientY);
+        if (!world) return;
+        const { segmentIndex, t } = nearestSegmentT(run.polyline.points, world);
+        onInsertVertex(run.id, segmentIndex, t);
+        return;
+      }
+      onSelectRun(run.id);
       return;
     }
     onSelectRun(run.id);
@@ -878,21 +912,97 @@ export default function EditorCanvas({
                 />
               ));
             })()}
-          {tool === 'node' && selectedRunId &&
+          {tool === 'node' &&
             (() => {
-              const run = doc.runs.find((r) => r.id === selectedRunId);
-              if (!run) return null;
-              return run.polyline.points.map((p, pi) => (
-                <NodeHandle
-                  key={`node-${selectedRunId}-${pi}`}
-                  x={p[0]}
-                  y={p[1]}
-                  k={transform.k}
-                  onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
-                  onShiftClick={() => onDeleteVertex(run.id, pi)}
-                  clientToWorld={clientToWorldSnapped}
-                />
-              ));
+              // Default mode: only show handles for the currently selected
+              // run (matches existing behavior).
+              // Join-arming mode: show endpoint handles for every open run
+              // so the user can pick the second endpoint without first
+              // having to select the second run. Closed runs have no
+              // endpoints to join, so they're skipped.
+              const handles: React.ReactNode[] = [];
+              const armed = joinArm;
+              if (armed) {
+                for (const run of doc.runs) {
+                  if (run.polyline.closed && run.id !== armed.runId) continue;
+                  const n = run.polyline.points.length;
+                  if (n < 2) continue;
+                  // For the armed run itself, allow self-join (head + tail
+                  // → closed loop) by exposing both endpoints. For other
+                  // runs, also expose both endpoints.
+                  for (const ep of ['head', 'tail'] as const) {
+                    if (armed.runId === run.id && armed.endpoint === ep) continue;
+                    const pi = ep === 'head' ? 0 : n - 1;
+                    const p = run.polyline.points[pi];
+                    handles.push(
+                      <NodeHandle
+                        key={`node-arm-${run.id}-${ep}`}
+                        x={p[0]}
+                        y={p[1]}
+                        k={transform.k}
+                        onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
+                        onShiftClick={() => onDeleteVertex(run.id, pi)}
+                        onAltClick={() => onSplitRun(run.id, pi)}
+                        onPlainClick={() => onPickJoinEndpoint(run.id, ep)}
+                        clientToWorld={clientToWorldSnapped}
+                        highlight="endpoint"
+                      />,
+                    );
+                  }
+                }
+                // Highlight the armed endpoint distinctly.
+                const armedRun = doc.runs.find((r) => r.id === armed.runId);
+                if (armedRun) {
+                  const n = armedRun.polyline.points.length;
+                  const pi = armed.endpoint === 'head' ? 0 : n - 1;
+                  const p = armedRun.polyline.points[pi];
+                  if (p) {
+                    handles.push(
+                      <NodeHandle
+                        key={`node-armed-${armed.runId}-${armed.endpoint}`}
+                        x={p[0]}
+                        y={p[1]}
+                        k={transform.k}
+                        onMove={(nx, ny) => onMoveVertex(armed.runId, pi, nx, ny)}
+                        onShiftClick={() => onDeleteVertex(armed.runId, pi)}
+                        onAltClick={() => onSplitRun(armed.runId, pi)}
+                        clientToWorld={clientToWorldSnapped}
+                        highlight="armed"
+                      />,
+                    );
+                  }
+                }
+              }
+              if (selectedRunId) {
+                const run = doc.runs.find((r) => r.id === selectedRunId);
+                if (run) {
+                  for (let pi = 0; pi < run.polyline.points.length; pi++) {
+                    const p = run.polyline.points[pi];
+                    // Skip if this vertex already rendered as armed/endpoint.
+                    if (armed) {
+                      const isHead = pi === 0;
+                      const isTail = pi === run.polyline.points.length - 1;
+                      if (
+                        (isHead || isTail) &&
+                        !run.polyline.closed
+                      ) continue;
+                    }
+                    handles.push(
+                      <NodeHandle
+                        key={`node-${run.id}-${pi}`}
+                        x={p[0]}
+                        y={p[1]}
+                        k={transform.k}
+                        onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
+                        onShiftClick={() => onDeleteVertex(run.id, pi)}
+                        onAltClick={() => onSplitRun(run.id, pi)}
+                        clientToWorld={clientToWorldSnapped}
+                      />,
+                    );
+                  }
+                }
+              }
+              return handles;
             })()}
           {doc.runs.flatMap((run) => {
             const arcs = runArcs(run);
@@ -954,9 +1064,11 @@ export default function EditorCanvas({
         )}
         {tool === 'node' && (
           <span className="meta hint">
-            {selectedRunId
-              ? 'Drag a vertex to reshape · shift-click a vertex to delete'
-              : 'Select a run first, then drag its vertices'}
+            {joinArm
+              ? `Join armed at ${joinArm.runId} ${joinArm.endpoint} — click another endpoint (green) to merge`
+              : selectedRunId
+                ? 'Drag to reshape · alt-click path to insert vertex · alt-click vertex to split run · shift-click vertex to delete'
+                : 'Select a run first, then drag/insert/split its vertices'}
           </span>
         )}
         {tool === 'pen' && (
@@ -1017,28 +1129,42 @@ function NodeHandle({
   k,
   onMove,
   onShiftClick,
+  onAltClick,
+  onPlainClick,
   clientToWorld,
+  highlight,
 }: {
   x: number;
   y: number;
   k: number;
   onMove: (x: number, y: number) => void;
   onShiftClick: () => void;
+  onAltClick?: () => void;
+  onPlainClick?: () => void;
   clientToWorld: (cx: number, cy: number) => [number, number] | null;
+  highlight?: 'endpoint' | 'armed' | null;
 }) {
   const dragging = useRef(false);
+  const moved = useRef(false);
   const handlePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
     e.stopPropagation();
-    if (e.shiftKey || e.altKey) {
+    if (e.shiftKey) {
       onShiftClick();
       return;
     }
+    if (e.altKey) {
+      if (onAltClick) onAltClick();
+      else onShiftClick();
+      return;
+    }
     dragging.current = true;
+    moved.current = false;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   };
   const handlePointerMove = (e: React.PointerEvent<SVGCircleElement>) => {
     if (!dragging.current) return;
     e.stopPropagation();
+    moved.current = true;
     const w = clientToWorld(e.clientX, e.clientY);
     if (w) onMove(w[0], w[1]);
   };
@@ -1051,14 +1177,21 @@ function NodeHandle({
     } catch {
       // pointer might already be released
     }
+    // Plain click without a drag: surface as an explicit click for the
+    // join-arming flow (which fires on endpoint vertices specifically).
+    if (!moved.current && onPlainClick) onPlainClick();
+    moved.current = false;
   };
+  const fill = highlight === 'armed' ? '#ff8a00' : highlight === 'endpoint' ? '#1aa37a' : '#fff';
+  const stroke = highlight === 'armed' ? '#ff8a00' : highlight === 'endpoint' ? '#1aa37a' : '#1f6feb';
+  const r = (highlight ? 4 : 3) / k;
   return (
     <circle
       cx={x}
       cy={y}
-      r={3 / k}
-      fill="#fff"
-      stroke="#1f6feb"
+      r={r}
+      fill={fill}
+      stroke={stroke}
       strokeWidth={1 / k}
       style={{ cursor: 'grab' }}
       onPointerDown={handlePointerDown}

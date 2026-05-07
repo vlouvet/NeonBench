@@ -444,6 +444,338 @@ export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number):
   });
 }
 
+// insertVertex splices ONE new vertex into a polyline at the parametric
+// position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
+// index segmentIndex + 1; everything after shifts up by 1.
+//
+// Index-shifting follows the same pattern as insertDoubleback's bigger
+// 4-vertex splice — anchors strictly before the insertion stay put,
+// anchors at or after the insertion bump by 1. live_index handling for
+// blockouts/annotations/bends uses the same simplification: in the
+// common open-run no-electrode case live_index === polyline index, so
+// the bump is correct. Closed runs with two electrodes are an edge case
+// the user is unlikely to hit while shaping a polyline (you'd shape
+// before placing electrodes), but we still apply the live-index bump
+// conservatively.
+export function insertVertex(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+  t: number,
+): DesignDoc {
+  return mapRun(doc, runId, (run) => {
+    const pts = run.polyline.points;
+    if (segmentIndex < 0 || segmentIndex >= pts.length - 1) return run;
+    const tt = Math.max(0, Math.min(1, t));
+    const p1 = pts[segmentIndex];
+    const p2 = pts[segmentIndex + 1];
+    const nx = p1[0] + tt * (p2[0] - p1[0]);
+    const ny = p1[1] + tt * (p2[1] - p1[1]);
+    const k = segmentIndex;
+    const newPts: [number, number][] = [
+      ...pts.slice(0, k + 1),
+      [nx, ny],
+      ...pts.slice(k + 1),
+    ];
+    const shiftPoint = (i: number) => (i >= k + 1 ? i + 1 : i);
+    const shiftLive = (i: number) => (i >= k + 1 ? i + 1 : i);
+    return {
+      ...run,
+      polyline: { ...run.polyline, points: newPts },
+      electrodes: run.electrodes
+        ? run.electrodes.map((e) => ({ ...e, point_index: shiftPoint(e.point_index) }))
+        : run.electrodes,
+      blockouts: run.blockouts
+        ? run.blockouts.map((b) => ({
+            start_live_index: shiftLive(b.start_live_index),
+            end_live_index: shiftLive(b.end_live_index),
+          }))
+        : run.blockouts,
+      annotations: run.annotations
+        ? run.annotations.map((a) => ({ ...a, live_index: shiftLive(a.live_index) }))
+        : run.annotations,
+      bends: run.bends
+        ? run.bends.map((b) => ({ live_index: shiftLive(b.live_index) }))
+        : run.bends,
+    };
+  });
+}
+
+// splitRun splits one polyline into two new runs at a vertex. The vertex
+// at `pointIndex` is duplicated so it appears as the last vertex of the
+// first run AND the first vertex of the second run — that way joining
+// them back together (see joinRuns) reverses the operation cleanly.
+//
+// Closed runs are forced open by the split: the first new run gets
+// indices [0..pointIndex], the second gets [pointIndex..n-1], both open.
+// The first new run reuses the original id with `-a` suffix (preserves
+// name continuity for selection-by-name); the second gets `-b`. Color,
+// diameter override, notes are duplicated to both.
+//
+// Electrodes / blockouts / annotations / bends partition by their
+// underlying anchor position relative to the split:
+// - Electrodes pointing strictly before pointIndex stay on run-a.
+// - Electrodes pointing strictly after pointIndex go to run-b with
+//   point_index − pointIndex.
+// - Electrodes exactly at pointIndex are ambiguous; V1 drops them with
+//   a console.warn — realistic users will replace them.
+// - Blockouts entirely on one side stay there; straddling blockouts are
+//   dropped with a warn (V1 — splitting a blockout into two valid
+//   pieces is a follow-up).
+// - Annotations / bends partition by live_index against the live arc;
+//   for the common open-run no-electrode case live_index === polyline
+//   index so the same partition applies.
+export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  const pts = run.polyline.points;
+  const n = pts.length;
+  // Need at least 2 vertices on each side after splitting (so each new
+  // run has at least 2 points). The split duplicates pointIndex, so
+  // run-a gets pointIndex+1 points and run-b gets n-pointIndex points.
+  if (pointIndex <= 0 || pointIndex >= n - 1) return doc;
+
+  const aPts = pts.slice(0, pointIndex + 1);
+  const bPts = pts.slice(pointIndex);
+
+  const aId = `${run.id}-a`;
+  const bId = `${run.id}-b`;
+
+  // Partition electrodes by their polyline anchor.
+  const aElectrodes: Electrode[] = [];
+  const bElectrodes: Electrode[] = [];
+  for (const e of run.electrodes ?? []) {
+    if (e.point_index < pointIndex) {
+      aElectrodes.push({ ...e, point_index: e.point_index });
+    } else if (e.point_index > pointIndex) {
+      bElectrodes.push({ ...e, point_index: e.point_index - pointIndex });
+    } else {
+      // Exactly at the split — ambiguous, drop with a warning.
+      console.warn(
+        `splitRun: electrode at split point ${pointIndex} on run ${run.id} dropped (ambiguous)`,
+      );
+    }
+  }
+
+  // Partition blockouts: live_index is treated as polyline index for the
+  // common open-run no-electrode case (which is what splitRun is for).
+  // Straddling blockouts are dropped with a warning.
+  const aBlockouts: Blockout[] = [];
+  const bBlockouts: Blockout[] = [];
+  for (const b of run.blockouts ?? []) {
+    const s = b.start_live_index;
+    const e = b.end_live_index;
+    const lo = Math.min(s, e);
+    const hi = Math.max(s, e);
+    if (hi <= pointIndex) {
+      aBlockouts.push({ start_live_index: s, end_live_index: e });
+    } else if (lo >= pointIndex) {
+      bBlockouts.push({
+        start_live_index: s - pointIndex,
+        end_live_index: e - pointIndex,
+      });
+    } else {
+      // Straddles the split.
+      console.warn(
+        `splitRun: blockout [${s}, ${e}] on run ${run.id} straddles split point ${pointIndex} — dropped`,
+      );
+    }
+  }
+
+  // Partition annotations and bends similarly. Annotations / bends at
+  // exactly the split point go to run-a (the duplicated vertex is the
+  // last vertex of run-a).
+  const aAnnotations: Annotation[] = [];
+  const bAnnotations: Annotation[] = [];
+  for (const a of run.annotations ?? []) {
+    if (a.live_index <= pointIndex) {
+      aAnnotations.push({ ...a, live_index: a.live_index });
+    } else {
+      bAnnotations.push({ ...a, live_index: a.live_index - pointIndex });
+    }
+  }
+  const aBends: Bend[] = [];
+  const bBends: Bend[] = [];
+  for (const b of run.bends ?? []) {
+    if (b.live_index <= pointIndex) {
+      aBends.push({ live_index: b.live_index });
+    } else {
+      bBends.push({ live_index: b.live_index - pointIndex });
+    }
+  }
+
+  function withMeta(
+    id: string,
+    points: [number, number][],
+    electrodes: Electrode[],
+    blockouts: Blockout[],
+    annotations: Annotation[],
+    bends: Bend[],
+  ): DesignRun {
+    const next: DesignRun = {
+      id,
+      polyline: { points, closed: false },
+    };
+    if (run!.tube_diameter_mm != null) next.tube_diameter_mm = run!.tube_diameter_mm;
+    if (run!.color != null) next.color = run!.color;
+    if (run!.notes != null) next.notes = run!.notes;
+    if (electrodes.length > 0) next.electrodes = electrodes;
+    if (blockouts.length > 0) next.blockouts = blockouts;
+    if (annotations.length > 0) next.annotations = annotations;
+    if (bends.length > 0) next.bends = bends;
+    return next;
+  }
+
+  const aRun = withMeta(aId, aPts, aElectrodes, aBlockouts, aAnnotations, aBends);
+  const bRun = withMeta(bId, bPts, bElectrodes, bBlockouts, bAnnotations, bBends);
+
+  // Replace the original run in-place (preserves position in the run list)
+  // with the two new runs.
+  const idx = doc.runs.findIndex((r) => r.id === runId);
+  const nextRuns = doc.runs.slice();
+  nextRuns.splice(idx, 1, aRun, bRun);
+  return { ...doc, runs: nextRuns };
+}
+
+// joinRuns merges two polylines into one. `endpointA` and `endpointB`
+// are 'head' (first vertex) or 'tail' (last vertex) — which end of each
+// run participates in the join. The implementation reverses one or both
+// so the join is conceptually tail-to-head:
+//
+//   tail-to-head:  runA + runB                  (no reversal)
+//   tail-to-tail:  runA + reverse(runB)
+//   head-to-head:  reverse(runA) + runB
+//   head-to-tail:  reverse(runA) + reverse(runB) === reverse(runB + runA)
+//
+// The duplicated vertex at the join (within 0.01mm) is dropped. The
+// result inherits runA's metadata (color, diameter, notes). The two
+// original runs are removed from doc.runs and replaced by the single
+// joined run, which gets runA's id (preserves selection state).
+//
+// Self-join (runA === runB, head joined to its own tail) produces a
+// closed run.
+//
+// Annotations / electrodes / blockouts / bends are transformed through
+// the reversal + concatenation. The math is bug-prone — see tests.
+export function joinRuns(
+  doc: DesignDoc,
+  runIdA: string,
+  endpointA: 'head' | 'tail',
+  runIdB: string,
+  endpointB: 'head' | 'tail',
+): DesignDoc {
+  const runA = doc.runs.find((r) => r.id === runIdA);
+  const runB = doc.runs.find((r) => r.id === runIdB);
+  if (!runA || !runB) return doc;
+
+  // Self-join: same run, opposite endpoints → close it into a loop.
+  if (runIdA === runIdB) {
+    if (endpointA === endpointB) return doc; // can't join an end to itself
+    if (runA.polyline.closed) return doc; // already closed
+    const closed: DesignRun = {
+      ...runA,
+      polyline: { ...runA.polyline, closed: true },
+    };
+    return { ...doc, runs: doc.runs.map((r) => (r.id === runIdA ? closed : r)) };
+  }
+
+  // Reverse-helper that transforms the run plus all of its anchored
+  // metadata (electrodes via point_index; blockouts/annotations/bends
+  // via live_index treated as polyline index for the common case).
+  function reversedRun(r: DesignRun): DesignRun {
+    const n = r.polyline.points.length;
+    const flipPt = (i: number) => n - 1 - i;
+    return {
+      ...r,
+      polyline: { ...r.polyline, points: r.polyline.points.slice().reverse() },
+      electrodes: r.electrodes
+        ? r.electrodes.map((e) => ({ ...e, point_index: flipPt(e.point_index) }))
+        : r.electrodes,
+      blockouts: r.blockouts
+        ? r.blockouts.map((b) => ({
+            start_live_index: flipPt(b.start_live_index),
+            end_live_index: flipPt(b.end_live_index),
+          }))
+        : r.blockouts,
+      annotations: r.annotations
+        ? r.annotations.map((a) => ({ ...a, live_index: flipPt(a.live_index) }))
+        : r.annotations,
+      bends: r.bends
+        ? r.bends.map((b) => ({ live_index: flipPt(b.live_index) }))
+        : r.bends,
+    };
+  }
+
+  // Pick the orientation that puts runA's tail next to runB's head.
+  const a = endpointA === 'tail' ? runA : reversedRun(runA);
+  const b = endpointB === 'head' ? runB : reversedRun(runB);
+
+  const aPts = a.polyline.points;
+  const bPts = b.polyline.points;
+  const aLast = aPts[aPts.length - 1];
+  const bFirst = bPts[0];
+  // Drop the duplicate vertex at the seam if the two endpoints match
+  // within 0.01mm. The shift moves run-b's anchors back by 1.
+  const seamDropped = aLast && bFirst
+    && Math.hypot(aLast[0] - bFirst[0], aLast[1] - bFirst[1]) < 0.01;
+  const bStartIdx = seamDropped ? 1 : 0;
+  const aLen = aPts.length;
+  const joinedPts: [number, number][] = [
+    ...aPts,
+    ...bPts.slice(bStartIdx),
+  ];
+
+  // Anchor remap for run-b: each polyline-index anchor i (0..n-1) lands
+  // at aLen + (i - bStartIdx) in the joined polyline. Indices below
+  // bStartIdx are at the dropped duplicate — fold them onto the seam
+  // (aLen - 1, the last vertex of run-a, which is the same physical point).
+  const remapB = (i: number) => {
+    if (i < bStartIdx) return aLen - 1;
+    return aLen + (i - bStartIdx);
+  };
+
+  const electrodes: Electrode[] = [
+    ...(a.electrodes ?? []),
+    ...((b.electrodes ?? []).map((e) => ({ ...e, point_index: remapB(e.point_index) }))),
+  ];
+  const blockouts: Blockout[] = [
+    ...(a.blockouts ?? []),
+    ...((b.blockouts ?? []).map((bo) => ({
+      start_live_index: remapB(bo.start_live_index),
+      end_live_index: remapB(bo.end_live_index),
+    }))),
+  ];
+  const annotations: Annotation[] = [
+    ...(a.annotations ?? []),
+    ...((b.annotations ?? []).map((an) => ({ ...an, live_index: remapB(an.live_index) }))),
+  ];
+  const bends: Bend[] = [
+    ...(a.bends ?? []),
+    ...((b.bends ?? []).map((bn) => ({ live_index: remapB(bn.live_index) }))),
+  ];
+
+  // Result inherits runA's metadata (color, diameter, notes) and id.
+  const joined: DesignRun = {
+    id: runA.id,
+    polyline: { points: joinedPts, closed: false },
+  };
+  if (runA.tube_diameter_mm != null) joined.tube_diameter_mm = runA.tube_diameter_mm;
+  if (runA.color != null) joined.color = runA.color;
+  if (runA.notes != null) joined.notes = runA.notes;
+  if (electrodes.length > 0) joined.electrodes = electrodes;
+  if (blockouts.length > 0) joined.blockouts = blockouts;
+  if (annotations.length > 0) joined.annotations = annotations;
+  if (bends.length > 0) joined.bends = bends;
+
+  // Replace runA in place with the joined run; remove runB.
+  const idxA = doc.runs.findIndex((r) => r.id === runIdA);
+  const nextRuns = doc.runs
+    .slice(0, idxA)
+    .concat(joined)
+    .concat(doc.runs.slice(idxA + 1).filter((r) => r.id !== runIdB));
+  return { ...doc, runs: nextRuns };
+}
+
 // insertDoubleback splices a hairpin (180° U-turn) into a polyline at the
 // chosen segment. The U-shape is formed by 4 new vertices A, B, C, D
 // inserted between the segment's existing endpoints p1 and p2:
