@@ -206,6 +206,35 @@ describe('label/dimension ops', () => {
   });
 });
 
+describe('appendRuns', () => {
+  it('appends runs and assigns unique sequential ids with the given prefix', () => {
+    const newRuns: DesignRun[] = [
+      { id: 'ignored-1', polyline: { points: [[0, 0], [1, 1]], closed: false } },
+      { id: 'ignored-2', polyline: { points: [[2, 2], [3, 3]], closed: false } },
+    ];
+    const doc = ops.appendRuns(makeDoc(), newRuns, 'text');
+    const tail = doc.runs.slice(-2);
+    expect(tail.map((r) => r.id)).toEqual(['text-1', 'text-2']);
+    // Original runs preserved.
+    expect(doc.runs.length).toBe(makeDoc().runs.length + 2);
+  });
+
+  it('skips ids that already exist on the doc', () => {
+    const seed = makeDoc();
+    seed.runs.push({
+      id: 'text-1',
+      polyline: { points: [[9, 9], [9, 10]], closed: false },
+    });
+    const newRuns: DesignRun[] = [
+      { id: 'x', polyline: { points: [[0, 0], [1, 1]], closed: false } },
+    ];
+    const doc = ops.appendRuns(seed, newRuns, 'text');
+    const tail = doc.runs[doc.runs.length - 1];
+    // Original 'text-1' kept; appended run got 'text-2'.
+    expect(tail.id).toBe('text-2');
+  });
+});
+
 describe('path-op simplify', () => {
   it('drops collinear vertices below epsilon', () => {
     // Long straight line with a single bump: simplify should keep ends + bump.

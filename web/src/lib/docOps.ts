@@ -172,6 +172,24 @@ export function setRunNotes(doc: DesignDoc, runId: string, notes: string): Desig
   });
 }
 
+// appendRuns inserts pre-built runs at the end of the design doc and
+// rewrites their ids so they don't collide with existing run names. Used
+// by the Hershey "Add text" tool, which generates one run per stroke per
+// letter — `text-1`, `text-2`, … — and needs them to slot into the doc
+// without clashing with previous text inserts.
+export function appendRuns(doc: DesignDoc, newRuns: DesignRun[], idPrefix: string): DesignDoc {
+  const taken = new Set(doc.runs.map((r) => r.id));
+  let counter = 1;
+  function nextId() {
+    let id = `${idPrefix}-${counter++}`;
+    while (taken.has(id)) id = `${idPrefix}-${counter++}`;
+    taken.add(id);
+    return id;
+  }
+  const reIded = newRuns.map((r) => ({ ...r, id: nextId() }));
+  return { ...doc, runs: [...doc.runs, ...reIded] };
+}
+
 export function placeLabel(doc: DesignDoc, x: number, y: number, text: string): DesignDoc {
   const label: Label = { x, y, text };
   return { ...doc, labels: [...(doc.labels ?? []), label] };

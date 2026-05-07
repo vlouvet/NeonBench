@@ -31,6 +31,9 @@ coverage.*
 # Claude Agent SDK scratch (worktrees for parallel sub-agents). See CLAUDE.md.
 /.claude/
 
+# Hershey font script's download cache (rebuilt by scripts/build-hershey-font.mjs)
+/.hershey-cache/
+
 # Local dev data (when running outside the per-OS app data dir)
 *.db
 *.db-journal
