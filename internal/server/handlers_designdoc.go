@@ -43,7 +43,7 @@ func (s *apiServer) handleValidateDoc(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if req.Doc.Version == 0 || len(req.Doc.Runs) == 0 {
+	if req.Doc.Version == 0 {
 		writeError(w, http.StatusBadRequest, "design_doc is required")
 		return
 	}
@@ -84,10 +84,11 @@ func (s *apiServer) handleCreateDesignVersion(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "design_doc is required")
 		return
 	}
-	if len(req.Doc.Runs) == 0 {
-		writeError(w, http.StatusBadRequest, "design_doc has no runs")
-		return
-	}
+	// A blank design doc (zero runs) is legal: it's the bootstrap version
+	// for the "design from a blank file" workflow. The validator and SVG
+	// renderer both already handle empty doc inputs gracefully (renderer
+	// emits an empty <svg>, validator returns a report with zero runs and
+	// no issues).
 	if req.BasedOnVID != 0 {
 		v, err := storage.GetDesignVersion(r.Context(), s.db, req.BasedOnVID)
 		if err != nil {

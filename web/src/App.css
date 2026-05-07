@@ -642,7 +642,11 @@
 }
 
 .editor-canvas.tool-electrode svg,
-.editor-canvas.tool-blockout svg {
+.editor-canvas.tool-blockout svg,
+.editor-canvas.tool-pen svg,
+.editor-canvas.tool-rect svg,
+.editor-canvas.tool-circle svg,
+.editor-canvas.tool-arc svg {
   cursor: crosshair;
 }
 

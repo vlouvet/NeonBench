@@ -55,15 +55,19 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    to the wall-thinning bend-radius derivation in
    `docs/neon-rules/bend-radius.md`), and name your project.
 
-2. **Upload a source image** — *or skip this step entirely if your design
-   is text*. PNG, JPG, or SVG up to 50 MB. SVGs pass through as-is;
-   PNG/JPG go through an in-process skeleton-graph centerline extractor
-   (Zhang-Suen thinning → graph walk → RDP simplify, all pure Go, no
-   external binary). For typeset text (channel letters, "OPEN" signs,
-   etc.) skip the upload and use the editor's **Add text** tool instead
-   (step 5) — Hershey single-stroke fonts emit clean tube paths with no
-   centerline extraction required, which sidesteps the topology errors
-   that raster tracing can introduce at letter junctions.
+2. **Upload a source image** — *or skip this step entirely if you want
+   to draw the design from scratch in the editor*. PNG, JPG, or SVG up
+   to 50 MB. SVGs pass through as-is; PNG/JPG go through an in-process
+   skeleton-graph centerline extractor (Zhang-Suen thinning → graph
+   walk → RDP simplify, all pure Go, no external binary). For typeset
+   text (channel letters, "OPEN" signs, etc.) skip the upload and use
+   the editor's **Add text** tool instead (step 5) — Hershey
+   single-stroke fonts emit clean tube paths with no centerline
+   extraction required, which sidesteps the topology errors that
+   raster tracing can introduce at letter junctions. To start with a
+   completely blank canvas, use **New blank design** on the project
+   page — it opens the editor on a fresh 1000×500mm doc you can draw
+   into with the pen / rect / circle / arc tools (step 5).
 
 3. **Vectorize.** Set the target width in millimeters (this is the
    physical sign width — paths are in mm internally everywhere). Tweak
@@ -104,6 +108,15 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      disconnected strokes, which matches how a channel-letter shop
      actually builds the sign. Type the text, set the cap height in
      mm, hit Insert.
+   - **Pen / Rect / Circle / Arc** — draw directly on the canvas. Pen
+     drops a polyline a click at a time (double-click or Enter to
+     commit, Esc cancels). Rect and Circle are pointer-down →
+     drag → pointer-up: rectangle from corner to corner, circle from
+     center to radius. Arc takes three sequential clicks (start, mid,
+     end) and fits the unique circular arc through them, falling back
+     to a straight line when the points are collinear. Each finished
+     shape becomes a new tube run that you then color, tag with
+     electrodes, and validate like any other run.
    - **Label / Dimension** — doc-level callouts. Dimension reports the
      measured distance.
    - **Node edit** — drag any polyline vertex; shift-click to delete.

@@ -335,6 +335,27 @@ export default function EditorPage() {
     editDoc((prev) => ops.reverseRun(prev, selected));
   }
 
+  // Drawing tools (pen / rect / circle / arc) hand a finished polyline up
+  // here; we wrap it in a DesignRun and let appendRuns assign a stable id
+  // following the per-prefix counter convention used by the Hershey tool.
+  // Direction / electrodes / annotations are intentionally empty — V1 of
+  // the drawing primitives just lays down geometry; the user picks up the
+  // existing place-electrode / place-blockout / etc. tools to flesh it
+  // out from there.
+  function commitShape(
+    kind: 'pen' | 'rect' | 'circle' | 'arc',
+    points: [number, number][],
+    closed: boolean,
+  ) {
+    if (!doc) return;
+    if (points.length < 2) return;
+    const run: DesignRun = {
+      id: kind, // appendRuns rewrites with `${kind}-N`
+      polyline: { points, closed },
+    };
+    editDoc((prev) => ops.appendRuns(prev, [run], kind));
+  }
+
   // Insert Hershey text strokes into the design as new runs. The dialog
   // generates strokes at origin (0,0); we recenter them to the document
   // viewBox center so the user sees them appear near where they're
@@ -483,6 +504,30 @@ export default function EditorPage() {
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
+              className={tool === 'pen' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('pen')}
+              title="Draw a freeform polyline (click to drop vertices, double-click or Enter to commit, Esc to cancel)"
+            >Pen</button>
+            <button
+              type="button"
+              className={tool === 'rect' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('rect')}
+              title="Draw an axis-aligned rectangle (drag from corner to corner)"
+            >Rect</button>
+            <button
+              type="button"
+              className={tool === 'circle' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('circle')}
+              title="Draw a circle (drag from center to radius)"
+            >Circle</button>
+            <button
+              type="button"
+              className={tool === 'arc' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('arc')}
+              title="Draw a three-point circular arc (click start, mid, end)"
+            >Arc</button>
+            <button
+              type="button"
               className="tool-btn"
               onClick={() => setHersheyOpen(true)}
               title="Insert Hershey single-stroke text as new tube runs"
@@ -567,6 +612,7 @@ export default function EditorPage() {
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
           onDeleteVertex={deleteVertex}
+          onCommitShape={commitShape}
           snapEnabled={snapEnabled}
           snapMM={snapMM}
         />

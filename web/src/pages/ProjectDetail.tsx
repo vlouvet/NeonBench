@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, parseReport, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
 import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
@@ -8,6 +8,7 @@ import PrintPanel from '../components/PrintPanel';
 export default function ProjectDetail() {
   const { id } = useParams();
   const projectId = Number(id);
+  const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [allSpecs, setAllSpecs] = useState<TubeSpec[]>([]);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -16,6 +17,21 @@ export default function ProjectDetail() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [revalidating, setRevalidating] = useState(false);
+  const [creatingBlank, setCreatingBlank] = useState(false);
+
+  async function startBlankDesign() {
+    if (creatingBlank) return;
+    setCreatingBlank(true);
+    setError(null);
+    try {
+      const dv = await api.createBlankDesignVersion(projectId);
+      navigate(`/projects/${projectId}/edit/${dv.id}`);
+    } catch (e) {
+      setError(`start blank design: ${(e as Error).message}`);
+    } finally {
+      setCreatingBlank(false);
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -104,6 +120,15 @@ export default function ProjectDetail() {
       </p>
       <div className="row" style={{ alignItems: 'baseline', gap: '1rem' }}>
         <h1>{project.name}</h1>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={startBlankDesign}
+          disabled={creatingBlank}
+          title="Open the editor with an empty 1000×500mm canvas. Use the pen, rect, circle, arc, and Add text tools to draw a design from scratch."
+        >
+          {creatingBlank ? 'Creating…' : 'New blank design'}
+        </button>
         <a
           href={api.exportBundleURL(projectId)}
           className="btn-secondary"

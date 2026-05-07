@@ -3,6 +3,9 @@ import type { DesignDoc, DesignRun } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
+import { rectToPoints } from '../lib/shapes/rect';
+import { circleToPoints } from '../lib/shapes/circle';
+import { threePointArcToPoints } from '../lib/shapes/arc';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -16,7 +19,11 @@ export type EditorTool =
   | 'bend'
   | 'label'
   | 'dimension'
-  | 'node';
+  | 'node'
+  | 'pen'
+  | 'rect'
+  | 'circle'
+  | 'arc';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -45,6 +52,7 @@ export default function EditorCanvas({
   onDeleteDimension,
   onMoveVertex,
   onDeleteVertex,
+  onCommitShape,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -65,20 +73,96 @@ export default function EditorCanvas({
   onDeleteDimension: (index: number) => void;
   onMoveVertex: (runId: string, pointIndex: number, x: number, y: number) => void;
   onDeleteVertex: (runId: string, pointIndex: number) => void;
+  // Commit a freshly drawn shape as a new run. EditorPage owns the
+  // appendRuns / id-prefix logic; the canvas just hands up the geometry
+  // and the kind so the parent can pick the right id prefix and decide on
+  // direction/electrodes (for V1: none).
+  onCommitShape: (kind: 'pen' | 'rect' | 'circle' | 'arc', points: [number, number][], closed: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
   const [staged, setStaged] = useState<StagedBlockout | null>(null);
   const [stagedDim, setStagedDim] = useState<{ x: number; y: number } | null>(null);
+  // Pen tool: accumulated vertices of the in-progress polyline plus a
+  // hover-tracked cursor point so the preview "rubber-bands" from the last
+  // dropped vertex out to wherever the mouse is right now.
+  const [penPoints, setPenPoints] = useState<[number, number][]>([]);
+  const [penHover, setPenHover] = useState<[number, number] | null>(null);
+  // Rect / circle tool: pointer-down origin + current drag point. While
+  // dragging both are set; when the drag commits we clear back to null.
+  const [shapeDrag, setShapeDrag] = useState<{
+    kind: 'rect' | 'circle';
+    a: [number, number];
+    b: [number, number];
+  } | null>(null);
+  const shapeDragRef = useRef<{ pointerId: number } | null>(null);
+  // Arc tool: 3-point sequential clicks. Stored as 0/1/2 collected vertices.
+  // While at 1 or 2 vertices, the canvas hover updates the preview shape.
+  const [arcPoints, setArcPoints] = useState<[number, number][]>([]);
+  const [arcHover, setArcHover] = useState<[number, number] | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
-  // Drop the staged blockout when leaving blockout mode so a stale start
-  // doesn't surprise the user when they come back later.
+  // Drop staged state when leaving the corresponding tool so a previously
+  // dropped vertex doesn't surprise the user when they come back later.
   useEffect(() => {
     if (tool !== 'blockout') setStaged(null);
     if (tool !== 'dimension') setStagedDim(null);
+    if (tool !== 'pen') {
+      setPenPoints([]);
+      setPenHover(null);
+    }
+    if (tool !== 'rect' && tool !== 'circle') {
+      setShapeDrag(null);
+      shapeDragRef.current = null;
+    }
+    if (tool !== 'arc') {
+      setArcPoints([]);
+      setArcHover(null);
+    }
   }, [tool]);
+
+  // Pen / arc tools: Enter commits the in-progress pen polyline (if it has
+  // ≥2 vertices); Esc abandons whichever tool's in-progress shape. Skipped
+  // when the user is typing into an input — otherwise drawing tool keys
+  // would hijack form inputs in the sidebar.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (tool === 'pen' && penPoints.length > 0) {
+          e.preventDefault();
+          setPenPoints([]);
+          setPenHover(null);
+          return;
+        }
+        if (tool === 'arc' && arcPoints.length > 0) {
+          e.preventDefault();
+          setArcPoints([]);
+          setArcHover(null);
+          return;
+        }
+        if ((tool === 'rect' || tool === 'circle') && shapeDrag) {
+          e.preventDefault();
+          setShapeDrag(null);
+          return;
+        }
+      }
+      if (e.key === 'Enter') {
+        if (tool === 'pen' && penPoints.length >= 2) {
+          e.preventDefault();
+          onCommitShape('pen', penPoints.slice(), false);
+          setPenPoints([]);
+          setPenHover(null);
+        }
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [tool, penPoints, arcPoints, shapeDrag, onCommitShape]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -159,6 +243,17 @@ export default function EditorCanvas({
     // to the SVG, which is why clicks on paths weren't firing.
     const tag = (e.target as SVGElement).tagName;
     if (tag !== 'svg' && tag !== 'rect') return;
+    // Rect / circle: pointer-down captures origin and starts the drag
+    // preview. We capture the pointer so a fast drag that exits the SVG
+    // before pointer-up still resolves cleanly.
+    if (tool === 'rect' || tool === 'circle') {
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      if (!world) return;
+      setShapeDrag({ kind: tool, a: world, b: world });
+      shapeDragRef.current = { pointerId: e.pointerId };
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+      return;
+    }
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -170,6 +265,22 @@ export default function EditorCanvas({
   }
 
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    // Live preview updates for the in-progress drawing tools. These all
+    // want the cursor's world-space position regardless of whether a drag
+    // is in flight.
+    if (tool === 'pen' && penPoints.length > 0) {
+      const w = clientToWorldSnapped(e.clientX, e.clientY);
+      if (w) setPenHover(w);
+    }
+    if (tool === 'arc' && arcPoints.length > 0 && arcPoints.length < 3) {
+      const w = clientToWorldSnapped(e.clientX, e.clientY);
+      if (w) setArcHover(w);
+    }
+    if (shapeDrag) {
+      const w = clientToWorldSnapped(e.clientX, e.clientY);
+      if (w) setShapeDrag((prev) => (prev ? { ...prev, b: w } : prev));
+      return;
+    }
     if (!dragRef.current) return;
     const dx = e.clientX - dragRef.current.startX;
     const dy = e.clientY - dragRef.current.startY;
@@ -180,6 +291,32 @@ export default function EditorCanvas({
   }
 
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
+    // Rect / circle: pointer-up commits the drawn shape. We require a
+    // minimum drag distance (1mm in world space) so an accidental click
+    // doesn't emit a degenerate run.
+    if (shapeDrag) {
+      const { kind, a, b } = shapeDrag;
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // already released
+      }
+      shapeDragRef.current = null;
+      setShapeDrag(null);
+      if (kind === 'rect') {
+        const w = Math.abs(a[0] - b[0]);
+        const h = Math.abs(a[1] - b[1]);
+        if (w >= 1 && h >= 1) {
+          onCommitShape('rect', rectToPoints(a[0], a[1], b[0], b[1]), true);
+        }
+      } else {
+        const r = Math.hypot(a[0] - b[0], a[1] - b[1]);
+        if (r >= 1) {
+          onCommitShape('circle', circleToPoints(a[0], a[1], r, 64), true);
+        }
+      }
+      return;
+    }
     if (dragRef.current) {
       const wasDrag = dragRef.current.moved;
       dragRef.current = null;
@@ -210,9 +347,53 @@ export default function EditorCanvas({
       }
       return;
     }
+    if (tool === 'pen' && isBackground) {
+      // Click drops a vertex; double-click is detected via React's
+      // onDoubleClick handler on the SVG so we keep the dispatch local.
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      if (!world) return;
+      setPenPoints((prev) => [...prev, world]);
+      setPenHover(world);
+      return;
+    }
+    if (tool === 'arc' && isBackground) {
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      if (!world) return;
+      setArcPoints((prev) => {
+        const next: [number, number][] = [...prev, world];
+        if (next.length === 3) {
+          // Commit on the third click. The arc helper handles the
+          // degenerate-collinear fallback.
+          const pts = threePointArcToPoints(next[0], next[1], next[2], 3);
+          onCommitShape('arc', pts, false);
+          setArcHover(null);
+          return [];
+        }
+        setArcHover(world);
+        return next;
+      });
+      return;
+    }
     if (isBackground) {
       onSelectRun(null);
     }
+  }
+
+  function onDoubleClick(e: React.MouseEvent<SVGSVGElement>) {
+    if (tool !== 'pen') return;
+    const tag = (e.target as SVGElement).tagName;
+    if (tag !== 'svg' && tag !== 'rect') return;
+    // Double-click also fires the underlying single click first, so by the
+    // time React re-renders, penPoints may have grown by one. Read the
+    // latest list inside the functional updater to avoid committing a
+    // stale snapshot. Commit if we have ≥2 vertices, otherwise quietly
+    // cancel.
+    e.preventDefault();
+    setPenPoints((prev) => {
+      if (prev.length >= 2) onCommitShape('pen', prev.slice(), false);
+      return [];
+    });
+    setPenHover(null);
   }
 
   function onRunClick(e: React.MouseEvent<SVGPathElement>, run: DesignRun) {
@@ -308,6 +489,7 @@ export default function EditorCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onDoubleClick={onDoubleClick}
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
@@ -441,6 +623,117 @@ export default function EditorCanvas({
               pointerEvents="none"
             />
           )}
+          {/* Drawing-tool previews. Rendered in the existing staged-marker
+              orange so the user can tell at a glance the geometry isn't
+              committed yet. Stroke widths and handle radii scale with the
+              zoom transform so they stay visible. */}
+          {tool === 'pen' && penPoints.length > 0 && (() => {
+            const sample: [number, number][] = penHover
+              ? [...penPoints, penHover]
+              : penPoints;
+            const d = sample
+              .map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]} ${p[1]}`)
+              .join(' ');
+            return (
+              <g>
+                <path
+                  d={d}
+                  stroke="#ff8a00"
+                  strokeWidth={1.6 / transform.k}
+                  strokeDasharray={`${3 / transform.k} ${2 / transform.k}`}
+                  fill="none"
+                  pointerEvents="none"
+                />
+                {penPoints.map((p, i) => (
+                  <circle
+                    key={`pen-v-${i}`}
+                    cx={p[0]}
+                    cy={p[1]}
+                    r={3 / transform.k}
+                    fill="#ff8a00"
+                    pointerEvents="none"
+                  />
+                ))}
+              </g>
+            );
+          })()}
+          {tool === 'rect' && shapeDrag && shapeDrag.kind === 'rect' && (() => {
+            const xMin = Math.min(shapeDrag.a[0], shapeDrag.b[0]);
+            const yMin = Math.min(shapeDrag.a[1], shapeDrag.b[1]);
+            const w = Math.abs(shapeDrag.a[0] - shapeDrag.b[0]);
+            const h = Math.abs(shapeDrag.a[1] - shapeDrag.b[1]);
+            return (
+              <rect
+                x={xMin}
+                y={yMin}
+                width={w}
+                height={h}
+                stroke="#ff8a00"
+                strokeWidth={1.6 / transform.k}
+                strokeDasharray={`${3 / transform.k} ${2 / transform.k}`}
+                fill="none"
+                pointerEvents="none"
+              />
+            );
+          })()}
+          {tool === 'circle' && shapeDrag && shapeDrag.kind === 'circle' && (() => {
+            const r = Math.hypot(shapeDrag.a[0] - shapeDrag.b[0], shapeDrag.a[1] - shapeDrag.b[1]);
+            return (
+              <g pointerEvents="none">
+                <circle
+                  cx={shapeDrag.a[0]}
+                  cy={shapeDrag.a[1]}
+                  r={r}
+                  stroke="#ff8a00"
+                  strokeWidth={1.6 / transform.k}
+                  strokeDasharray={`${3 / transform.k} ${2 / transform.k}`}
+                  fill="none"
+                />
+                <circle
+                  cx={shapeDrag.a[0]}
+                  cy={shapeDrag.a[1]}
+                  r={3 / transform.k}
+                  fill="#ff8a00"
+                />
+              </g>
+            );
+          })()}
+          {tool === 'arc' && arcPoints.length > 0 && (() => {
+            // Live arc preview: with 1 point, just show a marker. With 2
+            // (or 2 + hover), draw a candidate arc through the trio.
+            const pts = arcHover && arcPoints.length < 3
+              ? [...arcPoints, arcHover]
+              : arcPoints;
+            let d = '';
+            if (pts.length === 2) {
+              d = `M${pts[0][0]} ${pts[0][1]} L${pts[1][0]} ${pts[1][1]}`;
+            } else if (pts.length === 3) {
+              const sampled = threePointArcToPoints(pts[0], pts[1], pts[2], 3);
+              d = sampled.map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0]} ${p[1]}`).join(' ');
+            }
+            return (
+              <g pointerEvents="none">
+                {d && (
+                  <path
+                    d={d}
+                    stroke="#ff8a00"
+                    strokeWidth={1.6 / transform.k}
+                    strokeDasharray={`${3 / transform.k} ${2 / transform.k}`}
+                    fill="none"
+                  />
+                )}
+                {arcPoints.map((p, i) => (
+                  <circle
+                    key={`arc-v-${i}`}
+                    cx={p[0]}
+                    cy={p[1]}
+                    r={3 / transform.k}
+                    fill="#ff8a00"
+                  />
+                ))}
+              </g>
+            );
+          })()}
           {staged && (() => {
             const run = doc.runs.find((r) => r.id === staged.runId);
             if (!run) return null;
@@ -566,6 +859,28 @@ export default function EditorCanvas({
             {selectedRunId
               ? 'Drag a vertex to reshape · shift-click a vertex to delete'
               : 'Select a run first, then drag its vertices'}
+          </span>
+        )}
+        {tool === 'pen' && (
+          <span className="meta hint">
+            {penPoints.length === 0
+              ? 'Click to drop the first vertex'
+              : `${penPoints.length} vertex${penPoints.length === 1 ? '' : 'es'} · click to add · double-click or Enter to commit · Esc to cancel`}
+          </span>
+        )}
+        {tool === 'rect' && (
+          <span className="meta hint">Drag from one corner to the opposite corner</span>
+        )}
+        {tool === 'circle' && (
+          <span className="meta hint">Drag from the center out to the radius</span>
+        )}
+        {tool === 'arc' && (
+          <span className="meta hint">
+            {arcPoints.length === 0
+              ? 'Click the start of the arc'
+              : arcPoints.length === 1
+                ? 'Click a point on the arc'
+                : 'Click the end of the arc · Esc to cancel'}
           </span>
         )}
       </div>

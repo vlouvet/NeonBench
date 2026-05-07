@@ -209,6 +209,21 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     }),
+  createBlankDesignVersion: (projectId: number, label?: string) =>
+    req<DesignVersion>(`/api/projects/${projectId}/design_versions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        label: label ?? 'blank',
+        design_doc: {
+          version: 1,
+          view_box_mm: [0, 0, 1000, 500],
+          runs: [],
+          labels: [],
+          dimensions: [],
+        } as DesignDoc,
+      }),
+    }),
   validateDoc: (projectId: number, doc: DesignDoc, signal?: AbortSignal) =>
     req<ValidationReport>(`/api/projects/${projectId}/validate_doc`, {
       method: 'POST',

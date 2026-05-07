@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
+import { rectToPoints } from './shapes/rect';
+import { circleToPoints } from './shapes/circle';
+import { threePointArcToPoints } from './shapes/arc';
 
 // Build a minimal doc with one open polyline, one closed polyline, and
 // dense-enough vertex counts that bend detection has something to find.
@@ -232,6 +235,38 @@ describe('appendRuns', () => {
     const tail = doc.runs[doc.runs.length - 1];
     // Original 'text-1' kept; appended run got 'text-2'.
     expect(tail.id).toBe('text-2');
+  });
+
+  it('drawing tools (rect / circle / arc) commit through appendRuns with stable per-prefix counters', () => {
+    // Mimics what the canvas does when the user draws a shape. This isn't
+    // exercising any UI; it's exercising the shape geometry helpers + the
+    // appendRuns pipeline together so we catch a regression in the
+    // contract between them (e.g. rect helper drops the closing dup, or
+    // appendRuns stops respecting the prefix).
+    const blank: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 1000, 500],
+      runs: [],
+    };
+    const r1: DesignRun = { id: 'rect', polyline: { points: rectToPoints(0, 0, 100, 50), closed: true } };
+    const c1: DesignRun = { id: 'circle', polyline: { points: circleToPoints(200, 100, 25, 64), closed: true } };
+    const a1: DesignRun = {
+      id: 'arc',
+      polyline: { points: threePointArcToPoints([0, 0], [50, 50], [100, 0]), closed: false },
+    };
+    let doc = ops.appendRuns(blank, [r1], 'rect');
+    doc = ops.appendRuns(doc, [c1], 'circle');
+    doc = ops.appendRuns(doc, [a1], 'arc');
+    const r2: DesignRun = { id: 'rect', polyline: { points: rectToPoints(10, 10, 60, 40), closed: true } };
+    doc = ops.appendRuns(doc, [r2], 'rect');
+    expect(doc.runs.map((r) => r.id)).toEqual(['rect-1', 'circle-1', 'arc-1', 'rect-2']);
+    // Geometry survived intact — first run is the closed 100x50 rectangle.
+    expect(doc.runs[0].polyline.points.length).toBe(5);
+    expect(doc.runs[0].polyline.closed).toBe(true);
+    // Arc run is open and starts/ends at the user-clicked points.
+    expect(doc.runs[2].polyline.closed).toBe(false);
+    expect(doc.runs[2].polyline.points[0]).toEqual([0, 0]);
+    expect(doc.runs[2].polyline.points.at(-1)).toEqual([100, 0]);
   });
 });
 
