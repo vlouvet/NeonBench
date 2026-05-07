@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel in-flight runs on the same ref when a new commit lands. Saves CI
+# minutes when a PR sees iterative pushes — only the latest run completes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -56,8 +62,14 @@ jobs:
 
   # Separate job (not a matrix on `test`) because branch protection requires
   # the `test` context by name; matrixing would rename it to `test (ubuntu-latest)`
-  # and break the required-checks contract. To make this job required-for-merge,
-  # update branch protection after the first green run; see PR description.
+  # and break the required-checks contract.
+  #
+  # Trimmed scope: this job exists to verify the *Go pipeline* runs on Windows
+  # (path separators, CRLF, Git Bash compatibility, build flags). It deliberately
+  # skips Node / npm / vitest / frontend build — those are platform-independent
+  # and the `test` job already covers them on Linux. We stub web/dist/index.html
+  # so //go:embed all:dist compiles; the embed isn't actually served during
+  # `go test` (integration tests use registerAPI directly, not the SPA fallback).
   windows-smoke:
     runs-on: windows-latest
     steps:
@@ -69,31 +81,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-
-      - name: Install web deps
-        run: npm ci
-        working-directory: web
-
-      # Frontend must build first: web/web.go has //go:embed all:dist, so any
-      # `go vet` / `go test` / `go build` needs web/dist/ populated.
-      - name: Frontend type-check + build
-        run: npm run build
-        working-directory: web
+      # Stub web/dist/ so //go:embed all:dist resolves without a frontend build.
+      # Real frontend output is verified by the `test` job.
+      - name: Stub web/dist for embed
+        shell: bash
+        run: |
+          mkdir -p web/dist
+          echo "<!doctype html><title>stub</title>" > web/dist/index.html
 
       - name: go vet
         run: go vet ./...
 
-      # Use Git Bash (preinstalled on windows-latest runners) so the bash
-      # shebang in scripts/test.sh is honored on Windows.
-      - name: Test (Go + vitest)
+      - name: go test
         shell: bash
-        run: ./scripts/test.sh
+        run: go test $(go list ./... | grep -v '/web/node_modules/')
 
       - name: Cross-compile binary (smoke)
         shell: bash
