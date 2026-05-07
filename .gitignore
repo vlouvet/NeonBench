@@ -28,6 +28,9 @@ coverage.*
 .idea/
 *.swp
 
+# Claude Agent SDK scratch (worktrees for parallel sub-agents). See CLAUDE.md.
+/.claude/
+
 # Local dev data (when running outside the per-OS app data dir)
 *.db
 *.db-journal
