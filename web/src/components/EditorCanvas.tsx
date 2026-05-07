@@ -139,25 +139,34 @@ export default function EditorCanvas({
 
   // Drop staged state when leaving the corresponding tool so a previously
   // dropped vertex doesn't surprise the user when they come back later.
-  useEffect(() => {
-    if (tool !== 'blockout') setStaged(null);
-    if (tool !== 'dimension') setStagedDim(null);
+  // Implemented with the "previous prop" pattern from the React docs
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders)
+  // so the resets happen during render rather than in an effect — this
+  // avoids the cascading-render hit from useEffect-based prop sync and
+  // keeps react-hooks/set-state-in-effect happy.
+  const [prevTool, setPrevTool] = useState(tool);
+  if (prevTool !== tool) {
+    setPrevTool(tool);
+    if (tool !== 'blockout' && staged !== null) setStaged(null);
+    if (tool !== 'dimension' && stagedDim !== null) setStagedDim(null);
     if (tool !== 'pen') {
-      setPenPoints([]);
-      setPenHover(null);
+      if (penPoints.length > 0) setPenPoints([]);
+      if (penHover !== null) setPenHover(null);
     }
     if (tool !== 'rect' && tool !== 'circle') {
-      setShapeDrag(null);
-      shapeDragRef.current = null;
+      if (shapeDrag !== null) setShapeDrag(null);
+      // shapeDragRef is mutated in pointerDown/pointerUp event handlers;
+      // clearing it during render trips the react-hooks/refs rule and
+      // (since the ref is only ever written, never read) doesn't change
+      // observable behavior. The pointer event handlers handle their
+      // own lifecycle.
     }
     if (tool !== 'arc') {
-      setArcPoints([]);
-      setArcHover(null);
+      if (arcPoints.length > 0) setArcPoints([]);
+      if (arcHover !== null) setArcHover(null);
     }
-    if (tool !== 'insert-doubleback') {
-      setDbHover(null);
-    }
-  }, [tool]);
+    if (tool !== 'insert-doubleback' && dbHover !== null) setDbHover(null);
+  }
 
   // Pen / arc tools: Enter commits the in-progress pen polyline (if it has
   // ≥2 vertices); Esc abandons whichever tool's in-progress shape. Skipped
@@ -213,22 +222,29 @@ export default function EditorCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // Fit on first measurement of the design doc.
-  const fittedDocRef = useRef<DesignDoc | null>(null);
-  useEffect(() => {
-    if (size.w === 0 || size.h === 0) return;
-    if (fittedDocRef.current === doc) return;
+  // Fit on first measurement of the design doc. Implemented with the
+  // "store previous prop in state" pattern so the fit happens during
+  // render — that bypasses the cascading-render hit a useEffect-based
+  // fit would take, and avoids the react-hooks/refs warning we'd get
+  // from gating on a ref. Once we've fit a particular doc we leave the
+  // user's pan/zoom alone until a new doc arrives.
+  const [fittedDoc, setFittedDoc] = useState<DesignDoc | null>(null);
+  if (size.w > 0 && size.h > 0 && fittedDoc !== doc) {
     const [x, y, w, h] = doc.view_box_mm;
-    if (w <= 0 || h <= 0) return;
-    const padding = 0.9;
-    const scale = Math.min(size.w / w, size.h / h) * padding;
-    setTransform({
-      k: scale,
-      tx: size.w / 2 - (x + w / 2) * scale,
-      ty: size.h / 2 - (y + h / 2) * scale,
-    });
-    fittedDocRef.current = doc;
-  }, [doc, size.w, size.h]);
+    if (w > 0 && h > 0) {
+      setFittedDoc(doc);
+      const padding = 0.9;
+      const scale = Math.min(size.w / w, size.h / h) * padding;
+      const next: Transform = {
+        k: scale,
+        tx: size.w / 2 - (x + w / 2) * scale,
+        ty: size.h / 2 - (y + h / 2) * scale,
+      };
+      if (transform.k !== next.k || transform.tx !== next.tx || transform.ty !== next.ty) {
+        setTransform(next);
+      }
+    }
+  }
 
   function clientToWorld(clientX: number, clientY: number): [number, number] | null {
     const rect = containerRef.current?.getBoundingClientRect();
