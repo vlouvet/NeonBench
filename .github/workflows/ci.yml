@@ -34,14 +34,12 @@ jobs:
         run: npm ci
         working-directory: web
 
-      # ESLint is run advisory-only because the tree currently has 10
-      # pre-existing errors in docOps.ts / ProjectDetail.tsx. Cleanup is
-      # tracked in todo.md Appendix B Tier 3 — once that lands, flip
-      # continue-on-error to false to make lint a hard gate.
-      - name: ESLint (advisory)
+      # ESLint is a hard gate: any error / warning fails CI. The Tier 3
+      # cleanup that brought the tree to zero diagnostics shipped in the
+      # PR that flipped this flag — keep it that way.
+      - name: ESLint
         run: npm run lint
         working-directory: web
-        continue-on-error: true
 
       # Frontend must build first: web/web.go has //go:embed all:dist, so any
       # `go vet` / `go test` / `go build` needs web/dist/ populated.
