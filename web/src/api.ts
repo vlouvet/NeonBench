@@ -136,6 +136,8 @@ export function parseReport(dv: DesignVersion | null | undefined): ValidationRep
   }
 }
 
+export type VectorizeCrop = { x: number; y: number; w: number; h: number };
+
 export type VectorizeRequest = {
   asset_id: number;
   target_width_mm: number;
@@ -143,6 +145,12 @@ export type VectorizeRequest = {
   smoothing_mm?: number; // RDP epsilon override; blank → auto from tube diameter
   min_spur_mm?: number;  // skeleton spur prune length; blank → auto from tube diameter
   label?: string;
+  // Pre-binarize bitmap adjustments. Apply order on the server is:
+  // rotate → crop → brightness → contrast → luminance → threshold.
+  rotation_deg?: number; // -45..+45 (positive = counter-clockwise)
+  crop?: VectorizeCrop;  // source-pixel rectangle, post-rotation
+  brightness?: number;   // -100..+100, channel offset
+  contrast?: number;     // 0.5..2.0, multiplicative around mid-128
 };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -254,6 +262,22 @@ export const api = {
       signal,
     }),
   exportBundleURL: (projectId: number) => `/api/projects/${projectId}/export.neonbench`,
+  importBundle: async (file: File): Promise<Project> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/api/projects/import', { method: 'POST', body: fd });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body?.error) msg = body.error;
+      } catch {
+        // server returned non-JSON; fall back to status text
+      }
+      throw new Error(`${res.status} ${msg}`);
+    }
+    return (await res.json()) as Project;
+  },
   printPDFURL: (
     projectId: number,
     versionId: number,
@@ -265,6 +289,11 @@ export const api = {
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
+  // dxfURL points at the geometry-only DXF export (Tier 2 #11) — for
+  // CNC tube benders. No paper/landscape options: DXF is just polylines
+  // in millimeters, no page layout.
+  dxfURL: (projectId: number, versionId: number) =>
+    `/api/projects/${projectId}/design_versions/${versionId}/print.dxf`,
 };
 
 export const PAPER_OPTIONS = [
