@@ -178,15 +178,15 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
 | Neon Design Tools | 5 | 1 | 17 | 0 |
-| Fonts & Text | 0 | 1 | 17 | 0 |
-| Design Tools | 4 | 4 | 31 | 3 |
+| Fonts & Text | 0 | 2 | 16 | 0 |
+| Design Tools | 4 | 5 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
 | Vector Graphics | 1 | 3 | 6 | 0 |
 | Image Manipulation | 1 | 1 | 5 | 0 |
 | Cutting/Plotting/Printing | 2 | 2 | 5 | 9 |
 | Productivity | 2 | 3 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **15** | **15** | **103** | **15** |
+| **Totals** | **15** | **17** | **101** | **15** |
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -226,8 +226,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 ### Design Tools (42 features)
 
 - ✅ #36 Grids · #37 Anti-aliased rendering · #53 Automatic Vectorizing · #54 Dimensioning
-- 🟡 #30 Color Management (per-run gas color only) · #38 History Window (cross-session, no in-session) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
-- ❌ #19, 22–29, 31–35, 39, 41–51, 55–58, 60: depth order, alignment, anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, distribute, layers, mirror, move-to-layer, nested groups, redo, rounded rect, rulers, guidelines, snap-to-guides, stack, step-and-repeat, polygon/star, styles, hotkeys, soft-shadow opts
+- 🟡 #30 Color Management (per-run gas color only) · #32 Common Shapes (rect / circle shipped in PR #10; rounded-rect still missing) · #38 History Window (cross-session, no in-session) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
+- ❌ #19, 22–29, 31, 33–35, 39, 41–51, 55–58, 60: depth order, alignment, anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, distribute, layers, mirror, move-to-layer, nested groups, redo, rounded rect, rulers, guidelines, snap-to-guides, stack, step-and-repeat, polygon/star, styles, hotkeys, soft-shadow opts
 - ❌ #20 Type1/OpenType font support · #59 Color Vectorizing
 - 🚫 #21, 34, 51 Drawing engine / refresh / streamlined UI (modern web stack) · #58 TWAIN (use OS-level scanning)
 
@@ -240,7 +240,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 - ✅ #80 Optimize Vectors (Douglas-Peucker simplify in editor sidebar)
 - 🟡 #78 Node Edit Tools (drag + delete; insert/break/join still TODO — see Phase 2 line 102) · #81 PDF Import + Export (export ✅, import ❌) · #83 Vector Filters (SVG only)
-- ❌ #75 Bezier Tool (Phase 2 follow-up) · #74 Tangency indicator · #76 AI/EPS import · #77 AI multi-version filter · #79 On-Screen Digitizing · #82 Sharp-Corner Tool
+- ❌ #75 Bezier Tool (pen tool in PR #10 emits polylines only; bezier handles tracked in Tier 3 #20) · #74 Tangency indicator · #76 AI/EPS import · #77 AI multi-version filter · #79 On-Screen Digitizing · #82 Sharp-Corner Tool
 
 ### Image Manipulation (7 features)
 
@@ -275,7 +275,7 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 
 1. ✅ **Delete a design version + delete project** (UI). Shipped in PR #3. `DELETE /api/projects/{id}/design_versions/{vid}` + per-row delete buttons with confirm dialogs.
 2. ✅ **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). Shipped in PR #8. Roman Simplex (`rowmans`) bundled as 12.7 KB JSON with public-domain attribution; `hersheyTextToRuns` returns one run per disconnected stroke (multi-stroke glyphs like `E`, `N`, `i` correctly emit multiple runs — matches real channel-letter construction). Implemented as a modal/dialog rather than a canvas tool to avoid touching `EditorCanvas.tsx`.
-3. **Pen tool + rect / circle / arc / polygon primitives** (NW #32, #56, #75). Completes the "design from a blank file" workflow. Reuses existing run model — each finished path becomes a new run. Bezier handles can wait.
+3. ✅ **Pen tool + rect / circle / arc primitives** (NW #32, #56, #75). Shipped in PR #10. Four canvas tools (pen + rect + circle + arc) wired into `EditorCanvas.tsx` matching the existing `blockout` / `dimension` / `NodeHandle` patterns. Geometry helpers in `web/src/lib/shapes/` are unit-tested in isolation. Backend lifted the "has no runs" guard from `handleCreateDesignVersion` + `handleValidateDoc` so blank designs can be created and validated; **"New blank design"** button on `ProjectDetail` is the entry point. Regular polygon, bezier handles, rotation handles, and angular snap during draw deferred to Tier 3.
 4. ✅ **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Shipped in PR #5. Side-by-side Source / Binarized canvases in `VectorizePanel.tsx`, throttled with React 19's `useDeferredValue`, source pixel buffer cached so re-binarize is just an RGBA pass.
 5. ✅ **Edit tube spec per project mutation UI** (todo.md:80). Project-detail dropdown was already shipped in commit 59fedea; the actual gap was the editor itself. Shipped in PR #6: inline `<select>` in editor header that PATCHes the project, immediately re-validates the current version against the new spec, surfaces the fresh report. Regression test guards the silently-stale-report failure mode.
 6. ✅ **Windows smoke test** (todo.md:90). Shipped in PR #2 as a separate `windows-smoke` CI job (not a matrix on `test` — preserves branch protection's required-context contract). Includes `.gitattributes` `eol=lf` pin so Git Bash on Windows runners doesn't break on CRLF line endings.
@@ -298,14 +298,15 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 17. **ESLint cleanup + flip CI to hard-gate.** Tree currently has 10 pre-existing errors (`docOps.ts` unused `_drop`/`_closed`, `EditorCanvas.tsx` setState-in-effect at lines 79/104, `EditorPage.tsx` refs-during-render at lines 110/111, `ProjectDetail.tsx` setState-in-effect at line 40) + 2 unused-eslint-disable warnings. CI runs `npm run lint` with `continue-on-error: true` until this clears; after, set `continue-on-error: false` in `.github/workflows/ci.yml`.
 18. **Fan tube-spec change to revalidate every design version, not just the current one.** PR #6 added auto-revalidate-on-change but only for the currently-loaded version; older versions in the history list keep their stale `validation_report_json` until someone manually clicks "Re-validate" on each one. After a tube-spec change, iterate `ListDesignVersions` and re-run validation server-side; surface a "revalidating N versions…" progress hint in the editor. Backend already has `handleRevalidate` and `UpdateDesignVersionReport` — this is fan-out + UI signaling, not a new rule.
 19. **Hershey text — kerning / multi-line / additional faces.** PR #8 ships single-line Roman Simplex with uniform tracking. Three follow-ups: per-letter custom kerning (drag handles in the modal preview), multi-line input with line-height control, and bundling additional Hershey faces (Roman Duplex for thicker channel letters; Sans Simplex / Futural for geometric-sans look). The converter at `scripts/build-hershey-font.mjs` already handles any rowman-style JHF — pointing it at additional sources is mostly mechanical.
-20. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-21. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-22. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-23. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-24. **Send to printer via OS print dialog** (todo.md:75).
-25. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-26. **Snap-to-angle and snap-to-geometry** (todo.md:104).
-27. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+20. **Drawing-tool polish.** PR #10 ships pen + rect + circle + arc; deferred items are: regular-polygon tool (NW #56), bezier handles on pen finish (NW #75 — currently emits polylines only), rotation handle on rect (axis-aligned in V1), rounded-rectangle (closes NW #32 fully), and fixing the pen tool's hit-zone collision with existing runs (clicking on top of a run currently selects the run instead of dropping a new vertex — fine for blank designs, awkward when extending an existing one).
+21. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+22. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+23. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+24. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+25. **Send to printer via OS print dialog** (todo.md:75).
+26. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+27. **Snap-to-angle and snap-to-geometry** (todo.md:104) — also drives angular-snap during pen / primitive draw (the props are wired but not yet consumed by the new tools).
+28. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
