@@ -103,7 +103,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [x] Path operations: simplify (Douglas-Peucker, ε configurable in sidebar) and reverse (flips polyline order, rewrites electrode anchors). Split/join still TODO.
 - [x] Snap to grid (toolbar toggle + mm spacing input). Affects label/dimension placement and vertex drag; pan/zoom and run-path picks stay un-snapped. Snap-to-angle and snap-to-geometry still TODO.
 - [ ] Multi-select, group, layers
-- [x] Cross-session checkpoints: every Save writes a new `design_versions` row (history list lets you switch back). In-session undo/redo with coalescing still TODO.
+- [x] Cross-session checkpoints: every Save writes a new `design_versions` row (history list lets you switch back). In-session undo/redo with coalescing also done — `editDoc()` records each mutation to an `undoStackRef`, 500ms coalescing collapses rapid sequential edits, Cmd/Ctrl+Z undoes and Cmd/Ctrl+Shift+Z redoes (`EditorPage.tsx:46-118`).
 
 ### Neon-specific features
 
@@ -179,14 +179,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 |---|---|---|---|---|
 | Neon Design Tools | 5 | 1 | 17 | 0 |
 | Fonts & Text | 0 | 2 | 16 | 0 |
-| Design Tools | 4 | 5 | 30 | 3 |
+| Design Tools | 5 | 4 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
 | Vector Graphics | 1 | 3 | 6 | 0 |
 | Image Manipulation | 5 | 1 | 1 | 0 |
 | Cutting/Plotting/Printing | 3 | 2 | 4 | 9 |
-| Productivity | 3 | 2 | 5 | 0 |
+| Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **21** | **16** | **96** | **15** |
+| **Totals** | **23** | **14** | **96** | **15** |
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -226,7 +226,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 ### Design Tools (42 features)
 
 - ✅ #36 Grids · #37 Anti-aliased rendering · #53 Automatic Vectorizing · #54 Dimensioning
-- 🟡 #30 Color Management (per-run gas color only) · #32 Common Shapes (rect / circle shipped in PR #10; rounded-rect still missing) · #38 History Window (cross-session, no in-session) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
+- 🟡 #30 Color Management (per-run gas color only) · #32 Common Shapes (rect / circle shipped in PR #10; rounded-rect still missing) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
+- ✅ #38 History Window (cross-session via design_versions list + in-session undo/redo with coalescing in `EditorPage.tsx`)
 - ❌ #19, 22–29, 31, 33–35, 39, 41–51, 55–58, 60: depth order, alignment, anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, distribute, layers, mirror, move-to-layer, nested groups, redo, rounded rect, rulers, guidelines, snap-to-guides, stack, step-and-repeat, polygon/star, styles, hotkeys, soft-shadow opts
 - ❌ #20 Type1/OpenType font support · #59 Color Vectorizing
 - 🚫 #21, 34, 51 Drawing engine / refresh / streamlined UI (modern web stack) · #58 TWAIN (use OS-level scanning)
@@ -258,7 +259,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 ### Productivity (10 features)
 
 - ✅ #109 Auto Save (every save → design_version row) · #112 Job Manager (customer / designer / due_date / job_number shipped in PR #14) · #117 Zooming (pointer/wheel)
-- 🟡 #115 Tool Tips · #116 Unlimited Undo (cross-session yes; in-session no)
+- 🟡 #115 Tool Tips
+- ✅ #116 Unlimited Undo (cross-session via version log + in-session undo/redo with 500ms coalescing in `EditorPage.tsx`)
 - ❌ #110 Customizable toolbar · #111 Email Layout · #113 Online Help · #114 Spell Checker · #118 Programmable Hotkeys
 
 ### Wide Format Printing (7 features)
@@ -283,7 +285,7 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 ### Tier 2 — Largest NW parity gaps
 
 7. **Neonize / Parallel-tube layout / Auto Double-Stroke** (NW #123, #131, #141). Take a closed outline path, emit two parallel tube paths offset by tube diameter + spacing. Single biggest neon-specific gap.
-8. **In-session undo/redo with coalescing** (todo.md:106; NW #44, #116). Cross-session is already covered by the version log.
+8. ✅ **In-session undo/redo with coalescing** (todo.md:106; NW #44, #116). Already shipped — `EditorPage.tsx:46-118` has `undoStackRef` / `redoStackRef`, 500ms coalescing of rapid sequential edits, Cmd/Ctrl+Z + Cmd/Ctrl+Shift+Z keyboard shortcuts. Phase 2 row 106 and Appendix A NW #38 / #116 stale claims fixed.
 9. **Node insert / break / join** (todo.md:102, 104; NW #78). Click on a segment to add a vertex; split a polyline at a vertex; join two endpoints.
 10. **Channel letter return patterns** (NW #106). The single channel-letter shop feature missing — measured return depth and trim outline per letter.
 11. ✅ **DXF export for CNC tube benders** (todo.md:148; NW #108). Shipped in PR #12. R12 ASCII (lowest-common-denominator across CAM importers), `LWPOLYLINE` per run, mm units (`$INSUNITS=4`), layer-per-run (`RUN_<id>`) for filterable selection in CAD. No annotations in V1 (DXF is the bender geometry feed; PDF stays the human pattern). Same validation-error gate as PDF.
