@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -43,7 +43,13 @@ export default function ProjectDetail() {
     }
   }
 
-  const load = useCallback(async () => {
+  // Load (or reload) the page's data. Used by handleUpload and other
+  // handlers that need to refresh after a mutation. The mount / projectId
+  // effect below has its own cancellable copy so a stale request from a
+  // previous projectId can't race with the current one — calling this
+  // function directly skips that guard, which is fine because the
+  // handlers are user-driven (one in flight at a time).
+  async function reload() {
     try {
       const [p, a, specs, vs, lat] = await Promise.all([
         api.getProject(projectId),
@@ -60,11 +66,38 @@ export default function ProjectDetail() {
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [projectId]);
+  }
 
+  // Initial load + reload-on-projectId-change. Folded inline in the effect
+  // (rather than calling reload()) so the cancelled flag can suppress a
+  // stale Promise resolving after the user navigates to a different
+  // project — that would otherwise call setState on an unmounted /
+  // re-keyed component.
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    Promise.all([
+      api.getProject(projectId),
+      api.listAssets(projectId),
+      api.listTubeSpecs(),
+      api.listDesignVersions(projectId),
+      api.latestDesignVersion(projectId),
+    ])
+      .then(([p, a, specs, vs, lat]) => {
+        if (cancelled) return;
+        setProject(p);
+        setAssets(a);
+        setAllSpecs(specs);
+        setVersions(vs);
+        setLatest(lat);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setError((e as Error).message);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -73,7 +106,7 @@ export default function ProjectDetail() {
     setError(null);
     try {
       await api.uploadAsset(projectId, file);
-      await load();
+      await reload();
     } catch (err) {
       setError((err as Error).message);
     } finally {
