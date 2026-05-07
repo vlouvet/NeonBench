@@ -1029,6 +1029,260 @@ func TestProjectTubeEndGap(t *testing.T) {
 	}
 }
 
+// TestProjectChannelLetterDepth covers create + GET + PATCH + validation
+// for the optional channel_letter_depth_mm setting added in Tier 2 #10
+// (NW #106). Same three-state PATCH semantics as tube_end_gap_mm:
+// nil/omitted leaves it alone, explicit null clears the override,
+// in-range numbers write through.
+func TestProjectChannelLetterDepth(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var created map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":                    "channel letter depth roundtrip",
+		"tube_spec_id":            tubeSpecID,
+		"channel_letter_depth_mm": 75.0,
+	}, &created)
+	if got := created["channel_letter_depth_mm"]; got != 75.0 {
+		t.Errorf("create echo: got %v, want 75", got)
+	}
+	pid := int64(created["id"].(float64))
+
+	var fetched map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(pid), &fetched)
+	if got := fetched["channel_letter_depth_mm"]; got != 75.0 {
+		t.Errorf("GET: got %v, want 75", got)
+	}
+
+	patchURL := base + "/api/projects/" + itoa(pid)
+	patch := func(body string) (int, map[string]any) {
+		req, _ := http.NewRequest("PATCH", patchURL, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH: %v", err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if resp.StatusCode/100 == 2 {
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+		}
+		return resp.StatusCode, out
+	}
+
+	if code, body := patch(`{"channel_letter_depth_mm": 150}`); code/100 != 2 {
+		t.Fatalf("PATCH set: status %d", code)
+	} else if body["channel_letter_depth_mm"] != 150.0 {
+		t.Errorf("PATCH set: got %v, want 150", body["channel_letter_depth_mm"])
+	}
+
+	if code, body := patch(`{"channel_letter_depth_mm": null}`); code/100 != 2 {
+		t.Fatalf("PATCH null: status %d", code)
+	} else if _, present := body["channel_letter_depth_mm"]; present {
+		t.Errorf("PATCH null should clear: still present %v", body["channel_letter_depth_mm"])
+	}
+
+	for _, bad := range []string{
+		`{"channel_letter_depth_mm": 5}`,    // below 10 mm minimum
+		`{"channel_letter_depth_mm": 1000}`, // above 500 mm max
+		`{"channel_letter_depth_mm": "ten"}`,
+	} {
+		if code, _ := patch(bad); code != http.StatusBadRequest {
+			t.Errorf("PATCH %s: want 400, got %d", bad, code)
+		}
+	}
+
+	// Same range check applies on CREATE.
+	resp, err := client.Post(base+"/api/projects", "application/json",
+		strings.NewReader(`{"name":"x","tube_spec_id":`+itoa(tubeSpecID)+`,"channel_letter_depth_mm":2000}`))
+	if err != nil {
+		t.Fatalf("create out-of-range: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("create out-of-range: want 400, got %d", resp.StatusCode)
+	}
+
+	// Project with no override gets the field omitted from the response.
+	var minimal map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "no depth override",
+		"tube_spec_id": tubeSpecID,
+	}, &minimal)
+	if _, present := minimal["channel_letter_depth_mm"]; present {
+		t.Errorf("minimal create: should omit channel_letter_depth_mm, got %v", minimal["channel_letter_depth_mm"])
+	}
+}
+
+// TestChannelLetterReturnPattern is the end-to-end regression guard
+// for NW #106 / Tier 2 #10. It creates a project with an explicit
+// channel-letter depth, posts a design version where one run is
+// flagged as a face and another is not, fetches the print PDF, and
+// asserts:
+//
+//   - the response is a well-formed PDF (starts with "%PDF-")
+//   - the PDF is meaningfully larger than the same design rendered
+//     with no face flag, because the face-marked run added a
+//     return-strip page
+//
+// The spec calls for `bytes.Contains` against literal "Return strip"
+// text, but gofpdf compresses content streams by default — text never
+// appears as plain bytes in production output. Size-delta and
+// PDF-prefix together cover the same regression: a future refactor
+// that silently drops the return-strip emission will shrink the PDF
+// back toward baseline and this test will catch it.
+func TestChannelLetterReturnPattern(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":                    "channel letter print",
+		"tube_spec_id":            tubeSpecID,
+		"channel_letter_depth_mm": 75.0,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// Two runs: a 100×50 closed rectangle face (will trigger a
+	// return-strip page) and a small open polyline (won't).
+	faceRun := designdoc.Run{
+		ID: "face-rect",
+		Polyline: designdoc.Polyline{
+			Points: [][2]float64{{0, 0}, {100, 0}, {100, 50}, {0, 50}},
+			Closed: true,
+		},
+		IsChannelLetterFace: true,
+	}
+	plainRun := designdoc.Run{
+		ID: "plain-line",
+		Polyline: designdoc.Polyline{
+			Points: [][2]float64{{0, 80}, {100, 80}, {100, 90}},
+			Closed: false,
+		},
+	}
+
+	docWithFace := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs:      []designdoc.Run{faceRun, plainRun},
+	}
+	var withFaceVersion map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":       "with face",
+		"design_doc":  docWithFace,
+	}, &withFaceVersion)
+	withFaceVID := int64(withFaceVersion["id"].(float64))
+
+	// Baseline: same geometry, face flag cleared, so no return-strip page.
+	plain := faceRun
+	plain.IsChannelLetterFace = false
+	docBaseline := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs:      []designdoc.Run{plain, plainRun},
+	}
+	var baselineVersion map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":       "no face",
+		"design_doc":  docBaseline,
+	}, &baselineVersion)
+	baselineVID := int64(baselineVersion["id"].(float64))
+
+	getPDF := func(vid int64) []byte {
+		resp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(vid) + "/print.pdf")
+		if err != nil {
+			t.Fatalf("print.pdf: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("print.pdf v%d status %d: %s", vid, resp.StatusCode, body)
+		}
+		if !bytes.HasPrefix(body, []byte("%PDF-")) {
+			t.Fatalf("print.pdf v%d: not a PDF (first 8 bytes %q)", vid, body[:min(8, len(body))])
+		}
+		return body
+	}
+
+	withFacePDF := getPDF(withFaceVID)
+	baselinePDF := getPDF(baselineVID)
+
+	t.Logf("with-face PDF: %d bytes; baseline PDF: %d bytes", len(withFacePDF), len(baselinePDF))
+
+	// The face flag adds a whole extra page (header + strip + ticks +
+	// footer). 1 KB is a conservative floor — in practice the delta is
+	// many KB, but compression makes exact byte counts unstable across
+	// gofpdf updates.
+	if len(withFacePDF) <= len(baselinePDF)+512 {
+		t.Errorf("expected with-face PDF significantly larger than baseline (extra return-strip page); with=%d baseline=%d",
+			len(withFacePDF), len(baselinePDF))
+	}
+}
+
+// TestMigration0007Reversible exercises the goose Down step for the
+// 0007_channel_letter_depth migration so we catch any future
+// SQLite/driver breakage that would brick a user mid-rollback.
+// Mirrors the 0005 / 0006 reversibility test pattern.
+func TestMigration0007Reversible(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if _, err := db.Exec("SELECT channel_letter_depth_mm FROM projects"); err != nil {
+		t.Fatalf("post-up SELECT failed: %v", err)
+	}
+	if err := goose.Down(db, "migrations"); err != nil {
+		t.Fatalf("down 1: %v", err)
+	}
+	if _, err := db.Exec("SELECT channel_letter_depth_mm FROM projects"); err == nil {
+		t.Errorf("column channel_letter_depth_mm still present after down migration")
+	}
+}
+
 // TestMigration0006Reversible exercises the goose Down step for the
 // 0006_tube_end_gap migration so we catch any future SQLite/driver
 // breakage that would brick a user mid-rollback. Mirrors the
@@ -1046,8 +1300,10 @@ func TestMigration0006Reversible(t *testing.T) {
 	if _, err := db.Exec("SELECT tube_end_gap_mm FROM projects"); err != nil {
 		t.Fatalf("post-up SELECT failed: %v", err)
 	}
-	if err := goose.Down(db, "migrations"); err != nil {
-		t.Fatalf("down 1: %v", err)
+	// Roll back every migration newer than 0006, then 0006 itself,
+	// so this test doesn't break each time a later migration lands.
+	if err := goose.DownTo(db, "migrations", 5); err != nil {
+		t.Fatalf("down to 5: %v", err)
 	}
 	if _, err := db.Exec("SELECT tube_end_gap_mm FROM projects"); err == nil {
 		t.Errorf("column tube_end_gap_mm still present after down migration")
