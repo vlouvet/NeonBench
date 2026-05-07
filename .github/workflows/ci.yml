@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install web deps
+        run: npm ci
+        working-directory: web
+
+      # ESLint is run advisory-only because the tree currently has 10
+      # pre-existing errors in docOps.ts / ProjectDetail.tsx. Cleanup is
+      # tracked in todo.md Appendix B Tier 3 — once that lands, flip
+      # continue-on-error to false to make lint a hard gate.
+      - name: ESLint (advisory)
+        run: npm run lint
+        working-directory: web
+        continue-on-error: true
+
+      # Frontend must build first: web/web.go has //go:embed all:dist, so any
+      # `go vet` / `go test` / `go build` needs web/dist/ populated.
+      - name: Frontend type-check + build
+        run: npm run build
+        working-directory: web
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (Go + vitest)
+        run: ./scripts/test.sh
+
+      - name: Cross-compile binary (smoke)
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o dist/neonbench ./cmd/neonbench
