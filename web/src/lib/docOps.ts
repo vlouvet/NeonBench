@@ -142,16 +142,18 @@ export function deleteBend(
 
 export function resetBends(doc: DesignDoc, runId: string): DesignDoc {
   return mapRun(doc, runId, (run) => {
-    const { bends: _drop, ...rest } = run;
-    return rest;
+    const next = { ...run };
+    delete next.bends;
+    return next;
   });
 }
 
 export function setRunColor(doc: DesignDoc, runId: string, color: string): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (color === '') {
-      const { color: _drop, ...rest } = run;
-      return rest;
+      const next = { ...run };
+      delete next.color;
+      return next;
     }
     return { ...run, color };
   });
@@ -160,8 +162,9 @@ export function setRunColor(doc: DesignDoc, runId: string, color: string): Desig
 export function setRunDiameter(doc: DesignDoc, runId: string, diameterMM: number | null): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (diameterMM == null || Number.isNaN(diameterMM) || diameterMM <= 0) {
-      const { tube_diameter_mm: _drop, ...rest } = run;
-      return rest;
+      const next = { ...run };
+      delete next.tube_diameter_mm;
+      return next;
     }
     return { ...run, tube_diameter_mm: diameterMM };
   });
@@ -170,8 +173,9 @@ export function setRunDiameter(doc: DesignDoc, runId: string, diameterMM: number
 export function setRunNotes(doc: DesignDoc, runId: string, notes: string): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (notes.trim() === '') {
-      const { notes: _drop, ...rest } = run;
-      return rest;
+      const next = { ...run };
+      delete next.notes;
+      return next;
     }
     return { ...run, notes };
   });
@@ -188,8 +192,9 @@ export function setRunChannelLetterFace(
 ): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (!isFace) {
-      const { is_channel_letter_face: _drop, ...rest } = run;
-      return rest;
+      const next = { ...run };
+      delete next.is_channel_letter_face;
+      return next;
     }
     return { ...run, is_channel_letter_face: true };
   });
@@ -296,7 +301,7 @@ export function simplifyRun(doc: DesignDoc, runId: string, epsilonMM: number): D
     // remapping when we keep all electrodes — the live arc just becomes
     // shorter. Clamp them to the new length.
     const newLiveLen = run.polyline.closed && (run.electrodes?.length ?? 0) === 2
-      ? estimateLiveArcLen(newPts.length, true)
+      ? estimateLiveArcLen(newPts.length)
       : newPts.length;
     const clamp = (i: number) => Math.max(0, Math.min(newLiveLen - 1, i));
     return {
@@ -318,11 +323,11 @@ export function simplifyRun(doc: DesignDoc, runId: string, epsilonMM: number): D
   });
 }
 
-function estimateLiveArcLen(_n: number, _closed: boolean): number {
+function estimateLiveArcLen(n: number): number {
   // After simplify, we don't know the exact live-arc length without
   // re-running runArcs. The clamp below uses newPts.length as an
   // upper bound, which is correct for the common no-electrode case.
-  return _n;
+  return n;
 }
 
 // rdpKeep returns a boolean per polyline vertex: true = retained, false =
