@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import type { DesignDoc, DesignRun } from '../api';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { DesignDoc, DesignRun, ValidationIssue } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
@@ -59,6 +59,7 @@ export default function EditorCanvas({
   onPickJoinEndpoint,
   onInsertDoubleback,
   onCommitShape,
+  validationIssues,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -66,6 +67,12 @@ export default function EditorCanvas({
   projectDiameterMM: number;
   snapEnabled: boolean;
   snapMM: number;
+  // Tier 3 #28 — Validator-emitted issues to render as colored markers
+  // on the canvas at their `(x_mm, y_mm)` coordinates. Optional: when
+  // omitted (or empty), the marker layer renders nothing. The canvas
+  // does not own the validation lifecycle — EditorPage threads in the
+  // latest report whenever live validation refreshes.
+  validationIssues?: ValidationIssue[];
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
@@ -573,6 +580,61 @@ export default function EditorCanvas({
   // Marker size: 10 device pixels regardless of zoom.
   const markerSizeMM = 10 / transform.k;
 
+  // Tier 3 #28 — Validation marker overlay.
+  //
+  // Filter incoming issues to those with finite world-space coordinates that
+  // fall within the document bounding box (padded ±10 mm). Off-canvas issues
+  // (usually data artifacts from earlier rule versions) clutter the canvas
+  // without informing the user, so we drop them at this stage. Memoized on
+  // `validationIssues` and `doc.view_box_mm` so the geometry only recomputes
+  // when the report or canvas bounds change — pan/zoom doesn't invalidate.
+  const visibleIssues = useMemo(() => {
+    if (!validationIssues || validationIssues.length === 0) return [];
+    const [bx, by, bw, bh] = doc.view_box_mm;
+    const x0 = bx - 10;
+    const y0 = by - 10;
+    const x1 = bx + bw + 10;
+    const y1 = by + bh + 10;
+    const out: { issue: ValidationIssue; x: number; y: number }[] = [];
+    for (const issue of validationIssues) {
+      const x = issue.x_mm;
+      const y = issue.y_mm;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if ((x as number) < x0 || (x as number) > x1) continue;
+      if ((y as number) < y0 || (y as number) > y1) continue;
+      out.push({ issue, x: x as number, y: y as number });
+    }
+    return out;
+  }, [validationIssues, doc.view_box_mm]);
+
+  // Per-issue marker radius scales with zoom but never collapses below a
+  // legible 4 mm at deep zoom-out. `8 / k` mirrors the snap-handle math
+  // elsewhere so the markers feel sized like the rest of the canvas chrome.
+  const issueMarkerR = Math.max(8 / transform.k, 4);
+
+  // Find the run whose polyline passes closest to a given world-space
+  // point. Used by click-to-select on a marker. Returns `null` when the
+  // doc has no runs. We measure to every polyline vertex (cheap; the
+  // canvas already does the same in nearestPointIndex for electrode
+  // placement); for typical signs (≤ a few thousand vertices total)
+  // this is well under a millisecond.
+  function nearestRunId(target: [number, number]): string | null {
+    let bestId: string | null = null;
+    let bestD = Infinity;
+    for (const run of doc.runs) {
+      for (const p of run.polyline.points) {
+        const dx = p[0] - target[0];
+        const dy = p[1] - target[1];
+        const d = dx * dx + dy * dy;
+        if (d < bestD) {
+          bestD = d;
+          bestId = run.id;
+        }
+      }
+    }
+    return bestId;
+  }
+
   return (
     <div ref={containerRef} className={`editor-canvas tool-${tool}`}>
       <svg
@@ -1038,6 +1100,26 @@ export default function EditorCanvas({
               );
             });
           })}
+          {/* Tier 3 #28 — validation marker overlay. Rendered last so it
+              paints on top of runs/annotations/labels but underneath the
+              SVG group's pointer-event delegation order; markers are
+              individually interactive (hover tooltip + click-to-select)
+              and the surrounding fill is semi-transparent so the run
+              path beneath remains visible. */}
+          {visibleIssues.map(({ issue, x, y }, idx) => (
+            <ValidationIssueMarker
+              key={`vissue-${idx}`}
+              x={x}
+              y={y}
+              r={issueMarkerR}
+              k={transform.k}
+              issue={issue}
+              onClick={() => {
+                const id = nearestRunId([x, y]);
+                if (id) onSelectRun(id);
+              }}
+            />
+          ))}
         </g>
       </svg>
       <div className="canvas-toolbar">
@@ -1375,6 +1457,49 @@ function AnnotationMarker({
       <circle cx={x} cy={y} r={r} fill="#fff" stroke="#7a4cff" strokeWidth={r * 0.15} />
       <polygon points={points} fill="#7a4cff" />
     </g>
+  );
+}
+
+// Tier 3 #28 — single validator-issue marker. Severity-colored, semi-
+// transparent fill so the run beneath stays legible, and a child `<title>`
+// for an accessible native browser tooltip carrying `rule: message`. The
+// circle is the only interactive element; the surrounding `<g>` keeps the
+// tooltip + click target unified without the extra DOM noise of a wrapper.
+function ValidationIssueMarker({
+  x,
+  y,
+  r,
+  k,
+  issue,
+  onClick,
+}: {
+  x: number;
+  y: number;
+  r: number;
+  k: number;
+  issue: ValidationIssue;
+  onClick: () => void;
+}) {
+  const isError = issue.severity === 'error';
+  const stroke = isError ? 'var(--error)' : 'var(--warn)';
+  const fill = isError ? 'rgba(255, 107, 107, 0.45)' : 'rgba(255, 170, 0, 0.45)';
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={r}
+      fill={fill}
+      stroke={stroke}
+      strokeWidth={1 / k}
+      className="validation-marker"
+      style={{ cursor: 'pointer' }}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      <title>{`${issue.rule}: ${issue.message}`}</title>
+    </circle>
   );
 }
 

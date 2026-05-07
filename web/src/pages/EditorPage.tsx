@@ -776,6 +776,7 @@ export default function EditorPage() {
           onCommitShape={commitShape}
           snapEnabled={snapEnabled}
           snapMM={snapMM}
+          validationIssues={report?.issues}
         />
         <aside className="editor-sidebar">
           <h3>Runs</h3>
