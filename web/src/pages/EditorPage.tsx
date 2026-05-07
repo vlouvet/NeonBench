@@ -5,15 +5,18 @@ import {
   parseDoc,
   parseReport,
   type DesignDoc,
+  type DesignRun,
   type DesignVersion,
   type Project,
   type TubeSpec,
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import HersheyTextDialog from '../components/HersheyTextDialog';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as ops from '../lib/docOps';
+import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -38,6 +41,7 @@ export default function EditorPage() {
   const validateAbortRef = useRef<AbortController | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
+  const [hersheyOpen, setHersheyOpen] = useState(false);
 
   // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
   // edits that land within COALESCE_MS of the previous edit into a single
@@ -331,6 +335,29 @@ export default function EditorPage() {
     editDoc((prev) => ops.reverseRun(prev, selected));
   }
 
+  // Insert Hershey text strokes into the design as new runs. The dialog
+  // generates strokes at origin (0,0); we recenter them to the document
+  // viewBox center so the user sees them appear near where they're
+  // already looking instead of at an off-canvas corner.
+  function insertHersheyText(runs: HersheyRun[]) {
+    if (!doc || runs.length === 0) return;
+    const bbox = hersheyRunsBBox(runs);
+    const [vx, vy, vw, vh] = doc.view_box_mm;
+    const cx = vx + vw / 2;
+    const cy = vy + vh / 2;
+    const dx = bbox ? cx - (bbox.minX + bbox.maxX) / 2 : cx;
+    const dy = bbox ? cy - (bbox.minY + bbox.maxY) / 2 : cy;
+    const designRuns = runs.map<DesignRun>((r) => ({
+      id: 'text', // appendRuns rewrites with a unique `text-N` id
+      polyline: {
+        points: r.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+        closed: false,
+      },
+    }));
+    editDoc((prev) => ops.appendRuns(prev, designRuns, 'text'));
+    setHersheyOpen(false);
+  }
+
   // Switching the project's tube spec from inside the editor needs to do
   // two things atomically from the user's perspective: persist the new
   // tube_spec_id, then re-run validation against the *new* spec so the
@@ -454,6 +481,12 @@ export default function EditorPage() {
               title="Add a manual bend point (overrides auto-detect for that run)"
             >Add bend</button>
             <span className="toolbar-divider" aria-hidden />
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => setHersheyOpen(true)}
+              title="Insert Hershey single-stroke text as new tube runs"
+            >Add text</button>
             <button
               type="button"
               className={tool === 'label' ? 'tool-btn active' : 'tool-btn'}
@@ -733,6 +766,12 @@ export default function EditorPage() {
           </div>
         </aside>
       </div>
+      {hersheyOpen && (
+        <HersheyTextDialog
+          onCancel={() => setHersheyOpen(false)}
+          onInsert={(runs) => insertHersheyText(runs)}
+        />
+      )}
     </section>
   );
 }

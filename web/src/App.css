@@ -142,6 +142,34 @@
   justify-content: flex-end;
 }
 
+.hershey-modal {
+  width: min(480px, 92vw);
+}
+.hershey-modal-blurb {
+  margin: -0.5rem 0 0.5rem 0;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.hershey-preview {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.5rem;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--text);
+}
+.hershey-preview svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.hershey-preview-meta {
+  margin: 0;
+}
+
 .vectorize-panel {
   border: 1px solid var(--border);
   border-radius: 6px;

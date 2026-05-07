@@ -88,6 +88,15 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      Double-back marks suppress bend-radius errors in their region.
    - **Add bend** — manual bend overrides the auto-detected list.
      Sidebar lets you Reset to auto.
+   - **Add text** — opens a modal that emits a Hershey single-stroke
+     font. For text in your design, prefer this over uploading a
+     rasterized image of typeset text — Hershey strokes are
+     plotter/CNC paths designed to be drawn by a single pen, so they
+     drop straight into the design as clean tube runs with no
+     centerline extraction required. Each glyph emits one or more
+     disconnected strokes, which matches how a channel-letter shop
+     actually builds the sign. Type the text, set the cap height in
+     mm, hit Insert.
    - **Label / Dimension** — doc-level callouts. Dimension reports the
      measured distance.
    - **Node edit** — drag any polyline vertex; shift-click to delete.
