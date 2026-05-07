@@ -948,3 +948,86 @@
   outline: none;
 }
 
+/* Tier 3 #32: Print via OS dialog.
+ *
+ * The Print button on the editor toolbar mounts a hidden <iframe> that
+ * loads the existing print PDF endpoint, then calls
+ * `iframe.contentWindow.print()` — the browser's native PDF viewer is
+ * the print payload, so the rendered output is byte-identical to the
+ * "Download PDF" path. The iframe needs to be in the DOM (not
+ * `display: none`) for browsers to actually fire `onload` and accept
+ * `print()`, but we don't want it to influence layout, steal focus,
+ * or be visible to the user. Position it 1×1 px in a fixed corner
+ * with zero opacity. `pointer-events: none` is the Firefox-specific
+ * fix the spec calls out — without it, the PDF viewer iframe can
+ * intercept clicks aimed at the parent page (in particular the
+ * "Cancel" button on Firefox's print dialog).
+ */
+.print-host-frame {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  /* Keep above app chrome so the browser's print dialog finds it,
+   * but below modal dialogs so it doesn't shadow real content if
+   * the opacity rule is ever overridden. */
+  z-index: 1;
+}
+
+/* `@media print` is a safety net only — the iframe-PDF path doesn't
+ * use this stylesheet because the parent page isn't what's being
+ * printed. These rules matter if a future code path triggers
+ * `window.print()` on the parent (e.g. user invokes browser
+ * File → Print), so the app chrome stays off the paper. */
+@media print {
+  /* Browser delegates page-size/margin to the user's print dialog. */
+  @page {
+    size: auto;
+    margin: 0;
+  }
+  body {
+    background: white;
+  }
+  /* Hide everything by default; surface only an `.editor-canvas`
+   * if it ever ends up in the print stream. The iframe-PDF path
+   * never hits this branch — that path delegates to the PDF
+   * viewer's own print logic — but if a user prints the parent
+   * page directly, the toolbar / sidebar / nav shouldn't bleed in. */
+  .app-header,
+  .editor-toolbar,
+  .editor-sidebar,
+  .editor-header .meta,
+  .validation-badge,
+  .save-section,
+  .print-panel,
+  .toolbar-divider,
+  .print-host-frame {
+    display: none !important;
+  }
+  .app {
+    max-width: none;
+    padding: 0;
+    margin: 0;
+  }
+  .editor-section,
+  .editor-layout {
+    display: block;
+    margin: 0;
+    padding: 0;
+  }
+  .editor-canvas {
+    page-break-inside: avoid;
+    width: 100%;
+    height: auto;
+  }
+  /* Strip transforms — designs need to print at 1:1, so any zoom or
+   * pan applied in the editor must NOT carry into the printed page. */
+  .editor-canvas svg {
+    transform: none !important;
+  }
+}
+
