@@ -164,3 +164,151 @@ These are flagged inline above; collected here so they don't get lost:
 - **PDF library** → `github.com/phpdave11/gofpdf` (mm-native, path-friendly, mature).
 - **2D editor canvas** → raw SVG with custom pointer/wheel pan-zoom. Lighter than Konva/Fabric and adequate for the run-level interactions Phase 2 needs.
 - **App data directory** → OS-conventional paths via `internal/appdata` with `--data-dir` override.
+
+---
+
+## Appendix A — NeonWizard feature parity
+
+Source: https://neonwizard.com/products/features.php?nw=1 (148 advertised features). Pulled 2026-05-07 to baseline the shop-readiness gap.
+
+Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scope (NeonBench is a 1:1 production-pattern tool, not a vinyl-cutter / wide-format RIP / graphic-design suite).
+
+### Tally
+
+| Category | ✅ | 🟡 | ❌ | 🚫 |
+|---|---|---|---|---|
+| Neon Design Tools | 5 | 1 | 17 | 0 |
+| Fonts & Text | 0 | 1 | 17 | 0 |
+| Design Tools | 4 | 4 | 31 | 3 |
+| Effects | 0 | 0 | 13 | 0 |
+| Vector Graphics | 1 | 3 | 6 | 0 |
+| Image Manipulation | 1 | 1 | 5 | 0 |
+| Cutting/Plotting/Printing | 2 | 2 | 5 | 9 |
+| Productivity | 2 | 3 | 5 | 0 |
+| Wide Format | 0 | 0 | 4 | 3 |
+| **Totals** | **15** | **15** | **103** | **15** |
+
+### Neon Design Tools (the core — 23 features)
+
+| # | NeonWizard feature | Status | NeonBench equivalent |
+|---|---|---|---|
+| 119 | Add Blockouts | ✅ | blockout marking, dashed render, `data-kind="blockout"` |
+| 120 | Add Common Housings | ❌ | electrodes placed, no housing geometry |
+| 121 | Add Mounting Holes | ❌ | |
+| 122 | Add Tube Supports | ✅ | click-to-place support markers |
+| 123 | Auto Tube Layout | ❌ | no auto double-stroke / parallel-tube generator |
+| 124 | Change Neon Tube Diameter Only | ✅ | per-run diameter override, scales bend-radius validation |
+| 125 | Connect Tubes | ❌ | |
+| 126 | Create Custom Housings | ❌ | |
+| 127 | Current Tube / Total Length | ✅ | live status badge in editor header |
+| 128 | Insert Doublebacks | 🟡 | DB *annotation* exists; no "insert DB at this point" tool |
+| 129 | Maximum Tube Length | ✅ | validation rule + arc-midpoint flag |
+| 130 | Move Opening / Break Tube Open | ❌ | path split/join is on Phase 2 todo |
+| 131 | Neonize (outline → tube path) | ❌ | killer missing op |
+| 132 | Neon Summary | ✅ | bend-list PDF page per run |
+| 133 | Raceway Support | ❌ | |
+| 134 | Switch Drop / Flat Blend | ❌ | |
+| 135 | Tube End Gap | ❌ | |
+| 136 | Tube Support Holes | ❌ | |
+| 137 | Neon Auto Tube Count | ❌ | |
+| 138 | Neon Auto Spacing | ❌ | |
+| 139 | Neon Preview (glow) | ❌ | Phase 3 |
+| 140 | Neon Preview for Groups | ❌ | Phase 3 |
+| 141 | Parallel Tube Layout | ❌ | tied to #123 / #131 |
+
+### Fonts & Text (18 features)
+
+- ❌ #1–13, 15–17: Direct text entry, property bar, script fonts, kerning/spacing/slant/arc/rotate handles, spell-check, WYSIWYG font picker, vertical text, change case — there is no text tool yet
+- 🟡 #14 Text Notes — per-run free-text Notes field; doc-level text labels via annotation
+- ❌ #18 Font Wizard (match scanned letter to digital font)
+
+### Design Tools (42 features)
+
+- ✅ #36 Grids · #37 Anti-aliased rendering · #53 Automatic Vectorizing · #54 Dimensioning
+- 🟡 #30 Color Management (per-run gas color only) · #38 History Window (cross-session, no in-session) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
+- ❌ #19, 22–29, 31–35, 39, 41–51, 55–58, 60: depth order, alignment, anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, distribute, layers, mirror, move-to-layer, nested groups, redo, rounded rect, rulers, guidelines, snap-to-guides, stack, step-and-repeat, polygon/star, styles, hotkeys, soft-shadow opts
+- ❌ #20 Type1/OpenType font support · #59 Color Vectorizing
+- 🚫 #21, 34, 51 Drawing engine / refresh / streamlined UI (modern web stack) · #58 TWAIN (use OS-level scanning)
+
+### Effects (13 features)
+
+- ❌ #61–73: Weld, Common Weld, Contour, Warp, Cast/Drop/Soft/Extruded/Perspective Shadow, Inline/Outline, Knife, Text on Path, Clipping Paths
+- Mostly cosmetic/marketing-render features. Low priority for shop production; revisit if doing client mockups in NeonBench rather than a separate tool.
+
+### Vector Graphics Tools (10 features)
+
+- ✅ #80 Optimize Vectors (Douglas-Peucker simplify in editor sidebar)
+- 🟡 #78 Node Edit Tools (drag + delete; insert/break/join still TODO — see Phase 2 line 102) · #81 PDF Import + Export (export ✅, import ❌) · #83 Vector Filters (SVG only)
+- ❌ #75 Bezier Tool (Phase 2 follow-up) · #74 Tangency indicator · #76 AI/EPS import · #77 AI multi-version filter · #79 On-Screen Digitizing · #82 Sharp-Corner Tool
+
+### Image Manipulation (7 features)
+
+- ✅ #85 Export Original Bitmap (source asset persisted under `assets/<project>/`)
+- 🟡 #84 Bitmap Filters (PNG/JPG only)
+- ❌ #86–90 Rotate, brightness, contrast, saturation, crop — we have a single binarize threshold
+
+### Cutting / Plotting / Printing (18 features)
+
+- ✅ #93 Horizontal/Vertical Paneling (oversize tiling) · #96 Plot to File (1:1 PDF)
+- 🟡 #92 All Windows Printers (download → OS print dialog) · #97 Print Preview (PDF is the preview)
+- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat · #106 Channel Letter Return Patterns · #108 DXF Routing/Engraving export
+- 🚫 #91, 95, 100–105, 107: plotter/cutter drivers, network plot, plot manager, USB cutter, weed lines/borders, Windows print driver, pen fill — neon shops use a printed full-size pattern, not a vinyl cutter
+
+### Productivity (10 features)
+
+- ✅ #109 Auto Save (every save → design_version row) · #117 Zooming (pointer/wheel)
+- 🟡 #112 Job Manager (project name + tube spec only; no customer/designer/due date) · #115 Tool Tips · #116 Unlimited Undo (cross-session yes; in-session no)
+- ❌ #110 Customizable toolbar · #111 Email Layout · #113 Online Help · #114 Spell Checker · #118 Programmable Hotkeys
+
+### Wide Format Printing (7 features)
+
+- ❌ / 🚫 #142–148 (CMYK/HSV, GIF/TIFF LZW, stroke support, image resampling, WIA, external image edit, photomask). NeonBench is not a wide-format RIP — out of scope.
+
+---
+
+## Appendix B — Re-ranked next-tasks list (post-parity audit)
+
+This list collapses todo.md gaps + NW parity findings into a single shop-readiness backlog, ordered roughly by leverage-per-effort. Tier 1 unblocks daily shop use; Tier 2 closes the largest parity gaps; Tier 3 is polish; Tier 4 is bounded "no" decisions.
+
+### Tier 1 — Shop-readiness blockers (do first)
+
+1. **Delete a design version + delete project** (UI). Unblocks "the vectorization made garbage, get it out of my history." API for projects exists at `api.go:26`; version-delete needs a new `DELETE /api/projects/{id}/design_versions/{vid}` endpoint and a button on each row of the version list.
+2. **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). The right answer to "garbled OPEN N" — never raster-trace text. Type letters, pick cap height in mm, get one polyline per letter with hairpin DBs already where the font designer placed them. Public-domain JHF data, small parser, drops directly into the existing run model.
+3. **Pen tool + rect / circle / arc / polygon primitives** (NW #32, #56, #75). Completes the "design from a blank file" workflow. Reuses existing run model — each finished path becomes a new run. Bezier handles can wait.
+4. **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Highest-leverage QoL gap when the vectorizer misbehaves.
+5. **Edit tube spec per project mutation UI** (todo.md:80). Half-done — wire the existing PATCH endpoint to a sidebar field.
+6. **Windows smoke test** (todo.md:90). A shop tech is more likely on Windows than mac.
+
+### Tier 2 — Largest NW parity gaps
+
+7. **Neonize / Parallel-tube layout / Auto Double-Stroke** (NW #123, #131, #141). Take a closed outline path, emit two parallel tube paths offset by tube diameter + spacing. Single biggest neon-specific gap.
+8. **In-session undo/redo with coalescing** (todo.md:106; NW #44, #116). Cross-session is already covered by the version log.
+9. **Node insert / break / join** (todo.md:102, 104; NW #78). Click on a segment to add a vertex; split a polyline at a vertex; join two endpoints.
+10. **Channel letter return patterns** (NW #106). The single channel-letter shop feature missing — measured return depth and trim outline per letter.
+11. **DXF export for CNC tube benders** (todo.md:148; NW #108). Already in cross-cutting. Promote if a shop asks.
+12. **Import the .neonbench bundle** (todo.md:124). Export exists at `handlers_export.go`; round-trip is missing.
+13. **Job Manager fields: customer, designer, due date, job number** (NW #112). Cheap SQL columns + form fields.
+14. **Insert Doubleback tool** (NW #128). Click a polyline midpoint → emit a hairpin segment of configurable depth (default 1.5× tube ø per Strattman).
+15. **Tube End Gap setting** (NW #135). Distance from tube end to channel letter edge as a project-level percentage.
+16. **Bitmap pre-vectorize adjustments: rotate / crop / brightness / contrast** (NW #86–90). Currently a single threshold.
+
+### Tier 3 — Polish & validator depth
+
+17. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+18. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+19. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+20. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+21. **Send to printer via OS print dialog** (todo.md:75).
+22. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+23. **Snap-to-angle and snap-to-geometry** (todo.md:104).
+24. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+
+### Tier 4 — Deliberate "no for now"
+
+These are NW-the-graphic-design-suite, not NW-the-neon-tool. Skip unless a shop specifically asks:
+
+- All shadows / effects (NW #61–73, #142–148)
+- Vinyl-cutter plumbing (NW #91, #95, #101–105, #107)
+- TWAIN / WIA (NW #58, #146)
+- Email Layout / Spell Checker / Customizable toolbar (NW #111, #114, #110)
+- Color Vectorizing (NW #59) — single-color binarize is the right model for tube production

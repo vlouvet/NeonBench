@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Refuses direct pushes to main. PRs only. See CLAUDE.md "Golden rule".
+# Override (rare, e.g. emergency revert): GIT_PUSH_TO_MAIN_OK=1 git push origin main
+set -euo pipefail
+
+remote="$1"
+protected_branch="main"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [[ "$remote_ref" == "refs/heads/$protected_branch" ]]; then
+    if [[ "${GIT_PUSH_TO_MAIN_OK:-0}" != "1" ]]; then
+      echo ""
+      echo "✗ Refusing to push directly to '$protected_branch' on '$remote'."
+      echo "  Open a PR instead. See CLAUDE.md → 'Golden rule'."
+      echo "  Override (use sparingly): GIT_PUSH_TO_MAIN_OK=1 git push ..."
+      echo ""
+      exit 1
+    fi
+    echo "⚠ GIT_PUSH_TO_MAIN_OK=1 set — allowing push to $protected_branch."
+  fi
+done
+
+exit 0
