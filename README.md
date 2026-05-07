@@ -55,8 +55,15 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    to the wall-thinning bend-radius derivation in
    `docs/neon-rules/bend-radius.md`), and name your project.
 
-2. **Upload a source image.** PNG, JPG, or SVG up to 50 MB. SVGs pass
-   through as-is; PNG/JPG go to potrace.
+2. **Upload a source image** — *or skip this step entirely if your design
+   is text*. PNG, JPG, or SVG up to 50 MB. SVGs pass through as-is;
+   PNG/JPG go through an in-process skeleton-graph centerline extractor
+   (Zhang-Suen thinning → graph walk → RDP simplify, all pure Go, no
+   external binary). For typeset text (channel letters, "OPEN" signs,
+   etc.) skip the upload and use the editor's **Add text** tool instead
+   (step 5) — Hershey single-stroke fonts emit clean tube paths with no
+   centerline extraction required, which sidesteps the topology errors
+   that raster tracing can introduce at letter junctions.
 
 3. **Vectorize.** Set the target width in millimeters (this is the
    physical sign width — paths are in mm internally everywhere). Tweak
