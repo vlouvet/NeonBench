@@ -13,6 +13,7 @@ import {
 import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
 import PrintPanel from '../components/PrintPanel';
+import { humanizeDueDate, isOverdue } from '../lib/dueDate';
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -132,6 +133,12 @@ export default function ProjectDetail() {
         {project.due_date && (
           <span className="meta" title="Due date for this project">
             Due {humanizeDueDate(project.due_date)}
+            {isOverdue(project.due_date) && (
+              <>
+                {' '}
+                <span className="badge-overdue">Overdue</span>
+              </>
+            )}
           </span>
         )}
         <button
@@ -677,12 +684,3 @@ function ChannelLetterDepthField({
   );
 }
 
-// humanizeDueDate renders "YYYY-MM-DD" against the user's locale, e.g.
-// "May 15, 2026". Falls back to the raw string if parsing fails.
-function humanizeDueDate(iso: string): string {
-  // YYYY-MM-DD as a "local" date — adding T00:00 keeps it from being
-  // interpreted as UTC midnight and shifting a day west of UTC.
-  const d = new Date(iso + 'T00:00:00');
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
-}
