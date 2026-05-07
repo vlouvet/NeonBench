@@ -1,0 +1,8 @@
+# Force LF for files that must stay LF on every platform.
+# Windows runners default to core.autocrlf=true, which would otherwise
+# convert *.sh to CRLF on checkout and break the bash shebang under
+# Git Bash on the windows-smoke CI job.
+*.sh        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+Makefile    text eol=lf
