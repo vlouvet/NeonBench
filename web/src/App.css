@@ -1029,5 +1029,26 @@
   .editor-canvas svg {
     transform: none !important;
   }
+  /* Validator issues are advisory; never bake them into the printed
+     output. The PDF path doesn't share this stylesheet, but a parent
+     File→Print path does, so suppress the markers explicitly. */
+  .validation-marker {
+    display: none !important;
+  }
 }
 
+/* Tier 3 #28 — Validation marker overlay (live-rendered on the SVG
+   editor canvas at each issue's `(x_mm, y_mm)`). The circle itself is
+   colored inline (severity-driven) so the only style we need here is
+   a subtle hover affordance — increase the stroke opacity so the
+   marker pops without enlarging it (which would shift its centroid
+   off the issue location). */
+.validation-marker {
+  transition: stroke-opacity 120ms ease-out, fill-opacity 120ms ease-out;
+  stroke-opacity: 0.9;
+  fill-opacity: 1;
+}
+.validation-marker:hover {
+  stroke-opacity: 1;
+  fill-opacity: 1;
+}
