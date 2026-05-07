@@ -136,7 +136,12 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      electrodes, and validate like any other run.
    - **Label / Dimension** — doc-level callouts. Dimension reports the
      measured distance.
-   - **Node edit** — drag any polyline vertex; shift-click to delete.
+   - **Node edit** — drag any polyline vertex; shift-click to delete;
+     alt-click a path segment to insert a new vertex there; alt-click a
+     vertex to split the run at that point. Pick "Join from head/tail"
+     in the run sidebar to arm a join, then click another open run's
+     endpoint to merge the two polylines (self-join head + tail closes
+     the loop).
    - **Snap** — toolbar toggle + mm spacing. Affects label, dimension,
      and vertex drag (run-path picks always snap to the nearest
      polyline vertex).
