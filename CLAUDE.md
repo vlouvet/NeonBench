@@ -63,6 +63,8 @@ git branch -d task/1-delete-version    # only after PR is merged
 
 The Claude Agent SDK's `Agent` tool supports `isolation: "worktree"` — use it when delegating an isolated implementation task to a sub-agent.
 
+> **If you're the parent session about to dispatch sub-agents, also read [`AGENTS.md`](AGENTS.md).** It covers round planning, the file-coupling matrix, merge orchestration when parallel branches conflict, the cleanup-PR pattern, and how to handle the ~1-in-5 agent reports that glitch. CLAUDE.md is for "how this repo works"; AGENTS.md is for "how the parent agent coordinates a parallel round".
+
 ## File-coupling map (parallelism hazards)
 
 Two agents touching the same file = merge conflict and one of them has to redo work. Avoid by either coordinating or sequencing. The high-traffic files are:
@@ -112,7 +114,25 @@ For frontend tasks, also: start the dev server (`./bin/neonbench --dev` after `c
    - Any file-coupling collisions noted
 3. Wait for CI green. Address any review feedback.
 4. Squash-merge into `main` (rebase-merge OK if commits are already clean). Delete the branch.
-5. Update `todo.md` in a follow-up commit on the next task — don't mutate it post-merge in a separate PR just for the checkmark.
+5. **Don't mutate `todo.md` in the feature PR's diff for the checkmark** — bundle that into the post-round cleanup PR (see below).
+
+## Working with specs
+
+For substantial tasks (those whose agent prompt would exceed ~100 lines), write a per-task spec in `specs/active/tier{N}-{taskNumber}-{slug}.md` before dispatching. The spec captures the file scope, deliverables, geometry, and tests. The user reviews it before agent dispatch; the spec is then committed alongside the implementation PR (the implementing agent moves it to `specs/done/` as part of its work).
+
+Use inline prompts for trivial tasks (`todo.md` updates, lint fixes, README typos). See [`specs/README.md`](specs/README.md) for the lifecycle and [`AGENTS.md`](AGENTS.md) for parent-agent coordination patterns.
+
+## Post-round cleanup PR pattern
+
+After every parallel round (and most solo PRs that close a Tier row), open a small docs-only cleanup PR that:
+
+- Marks Tier rows ✅ in `todo.md` Appendix B with PR refs and one-sentence summaries of what shipped
+- Updates Appendix A NW parity tally (the table at the top of Appendix A)
+- Logs Tier 3 follow-ups from agent reports (each agent typically surfaces 2–4 deferred items worth tracking)
+- Refreshes `README.md` walkthrough if user-visible features changed
+- Fixes any stale Phase 1 / Phase 2 references in `todo.md`
+
+Cleanup PRs ship in 2–3 minutes (CI only, no review burden) and keep the source-of-truth docs honest. **Don't bundle cleanup work into feature PRs** — they're separate concerns; the cleanup PR's diff should be readable as docs-only.
 
 ## When to stop and ask the user
 
