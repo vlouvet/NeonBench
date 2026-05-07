@@ -93,9 +93,13 @@ export default function ProjectList() {
           {projects.map((p) => (
             <li key={p.id}>
               <Link to={`/projects/${p.id}`}>
-                <strong>{p.name}</strong>
+                <strong>
+                  {p.name}
+                  {p.customer ? ` — ${p.customer}` : ''}
+                </strong>
                 <span className="meta">
                   {tubeSpecById.get(p.tube_spec_id)?.name ?? `tube #${p.tube_spec_id}`}
+                  {p.due_date ? ` · due ${p.due_date}` : ''}
                   {' · updated '}
                   {new Date(p.updated_at).toLocaleString()}
                 </span>
@@ -138,6 +142,10 @@ function NewProjectModal({
   const defaultSpec = tubeSpecs.find((t) => t.is_default) ?? tubeSpecs[0];
   const [name, setName] = useState('');
   const [tubeSpecId, setTubeSpecId] = useState<number>(defaultSpec?.id ?? 0);
+  const [customer, setCustomer] = useState('');
+  const [designer, setDesigner] = useState('');
+  const [dueDate, setDueDate] = useState('');
+  const [jobNumber, setJobNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -146,7 +154,14 @@ function NewProjectModal({
     setSubmitting(true);
     setError(null);
     try {
-      const p = await api.createProject({ name: name.trim(), tube_spec_id: tubeSpecId });
+      const p = await api.createProject({
+        name: name.trim(),
+        tube_spec_id: tubeSpecId,
+        customer: customer.trim() || undefined,
+        designer: designer.trim() || undefined,
+        due_date: dueDate || undefined,
+        job_number: jobNumber.trim() || undefined,
+      });
       onCreated(p);
     } catch (err) {
       setError((err as Error).message);
@@ -182,6 +197,41 @@ function NewProjectModal({
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Customer (optional)
+            <input
+              value={customer}
+              onChange={(e) => setCustomer(e.target.value)}
+              maxLength={200}
+              placeholder="End client / business name"
+            />
+          </label>
+          <label>
+            Designer (optional)
+            <input
+              value={designer}
+              onChange={(e) => setDesigner(e.target.value)}
+              maxLength={100}
+              placeholder="Who at the shop is responsible"
+            />
+          </label>
+          <label>
+            Due date (optional)
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+            />
+          </label>
+          <label>
+            Job number (optional)
+            <input
+              value={jobNumber}
+              onChange={(e) => setJobNumber(e.target.value)}
+              maxLength={50}
+              placeholder="Shop's invoice / work-order ID"
+            />
           </label>
           {error && <p className="error">{error}</p>}
           <div className="actions">

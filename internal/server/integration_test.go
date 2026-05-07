@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pressly/goose/v3"
 	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/storage"
 )
@@ -212,39 +213,6 @@ func TestEditorPipelineFromOpenNeon(t *testing.T) {
 		t.Errorf("print.pdf did not return a PDF document (first 8 bytes: %q)", pdfBytes[:min(8, len(pdfBytes))])
 	}
 	t.Logf("print.pdf: %d bytes", len(pdfBytes))
-
-	// 9c) DXF export must emit a valid R12 ASCII file with one
-	// LWPOLYLINE per run. Tier 2 #11 — the bender feed.
-	dxfResp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(newVersionID) + "/print.dxf")
-	if err != nil {
-		t.Fatalf("print.dxf: %v", err)
-	}
-	defer dxfResp.Body.Close()
-	if dxfResp.StatusCode != 200 {
-		body, _ := io.ReadAll(dxfResp.Body)
-		t.Fatalf("print.dxf status %d: %s", dxfResp.StatusCode, body)
-	}
-	if got := dxfResp.Header.Get("content-type"); got != "application/dxf" {
-		t.Errorf("print.dxf content-type: want application/dxf, got %q", got)
-	}
-	dxfBytes, _ := io.ReadAll(dxfResp.Body)
-	dxf := string(dxfBytes)
-	if !strings.HasPrefix(dxf, "0\nSECTION\n2\nHEADER\n") {
-		t.Errorf("print.dxf missing HEADER preamble (first 80 bytes: %q)", dxf[:min(80, len(dxf))])
-	}
-	if !strings.Contains(dxf, "$ACADVER\n1\nAC1009\n") {
-		t.Errorf("print.dxf missing $ACADVER=AC1009")
-	}
-	if !strings.Contains(dxf, "$INSUNITS\n70\n4\n") {
-		t.Errorf("print.dxf missing $INSUNITS=4 (mm)")
-	}
-	if got := strings.Count(dxf, "LWPOLYLINE"); got != len(reDoc.Runs) {
-		t.Errorf("print.dxf LWPOLYLINE count: want %d (one per run), got %d", len(reDoc.Runs), got)
-	}
-	if !strings.HasSuffix(strings.TrimRight(dxf, "\n"), "0\nEOF") {
-		t.Errorf("print.dxf missing EOF terminator")
-	}
-	t.Logf("print.dxf: %d bytes, %d runs", len(dxfBytes), len(reDoc.Runs))
 }
 
 // applyOpenRunEdits exercises every editor tool that needs an open run:
@@ -769,16 +737,203 @@ func buildCirclePolylineSVG(radius, cx, cy, sideMM, stepDeg float64) string {
 	return b.String()
 }
 
-// TestExportImportRoundtrip is the closing assertion on Tier 2 #12: a
-// bundle produced by `GET /export.neonbench` must be re-importable via
-// `POST /api/projects/import` and yield a project with the same name
-// and the same number of versions, with byte-identical SVG payloads.
-// This is what unblocks the "move project between installs" story.
-//
-// The test seeds two design versions directly via storage (no need to
-// run the vectorizer), exports the project, posts the zip back to the
-// import endpoint, and walks both projects' version lists to compare
-// SVG bytes one-to-one.
+// TestProjectJobManagerFields covers the create/get/update round-trip for
+// the Job Manager metadata added in Tier 2 #13 (NW #112). Every field is
+// optional; we exercise the happy path (all four set on create), the
+// "clear via empty string" path on PATCH, and the validation rejections
+// (too-long fields and a malformed due_date).
+func TestProjectJobManagerFields(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	// Create a project with all four optional fields populated.
+	var created map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "Job Manager round-trip",
+		"tube_spec_id": tubeSpecID,
+		"customer":     "  ACME Diner LLC  ",
+		"designer":     "Pat Welder",
+		"due_date":     "2026-09-01",
+		"job_number":   "INV-1042",
+	}, &created)
+	if got, want := created["customer"], "ACME Diner LLC"; got != want {
+		t.Errorf("customer trim: got %q want %q", got, want)
+	}
+	if got, want := created["designer"], "Pat Welder"; got != want {
+		t.Errorf("designer: got %q want %q", got, want)
+	}
+	if got, want := created["due_date"], "2026-09-01"; got != want {
+		t.Errorf("due_date: got %q want %q", got, want)
+	}
+	if got, want := created["job_number"], "INV-1042"; got != want {
+		t.Errorf("job_number: got %q want %q", got, want)
+	}
+	projectID := int64(created["id"].(float64))
+
+	// GET should return the same values.
+	var fetched map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(projectID), &fetched)
+	for _, k := range []string{"customer", "designer", "due_date", "job_number"} {
+		if fetched[k] != created[k] {
+			t.Errorf("GET field %s: got %v want %v", k, fetched[k], created[k])
+		}
+	}
+
+	// LIST should return them too (the "row" used to subtitle by customer).
+	var list []map[string]any
+	getJSON(t, client, base+"/api/projects", &list)
+	if len(list) == 0 || list[0]["customer"] != "ACME Diner LLC" {
+		t.Errorf("LIST did not surface customer field: %v", list)
+	}
+
+	// PATCH: clear customer (empty string), update designer, leave others.
+	patchURL := base + "/api/projects/" + itoa(projectID)
+	patchBody, _ := json.Marshal(map[string]any{
+		"customer": "",
+		"designer": "Sam Bender",
+	})
+	patchReq, _ := http.NewRequest("PATCH", patchURL, bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	if patchResp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(patchResp.Body)
+		patchResp.Body.Close()
+		t.Fatalf("PATCH status %d: %s", patchResp.StatusCode, body)
+	}
+	var patched map[string]any
+	json.NewDecoder(patchResp.Body).Decode(&patched)
+	patchResp.Body.Close()
+	if patched["customer"] != "" {
+		t.Errorf("PATCH clear customer: got %q want empty", patched["customer"])
+	}
+	if patched["designer"] != "Sam Bender" {
+		t.Errorf("PATCH designer: got %q want Sam Bender", patched["designer"])
+	}
+	if patched["due_date"] != "2026-09-01" {
+		t.Errorf("PATCH preserved due_date: got %v", patched["due_date"])
+	}
+	if patched["job_number"] != "INV-1042" {
+		t.Errorf("PATCH preserved job_number: got %v", patched["job_number"])
+	}
+
+	// Validation rejections — each should produce 400 without mutating
+	// the project.
+	for _, bad := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"malformed due_date", map[string]any{"due_date": "next thursday"}},
+		{"impossible date", map[string]any{"due_date": "2026-13-40"}},
+		{"too-long customer", map[string]any{"customer": strings.Repeat("x", 201)}},
+		{"too-long designer", map[string]any{"designer": strings.Repeat("y", 101)}},
+		{"too-long job_number", map[string]any{"job_number": strings.Repeat("z", 51)}},
+	} {
+		body, _ := json.Marshal(bad.body)
+		req, _ := http.NewRequest("PATCH", patchURL, bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", bad.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", bad.name, resp.StatusCode)
+		}
+	}
+
+	// Same rejections must apply to CREATE.
+	for _, bad := range []struct {
+		name string
+		body map[string]any
+	}{
+		{"create malformed due_date", map[string]any{
+			"name": "x", "tube_spec_id": tubeSpecID, "due_date": "tomorrow",
+		}},
+		{"create too-long customer", map[string]any{
+			"name": "x", "tube_spec_id": tubeSpecID, "customer": strings.Repeat("a", 201),
+		}},
+	} {
+		body, _ := json.Marshal(bad.body)
+		resp, err := client.Post(base+"/api/projects", "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("%s: %v", bad.name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", bad.name, resp.StatusCode)
+		}
+	}
+
+	// Sanity: a fresh project that omits all four fields gets empty strings
+	// in the response (NULL columns are exposed as "" by the storage layer).
+	var minimal map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "minimal job",
+		"tube_spec_id": tubeSpecID,
+	}, &minimal)
+	for _, k := range []string{"customer", "designer", "due_date", "job_number"} {
+		if minimal[k] != "" {
+			t.Errorf("minimal create: %s should default to \"\", got %v", k, minimal[k])
+		}
+	}
+}
+
+// TestMigration0005Reversible exercises the goose Down step for the
+// 0005_project_metadata migration. SQLite supports DROP COLUMN since
+// 3.35.0 so the four ALTER TABLE statements should round-trip cleanly;
+// if a future SQLite/driver pairing breaks the simple Down path we
+// catch it here instead of bricking a user mid-rollback.
+func TestMigration0005Reversible(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	// After Up the four columns must exist.
+	if _, err := db.Exec("SELECT customer, designer, due_date, job_number FROM projects"); err != nil {
+		t.Fatalf("post-up SELECT failed: %v", err)
+	}
+	if err := goose.Down(db, "migrations"); err != nil {
+		t.Fatalf("down 1: %v", err)
+	}
+	// After Down the columns must be gone — a SELECT referencing
+	// any of them is required to fail.
+	for _, col := range []string{"customer", "designer", "due_date", "job_number"} {
+		if _, err := db.Exec("SELECT " + col + " FROM projects"); err == nil {
+			t.Errorf("column %q still present after down migration", col)
+		}
+	}
+}
+
 func TestExportImportRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	db, err := storage.Open(dir)

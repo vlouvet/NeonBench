@@ -19,8 +19,15 @@ type Project struct {
 	Name       string `json:"name"`
 	TubeSpecID int64  `json:"tube_spec_id"`
 	Units      string `json:"units"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	// Optional Job Manager metadata. Stored as nullable TEXT in SQLite;
+	// we render absent values as empty strings to keep the JSON shape
+	// stable (the frontend treats "" the same as missing).
+	Customer  string `json:"customer"`
+	Designer  string `json:"designer"`
+	DueDate   string `json:"due_date"`
+	JobNumber string `json:"job_number"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 type AssetKind string

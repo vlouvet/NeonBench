@@ -120,6 +120,11 @@ export default function ProjectDetail() {
       </p>
       <div className="row" style={{ alignItems: 'baseline', gap: '1rem' }}>
         <h1>{project.name}</h1>
+        {project.due_date && (
+          <span className="meta" title="Due date for this project">
+            Due {humanizeDueDate(project.due_date)}
+          </span>
+        )}
         <button
           type="button"
           className="btn-secondary"
@@ -164,6 +169,52 @@ export default function ProjectDetail() {
         {project.units}
         {' · Created '}
         {new Date(project.created_at).toLocaleString()}
+      </div>
+      <div className="meta project-settings job-fields">
+        <ProjectMetaField
+          label="Customer"
+          value={project.customer}
+          maxLength={200}
+          placeholder="(none)"
+          onSave={async (v) => {
+            const updated = await api.updateProject(projectId, { customer: v });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        <ProjectMetaField
+          label="Designer"
+          value={project.designer}
+          maxLength={100}
+          placeholder="(none)"
+          onSave={async (v) => {
+            const updated = await api.updateProject(projectId, { designer: v });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        <ProjectMetaField
+          label="Due date"
+          value={project.due_date}
+          inputType="date"
+          placeholder="(none)"
+          onSave={async (v) => {
+            const updated = await api.updateProject(projectId, { due_date: v });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        <ProjectMetaField
+          label="Job number"
+          value={project.job_number}
+          maxLength={50}
+          placeholder="(none)"
+          onSave={async (v) => {
+            const updated = await api.updateProject(projectId, { job_number: v });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
       </div>
 
       <h2>Source image</h2>
@@ -282,4 +333,111 @@ export default function ProjectDetail() {
       )}
     </section>
   );
+}
+
+// ProjectMetaField is a small inline editor for the four optional Job
+// Manager fields. The visible label + value behave like a "click to edit"
+// affordance: pressing the value swaps it for an input, and the input
+// commits on blur or Enter (Escape cancels). The save call only fires if
+// the value actually changed; an HTTP error rolls the input back to the
+// last server-acknowledged value.
+function ProjectMetaField({
+  label,
+  value,
+  placeholder,
+  maxLength,
+  inputType = 'text',
+  onSave,
+  onError,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  maxLength?: number;
+  inputType?: 'text' | 'date';
+  onSave: (next: string) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [busy, setBusy] = useState(false);
+  // React's "reset state from props" idiom: stash the prop's last seen
+  // value, and if it changes while we're not editing, snap the draft to
+  // it. Avoids the setState-in-effect lint and the extra render that
+  // would come with it.
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue && !editing) {
+    setLastValue(value);
+    setDraft(value);
+  }
+
+  async function commit() {
+    if (busy) return;
+    const next = inputType === 'date' ? draft : draft.trim();
+    if (next === value) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch (e) {
+      onError(`${label}: ${(e as Error).message}`);
+      setDraft(value);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <span className="job-field">
+        <strong>{label}:</strong>{' '}
+        <button
+          type="button"
+          className="job-field-value"
+          onClick={() => setEditing(true)}
+          title={`Edit ${label.toLowerCase()}`}
+        >
+          {value || <em>{placeholder}</em>}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="job-field">
+      <strong>{label}:</strong>{' '}
+      <input
+        autoFocus
+        type={inputType}
+        value={draft}
+        maxLength={maxLength}
+        disabled={busy}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setDraft(value);
+            setEditing(false);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
+// humanizeDueDate renders "YYYY-MM-DD" against the user's locale, e.g.
+// "May 15, 2026". Falls back to the raw string if parsing fails.
+function humanizeDueDate(iso: string): string {
+  // YYYY-MM-DD as a "local" date — adding T00:00 keeps it from being
+  // interpreted as UTC midnight and shifting a day west of UTC.
+  const d = new Date(iso + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
