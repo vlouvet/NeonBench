@@ -7,10 +7,15 @@ list — all from a single Go binary that opens your browser to a local
 web UI.
 
 > **Status:** Phase 2 of a 3-phase roadmap (vectorize → edit → 3D glow).
-> Phase 0 + 1 (vectorize, validate, print) and most of Phase 2 (editor,
-> per-run color/diameter/notes, blockouts, bend planning, live
-> validation, undo/redo) ship today. Phase 3 (extruded 3D tube
-> rendering) is not yet started.
+> Phase 0 + 1 (vectorize, validate, print, DXF + PDF export) and Phase 2
+> (editor, per-run color/diameter/notes, blockouts, bend planning,
+> double-back hairpins, channel-letter return strips with raceway
+> grouping, Hershey single-stroke text in three faces, polygon-offset
+> Neonize with stitched single-tube output, undo/redo, validation
+> marker overlay) ship today. NeonWizard parity is **31 ✅ / 12 🟡** of
+> 148 advertised features; Tier 4 of 25 are deliberately out of scope
+> (graphic-design-suite features that don't help neon production).
+> Phase 3 (extruded 3D tube rendering) is not yet started.
 
 ## Why
 
@@ -84,19 +89,27 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    (-100..+100), and contrast (0.5×..2.0×). These run before the
    binarize step in the documented order — rotate → crop → brightness
    → contrast → threshold — and the live before/after preview reflects
-   each adjustment as you drag, so you can dial in straight, clean
-   input before committing. The vectorizer then extracts a 1-pixel
-   centerline through Zhang-Suen thinning + skeleton-graph walking,
-   so each letter stroke becomes a single tube path rather than two
-   parallel outlines. Each vectorize run creates a new
-   `design_versions` row, so you can branch and compare.
+   each adjustment as you drag. **Drag a crop rectangle directly on the
+   source preview** instead of typing X/Y/W/H, and click **Auto-rotate**
+   to run a Hough peak-finder on the dominant lines and suggest a
+   deskew angle. The vectorizer then extracts a 1-pixel centerline
+   through Zhang-Suen thinning + skeleton-graph walking, so each letter
+   stroke becomes a single tube path rather than two parallel outlines.
+   Each vectorize run creates a new `design_versions` row, so you can
+   branch and compare.
 
 4. **Validate.** The validator runs automatically after vectorize. It
-   checks per-tube bend radius (with double-back hairpin exemption),
-   tube run length, minimum spacing (with crossing demotion to
-   "needs blockout"), and warns on tall designs that should be built
-   in multiple blanks. Issues are grouped by severity and pinned to
-   geometric locations.
+   checks per-tube bend radius (with double-back hairpin exemption,
+   and a derived `K·D²/t` minimum from the tube spec's wall thickness +
+   technique when no manual override is set), tube run length, minimum
+   spacing (with crossing demotion to "needs blockout"), minimum
+   lead-in length, sharp-bend angles, channel-letter face perimeter vs
+   blank length (1168 mm Strattman coil), and warns on tall designs
+   that should be built in multiple blanks. Issues are grouped by
+   severity in the sidebar **and rendered as colored circles directly
+   on the canvas** — click a marker to select the run it belongs to,
+   hover for the issue text. Markers are red for errors, amber for
+   warnings; print output suppresses them.
 
 5. **Edit.** Open the editor for a version. Every editor mutation flows
    through `editDoc()` which records to an in-session undo stack with
@@ -123,8 +136,13 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      drop straight into the design as clean tube runs with no
      centerline extraction required. Each glyph emits one or more
      disconnected strokes, which matches how a channel-letter shop
-     actually builds the sign. Type the text, set the cap height in
-     mm, hit Insert.
+     actually builds the sign. Pick a face — **Roman Simplex**
+     (default), **Roman Duplex** (thicker, channel-letter look), or
+     **Sans Simplex / Futural** (geometric sans) — type the text
+     (`<textarea>` accepts newlines for multi-line layouts; line
+     height is configurable), drag the triangle handles in the
+     preview to nudge per-pair kerning (1 px screen = 1 mm design),
+     set the cap height in mm, hit Insert.
    - **Pen / Rect / Circle / Arc** — draw directly on the canvas. Pen
      drops a polyline a click at a time (double-click or Enter to
      commit, Esc cancels). Rect and Circle are pointer-down →
@@ -138,8 +156,11 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      measured distance.
    - **Node edit** — drag any polyline vertex; shift-click to delete;
      alt-click a path segment to insert a new vertex there; alt-click a
-     vertex to split the run at that point. Pick "Join from head/tail"
-     in the run sidebar to arm a join, then click another open run's
+     vertex to split the run at that point (a teal hover ring confirms
+     the snap target so you can tell insert-vs-split apart at a glance,
+     and a blockout that straddles the split point is divided into two
+     valid pieces rather than dropped). Pick "Join from head/tail" in
+     the run sidebar to arm a join, then click another open run's
      endpoint to merge the two polylines (self-join head + tail closes
      the loop).
    - **Snap** — toolbar toggle + mm spacing. Affects label, dimension,
@@ -157,10 +178,15 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    run is replaced with two parallel offset runs that follow the inside
    and outside of the original outline — that's the tube path the
    bender will fabricate. Tip: stroke width = 2 × tube diameter +
-   spacing. If the geometry has acute corners (beveled by a miter
-   clamp) or self-intersections after offset, you'll get a warning;
-   the runs are still emitted and you can clean up with the node
-   editor.
+   spacing. Open polylines are also supported (parallel offset with
+   butt caps), and a **Stitch ends** toggle in the popover joins the
+   two runs into one continuous tube via U-bends at the endpoints —
+   true single-tube double-stroke per Strattman's combination-bend
+   pattern. Per-corner cap-style overrides (miter / round / bevel) are
+   available via the optional `cornerStyles` array. If the geometry
+   has acute corners (beveled by a miter clamp) or self-intersections
+   after offset, you'll get a warning; the runs are still emitted and
+   you can clean up with the node editor.
 
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.
@@ -171,31 +197,56 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    the editor sidebar), blockout dashed segments, doc-level
    labels/dimensions, and a final "Bend list" page summarizing each
    run's bends with arc-length offsets, turn angles, and per-run
-   notes. The same panel offers a **Download DXF** button — an
-   AutoCAD R12 ASCII file with one polyline per run (millimeters,
-   layered per run id) for feeding to CNC tube benders; geometry
-   only, no annotations.
+   notes. The editor also has a **Print** button in the toolbar that
+   opens the OS print dialog directly against this same PDF (via a
+   hidden iframe) — saves the download-then-open round-trip when you
+   want a quick proof print. The project page panel also offers a
+   **Download DXF** button — an AutoCAD R12 ASCII file with one
+   polyline per run (millimeters, layered per run id) for feeding to
+   CNC tube benders; the export includes electrode `CIRCLE` markers,
+   run + free-form `TEXT` labels, and dimension `LINE+TEXT` pairs on
+   dedicated `ELECTRODES` / `LABELS` / `DIMENSIONS` layers.
 
    **Channel-letter workflow.** For 3D channel letters (a flat metal
    face plus a "return strip" wrapped around the perimeter to form
    the side wall), set the project's **Channel letter depth (mm)**
    field on the project page (defaults to 100 mm ≈ 4 in per
-   Strattman NT Ch.5; Miller p.88). In the editor sidebar, tick the
+   Strattman NT Ch.5; Miller p.88). The same panel exposes a
+   **Strip overlap (mm)** field (default 12.7 mm = ½ in) for the
+   shear allowance at each strip end. In the editor sidebar, tick the
    **Channel letter face** box on each run that represents a face
-   silhouette. The print PDF then emits one extra page per
-   face-flagged run with the unfolded return strip drawn as a
+   silhouette. Optional per-run depth overrides the project default,
+   and a free-form **Raceway** string groups multiple letters that
+   share one return strip. The print PDF then emits one extra page
+   per face-flagged run with the unfolded return strip drawn as a
    `perimeter × depth` rectangle, plus a vertical tick at every
-   polyline vertex labelled with the cumulative arc length and
-   signed interior turn angle so the operator knows exactly where
-   to bend the strip (NW #106).
+   polyline vertex labelled with the cumulative arc length and signed
+   interior turn angle so the operator knows exactly where to bend
+   the strip; runs sharing a `Raceway` value are concatenated onto a
+   single combined-strip page with heavy dashed boundaries between
+   contributions, and a dashed shear line at the right end labels
+   the overlap allowance. A `face_perimeter_exceeds_blank` warning
+   surfaces on the canvas marker overlay if a face's perimeter passes
+   the 1168 mm Strattman coil length (NW #106).
 
 8. **Export / import.** Need to share the project with another install?
    The project page's "Export bundle" button downloads
    `<projectName>.neonbench` — a portable zip of every design version
    plus a manifest. The Projects list page has an "Import .neonbench"
-   button that round-trips the same bundle back into a fresh project
-   (it appends "(imported)" if the name collides and reuses any
-   matching tube spec instead of duplicating one).
+   button **and accepts drag-drop directly onto the page** — drop a
+   bundle anywhere on the project list and it imports straight in. The
+   importer dedupes tube specs by dimensions (within 1 µm), appends
+   "(imported)" if the name collides, and a versioned schema dispatcher
+   rejects bundles from a newer NeonBench with a clear upgrade message.
+
+9. **Project list productivity.** The list page exposes a search box
+   (case-insensitive substring across name / customer / job number),
+   a sort dropdown (recently updated / due-date next-first / name
+   A–Z), and a red **Overdue** pill on rows whose due date is in the
+   past. The same Job Manager fields (customer / designer / due date /
+   job number) are click-to-edit on the project detail page; tube-spec
+   edits there fan out to re-validate every saved design version on
+   that spec, with a toast confirming the count.
 
 ## Architecture
 
@@ -238,13 +289,19 @@ as a pure function.
 
 ## Roadmap
 
-See [`todo.md`](todo.md) for the granular checklist. Big remaining
-chunks:
+See [`todo.md`](todo.md) for the granular checklist (148-row NeonWizard
+parity matrix in Appendix A; tier-ranked task backlog in Appendix B).
+Current scoreboard is **31 ✅ / 12 🟡 / 90 ❌ / 15 🚫** against NW.
+Tier 1 (shop-readiness blockers) and Tier 2 (largest parity gaps)
+have shipped in full. Tier 3 polish has shipped 14 of ~35 items;
+remaining big chunks:
 
-- **Phase 2 polish:** path-op split/join, multi-select with batch ops,
-  Bezier-aware path editing, snap-to-angle / snap-to-existing-geometry.
+- **Editor productivity:** multi-select with batch ops, Bezier-aware
+  path editing, snap-to-angle / snap-to-existing-geometry, group +
+  layers model.
+- **Glass-to-grounded-metal / HV-cable spacing rule:** blocked on
+  introducing a cabinet outline + transformer placement + HV cable
+  routing model in the design doc.
 - **Phase 3:** extrude vector paths to 3D glass tubes, emissive shader
   with bloom, per-gas color, blockout opacity, electrode caps,
   orbit-camera preview UI.
-- **Cross-cutting:** Windows / Linux smoke testing, bundle import,
-  send-to-printer dialog.
