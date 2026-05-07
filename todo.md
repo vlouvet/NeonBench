@@ -218,7 +218,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 ### Fonts & Text (18 features)
 
-- ❌ #1–13, 15–17: Direct text entry, property bar, script fonts, kerning/spacing/slant/arc/rotate handles, spell-check, WYSIWYG font picker, vertical text, change case — there is no text tool yet
+- 🟡 #1 Direct Text Entry — Hershey single-stroke text shipped via modal in PR #8 (Roman Simplex, single-line); inline-on-canvas typing is a polish item.
+- ❌ #2–13, 15–17: property bar, script fonts, kerning/spacing/slant/arc/rotate handles, spell-check, WYSIWYG font picker, vertical text, change case
 - 🟡 #14 Text Notes — per-run free-text Notes field; doc-level text labels via annotation
 - ❌ #18 Font Wizard (match scanned letter to digital font)
 
@@ -273,7 +274,7 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 ### Tier 1 — Shop-readiness blockers (do first)
 
 1. ✅ **Delete a design version + delete project** (UI). Shipped in PR #3. `DELETE /api/projects/{id}/design_versions/{vid}` + per-row delete buttons with confirm dialogs.
-2. **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). The right answer to "garbled OPEN N" — never raster-trace text. Type letters, pick cap height in mm, get one polyline per letter with hairpin DBs already where the font designer placed them. Public-domain JHF data, small parser, drops directly into the existing run model.
+2. ✅ **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). Shipped in PR #8. Roman Simplex (`rowmans`) bundled as 12.7 KB JSON with public-domain attribution; `hersheyTextToRuns` returns one run per disconnected stroke (multi-stroke glyphs like `E`, `N`, `i` correctly emit multiple runs — matches real channel-letter construction). Implemented as a modal/dialog rather than a canvas tool to avoid touching `EditorCanvas.tsx`.
 3. **Pen tool + rect / circle / arc / polygon primitives** (NW #32, #56, #75). Completes the "design from a blank file" workflow. Reuses existing run model — each finished path becomes a new run. Bezier handles can wait.
 4. ✅ **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Shipped in PR #5. Side-by-side Source / Binarized canvases in `VectorizePanel.tsx`, throttled with React 19's `useDeferredValue`, source pixel buffer cached so re-binarize is just an RGBA pass.
 5. ✅ **Edit tube spec per project mutation UI** (todo.md:80). Project-detail dropdown was already shipped in commit 59fedea; the actual gap was the editor itself. Shipped in PR #6: inline `<select>` in editor header that PATCHes the project, immediately re-validates the current version against the new spec, surfaces the fresh report. Regression test guards the silently-stale-report failure mode.
@@ -296,14 +297,15 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 
 17. **ESLint cleanup + flip CI to hard-gate.** Tree currently has 10 pre-existing errors (`docOps.ts` unused `_drop`/`_closed`, `EditorCanvas.tsx` setState-in-effect at lines 79/104, `EditorPage.tsx` refs-during-render at lines 110/111, `ProjectDetail.tsx` setState-in-effect at line 40) + 2 unused-eslint-disable warnings. CI runs `npm run lint` with `continue-on-error: true` until this clears; after, set `continue-on-error: false` in `.github/workflows/ci.yml`.
 18. **Fan tube-spec change to revalidate every design version, not just the current one.** PR #6 added auto-revalidate-on-change but only for the currently-loaded version; older versions in the history list keep their stale `validation_report_json` until someone manually clicks "Re-validate" on each one. After a tube-spec change, iterate `ListDesignVersions` and re-run validation server-side; surface a "revalidating N versions…" progress hint in the editor. Backend already has `handleRevalidate` and `UpdateDesignVersionReport` — this is fan-out + UI signaling, not a new rule.
-19. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-20. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-21. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-22. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-23. **Send to printer via OS print dialog** (todo.md:75).
-24. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-25. **Snap-to-angle and snap-to-geometry** (todo.md:104).
-26. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+19. **Hershey text — kerning / multi-line / additional faces.** PR #8 ships single-line Roman Simplex with uniform tracking. Three follow-ups: per-letter custom kerning (drag handles in the modal preview), multi-line input with line-height control, and bundling additional Hershey faces (Roman Duplex for thicker channel letters; Sans Simplex / Futural for geometric-sans look). The converter at `scripts/build-hershey-font.mjs` already handles any rowman-style JHF — pointing it at additional sources is mostly mechanical.
+20. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+21. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+22. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+23. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+24. **Send to printer via OS print dialog** (todo.md:75).
+25. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+26. **Snap-to-angle and snap-to-geometry** (todo.md:104).
+27. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
