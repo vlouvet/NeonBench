@@ -162,6 +162,28 @@ export function parseReport(dv: DesignVersion | null | undefined): ValidationRep
   }
 }
 
+// Response shape for PATCH /api/tube_specs/{id}. The server commits the
+// spec edit, then fans out validation across every design version that
+// belongs to a project referencing this spec, and reports the counts so
+// the editor can show a transient toast ("Re-validated N versions across
+// M projects"). Tier 3 #18.
+export type UpdateTubeSpecResponse = {
+  tube_spec: TubeSpec;
+  revalidated: {
+    project_count: number;
+    version_count: number;
+    failed_count: number;
+  };
+};
+
+export type UpdateTubeSpecBody = {
+  name?: string;
+  diameter_mm?: number;
+  min_bend_radius_mm?: number;
+  max_segment_length_mm?: number;
+  min_spacing_mm?: number;
+};
+
 export type VectorizeCrop = { x: number; y: number; w: number; h: number };
 
 export type VectorizeRequest = {
@@ -196,6 +218,15 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listTubeSpecs: () => req<TubeSpec[]>('/api/tube_specs'),
+  // PATCH the tube spec's dimensional fields (Tier 3 #18). The
+  // response carries the updated row plus a fan-out summary; the
+  // caller surfaces a transient toast when version_count > 0.
+  updateTubeSpec: (id: number, body: UpdateTubeSpecBody) =>
+    req<UpdateTubeSpecResponse>(`/api/tube_specs/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
   listProjects: () => req<Project[]>('/api/projects'),
   getProject: (id: number) => req<Project>(`/api/projects/${id}`),
   createProject: (body: {

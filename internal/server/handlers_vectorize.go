@@ -272,17 +272,40 @@ func (s *apiServer) handleRevalidate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	reportJSON := s.runValidation(r, pid, []byte(v.SVGData))
-	if reportJSON == "" {
-		writeError(w, http.StatusInternalServerError, "validation failed; see server logs")
-		return
-	}
-	updated, err := storage.UpdateDesignVersionReport(r.Context(), s.db, vid, reportJSON)
+	updated, err := s.revalidateOne(r, vid)
 	if err != nil {
+		if errors.Is(err, errValidationFailed) {
+			writeError(w, http.StatusInternalServerError, "validation failed; see server logs")
+			return
+		}
 		writeStorageError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// errValidationFailed is the sentinel returned by revalidateOne when
+// runValidation produced an empty report (the cause is already logged
+// inside runValidation). Callers can map this to a 500 in the
+// single-version handler or "skip and continue" in the fan-out.
+var errValidationFailed = errors.New("validation produced empty report")
+
+// revalidateOne loads a design version, re-runs the project's validator
+// against its stored SVG, and writes the fresh report. It is the shared
+// per-version primitive used by handleRevalidate (one explicit click) and
+// revalidateAllForTubeSpec (fan-out after a tube-spec edit). On a
+// missing/corrupt SVG the sentinel errValidationFailed is returned so the
+// fan-out can keep going; storage failures bubble up untouched.
+func (s *apiServer) revalidateOne(r *http.Request, vid int64) (storage.DesignVersion, error) {
+	v, err := storage.GetDesignVersion(r.Context(), s.db, vid)
+	if err != nil {
+		return storage.DesignVersion{}, err
+	}
+	reportJSON := s.runValidation(r, v.ProjectID, []byte(v.SVGData))
+	if reportJSON == "" {
+		return storage.DesignVersion{}, errValidationFailed
+	}
+	return storage.UpdateDesignVersionReport(r.Context(), s.db, vid, reportJSON)
 }
 
 func (s *apiServer) handleListDesignVersions(w http.ResponseWriter, r *http.Request) {
