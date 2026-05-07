@@ -7,7 +7,7 @@ If you are an agent, read this whole file before doing anything that writes to d
 ## Repo orientation (1 minute)
 
 - **Backend:** Go 1.26+, single static binary. Entry: `cmd/neonbench`. Server in `internal/server`. SQLite via `modernc.org/sqlite` (pure-Go). Migrations are goose SQL files under `internal/storage/migrations/`.
-- **Frontend:** React 19 + TypeScript + Vite under `web/`. Built and embedded into the Go binary via `web/web.go` (`//go:embed all:dist`).
+- **Frontend:** React 19 + TypeScript + Vite under `web/`. Built and embedded into the Go binary via `web/web.go` (`//go:embed all:dist`). **Side effect:** Go cannot compile (and therefore `go vet` / `go test` / `go build` cannot run) until `web/dist/` exists with the built bundle. `scripts/test.sh` auto-builds it if missing; CI builds it as the first step. In a fresh clone or worktree, run `( cd web && npm install && npm run build )` once before any Go command.
 - **Storage:** one SQLite file per install at the OS-conventional app-data path. Schema lives in migrations only — never hand-edit `appdata` DB files.
 - **Distribution:** cross-compiled by `scripts/build.sh`. Targets: macOS arm64/amd64, Linux amd64, Windows amd64.
 - **Tests:** `scripts/test.sh` runs `go test ./...` (excluding `web/node_modules`) then `vitest run` in `web/`. CI runs the same script.

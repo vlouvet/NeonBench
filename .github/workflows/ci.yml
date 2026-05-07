@@ -28,19 +28,21 @@ jobs:
         run: npm ci
         working-directory: web
 
-      - name: go vet
-        run: go vet ./...
-
       - name: ESLint
         run: npm run lint
         working-directory: web
 
-      - name: Test (Go + vitest)
-        run: ./scripts/test.sh
-
+      # Frontend must build first: web/web.go has //go:embed all:dist, so any
+      # `go vet` / `go test` / `go build` needs web/dist/ populated.
       - name: Frontend type-check + build
         run: npm run build
         working-directory: web
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: Test (Go + vitest)
+        run: ./scripts/test.sh
 
       - name: Cross-compile binary (smoke)
         run: |
