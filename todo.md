@@ -87,7 +87,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ### v1 release checklist
 
-- [ ] Smoke test on macOS, Windows, Linux (currently only macOS verified)
+- [ ] Smoke test on macOS, Windows, Linux. CI now runs on Linux (`test` job) + Windows (`windows-smoke` job, PR #2). macOS is the dev platform. No CI runner on macOS yet — add if it becomes useful.
 - [ ] Sample bitmaps + golden vectorized outputs in `testdata/`
 - [ ] User-facing README with install + first-design walkthrough
 - [x] Crash recovery: every vectorize creates a `design_versions` row before returning, so a mid-session crash leaves the last good state in SQLite
@@ -272,12 +272,12 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 
 ### Tier 1 — Shop-readiness blockers (do first)
 
-1. **Delete a design version + delete project** (UI). Unblocks "the vectorization made garbage, get it out of my history." API for projects exists at `api.go:26`; version-delete needs a new `DELETE /api/projects/{id}/design_versions/{vid}` endpoint and a button on each row of the version list.
+1. ✅ **Delete a design version + delete project** (UI). Shipped in PR #3. `DELETE /api/projects/{id}/design_versions/{vid}` + per-row delete buttons with confirm dialogs.
 2. **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). The right answer to "garbled OPEN N" — never raster-trace text. Type letters, pick cap height in mm, get one polyline per letter with hairpin DBs already where the font designer placed them. Public-domain JHF data, small parser, drops directly into the existing run model.
 3. **Pen tool + rect / circle / arc / polygon primitives** (NW #32, #56, #75). Completes the "design from a blank file" workflow. Reuses existing run model — each finished path becomes a new run. Bezier handles can wait.
 4. **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Highest-leverage QoL gap when the vectorizer misbehaves.
 5. **Edit tube spec per project mutation UI** (todo.md:80). Half-done — wire the existing PATCH endpoint to a sidebar field.
-6. **Windows smoke test** (todo.md:90). A shop tech is more likely on Windows than mac.
+6. ✅ **Windows smoke test** (todo.md:90). Shipped in PR #2 as a separate `windows-smoke` CI job (not a matrix on `test` — preserves branch protection's required-context contract). Includes `.gitattributes` `eol=lf` pin so Git Bash on Windows runners doesn't break on CRLF line endings.
 
 ### Tier 2 — Largest NW parity gaps
 
