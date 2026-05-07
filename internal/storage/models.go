@@ -61,8 +61,15 @@ type Project struct {
 	// nil means "no per-project override; renderers fall back to the
 	// shop default of 100 mm (≈ 4 in)".
 	ChannelLetterDepthMM *float64 `json:"channel_letter_depth_mm,omitempty"`
-	CreatedAt            string   `json:"created_at"`
-	UpdatedAt            string   `json:"updated_at"`
+	// Optional channel-letter strip-overlap allowance in millimeters
+	// (Tier 3 #26). The fabricator leaves this much extra metal at one
+	// end of an unfolded return strip so the seam can be welded or
+	// pop-riveted through doubled-up sheet. nil means "no per-project
+	// override; the renderer falls back to the shop default of 12.7 mm
+	// (½ in, Strattman NT Ch.5 trade convention)".
+	StripOverlapMM *float64 `json:"strip_overlap_mm,omitempty"`
+	CreatedAt      string   `json:"created_at"`
+	UpdatedAt      string   `json:"updated_at"`
 }
 
 type AssetKind string
