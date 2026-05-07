@@ -52,6 +52,13 @@ type Run struct {
 	Annotations    []Annotation `json:"annotations,omitempty"`
 	Bends          []Bend       `json:"bends,omitempty"`
 	Notes          string       `json:"notes,omitempty"` // free-form: transformer specs, voltage, gas, anything else worth printing on the pattern
+	// IsChannelLetterFace marks this run's polyline as the silhouette of
+	// a channel-letter face — a flat sheet-metal cut whose perimeter is
+	// wrapped by a "return strip" forming the side wall of the 3D letter
+	// box (Strattman NT Ch.5; Miller p.88). When true, the print PDF
+	// emits an additional page per run with the unfolded return strip
+	// and bend marks at every polyline vertex (NW #106).
+	IsChannelLetterFace bool `json:"is_channel_letter_face,omitempty"`
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.

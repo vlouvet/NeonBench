@@ -24,6 +24,12 @@ export type Project = {
   // field entirely when the column is NULL; the UI falls back to the
   // shop default of 6.35 mm at render time.
   tube_end_gap_mm?: number;
+  // Optional channel-letter depth in millimeters (NW #106). Drives
+  // the height of the unfolded "return strip" page emitted on the
+  // print PDF for runs flagged as channel-letter faces. Server
+  // omits the field when NULL; renderers fall back to the 100 mm
+  // (≈ 4 in) shop default.
+  channel_letter_depth_mm?: number;
   created_at: string;
   updated_at: string;
 };
@@ -32,6 +38,12 @@ export type Project = {
 // shop convention (Miller App I §126 — UL minimum tube-to-grounded-metal
 // clearance). Used wherever the project hasn't set its own override.
 export const DEFAULT_TUBE_END_GAP_MM = 6.35;
+
+// Default channel-letter depth, in millimeters. 100 mm (≈ 4 in) is
+// the standard industry depth for channel letters (Strattman NT
+// Ch.5; Miller p.88). Used wherever the project hasn't set its own
+// override.
+export const DEFAULT_CHANNEL_LETTER_DEPTH_MM = 100;
 
 export type AssetKind = 'source_image' | 'vector' | 'print_output';
 
@@ -103,6 +115,11 @@ export type DesignRun = {
   annotations?: Annotation[];
   bends?: Bend[];
   notes?: string;
+  // When true, this run's polyline is the silhouette of a
+  // channel-letter face: the print PDF emits an extra "return
+  // strip" page so the operator can fold a metal strip around
+  // the perimeter to form the side wall (NW #106).
+  is_channel_letter_face?: boolean;
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {
@@ -190,6 +207,7 @@ export const api = {
     due_date?: string;
     job_number?: string;
     tube_end_gap_mm?: number;
+    channel_letter_depth_mm?: number;
   }) =>
     req<Project>('/api/projects', {
       method: 'POST',
@@ -210,6 +228,8 @@ export const api = {
       // number to write a new value, null to clear (fall back to
       // shop default), undefined / omitted to leave it untouched.
       tube_end_gap_mm?: number | null;
+      // Same three-state semantics as tube_end_gap_mm.
+      channel_letter_depth_mm?: number | null;
     },
   ) =>
     req<Project>(`/api/projects/${id}`, {

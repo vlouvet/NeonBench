@@ -32,8 +32,14 @@ type Project struct {
 	// per-project override; consumers should fall back to the shop
 	// default of 6.35 mm (¼ in, Miller App I §126)".
 	TubeEndGapMM *float64 `json:"tube_end_gap_mm,omitempty"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	// Optional channel-letter depth in millimeters (NW #106). Height
+	// of the U-channel sheet-metal box that surrounds each face;
+	// drives the height of the return-strip pages on the print PDF.
+	// nil means "no per-project override; renderers fall back to the
+	// shop default of 100 mm (≈ 4 in)".
+	ChannelLetterDepthMM *float64 `json:"channel_letter_depth_mm,omitempty"`
+	CreatedAt            string   `json:"created_at"`
+	UpdatedAt            string   `json:"updated_at"`
 }
 
 type AssetKind string

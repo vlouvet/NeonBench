@@ -397,6 +397,10 @@ export default function EditorPage() {
     editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
   }
 
+  function setRunChannelLetterFace(runId: string, isFace: boolean) {
+    editDoc((prev) => ops.setRunChannelLetterFace(prev, runId, isFace));
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (!selected) return;
     editDoc((prev) => ops.simplifyRun(prev, selected, epsilonMM));
@@ -717,6 +721,14 @@ export default function EditorPage() {
                       title={run.color || 'unassigned'}
                     />
                     <strong>{run.id}</strong>
+                    {run.is_channel_letter_face && (
+                      <span
+                        className="run-badge"
+                        title="Channel-letter face: print PDF emits a return-strip page for this run."
+                      >
+                        [ch]
+                      </span>
+                    )}
                   </div>
                   <span className="meta">
                     {run.polyline.points.length} pts · {ne}/2 ⬥ · ø {run.tube_diameter_mm ?? '?'}mm
@@ -775,6 +787,19 @@ export default function EditorPage() {
                   placeholder="e.g. 15kV @ 60mA, GTO HV cable, argon+phosphor"
                   onChange={(e) => setRunNotes(selectedRun.id, e.target.value)}
                 />
+              </label>
+              <label
+                className="run-channel-letter"
+                title="Mark this run's polyline as a channel-letter face silhouette. The print PDF will add a return-strip page (perimeter × project depth) with bend marks at every vertex (NW #106)."
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedRun.is_channel_letter_face ?? false}
+                  onChange={(e) =>
+                    setRunChannelLetterFace(selectedRun.id, e.target.checked)
+                  }
+                />
+                {' '}Channel letter face
               </label>
               <PathOpsRow
                 onSimplify={simplifySelected}

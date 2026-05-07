@@ -69,6 +69,14 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts.TubeEndGapMM = defaultTubeEndGapMM
 	}
+	// Channel-letter depth (NW #106) — drives the height of any
+	// return-strip pages emitted per face-marked run. NULL on the
+	// project means "use shop default of 100 mm" (Strattman NT Ch.5).
+	if project.ChannelLetterDepthMM != nil {
+		opts.ChannelLetterDepthMM = *project.ChannelLetterDepthMM
+	} else {
+		opts.ChannelLetterDepthMM = defaultChannelLetterDepthMM
+	}
 
 	var data []byte
 	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {
