@@ -482,6 +482,227 @@ func abs(n int) int {
 	return n
 }
 
+// effectiveMinLeadInMM returns the lead-in length to enforce for a given
+// polyline. Per-spec override (limits.MinLeadInMM > 0) wins; otherwise
+// fall back to 2 × diameter (Miller App I §126 working minimum), using
+// the per-run diameter override when present.
+func effectiveMinLeadInMM(pl Polyline, limits Limits) float64 {
+	if limits.MinLeadInMM > 0 {
+		return limits.MinLeadInMM
+	}
+	d := runDiameterMM(pl, limits)
+	if d <= 0 {
+		return 0
+	}
+	return 2 * d
+}
+
+// effectiveSharpBendAngleDeg returns the interior-angle threshold below
+// which a vertex is flagged as a sharp bend. limits.SharpBendAngleDeg
+// wins when set; otherwise the trade-standard 85° applies.
+func effectiveSharpBendAngleDeg(limits Limits) float64 {
+	if limits.SharpBendAngleDeg > 0 {
+		return limits.SharpBendAngleDeg
+	}
+	return 85.0
+}
+
+// interiorAngleDeg returns the interior angle (in degrees) at vertex b,
+// formed by the two adjacent segments b→a and b→c. Coincident neighbors
+// return 180° (a straight passthrough — i.e. "no bend here") so degenerate
+// repeated points don't synthesize false positives.
+func interiorAngleDeg(a, b, c Point) float64 {
+	ux, uy := a.X-b.X, a.Y-b.Y
+	vx, vy := c.X-b.X, c.Y-b.Y
+	uLen := math.Hypot(ux, uy)
+	vLen := math.Hypot(vx, vy)
+	if uLen == 0 || vLen == 0 {
+		return 180
+	}
+	cos := (ux*vx + uy*vy) / (uLen * vLen)
+	// Clamp against floating-point drift so acos doesn't return NaN.
+	if cos > 1 {
+		cos = 1
+	} else if cos < -1 {
+		cos = -1
+	}
+	return math.Acos(cos) * 180 / math.Pi
+}
+
+// straightThresholdDeg is the interior-angle threshold above which a vertex
+// is treated as "still part of the straight lead-in" rather than a real
+// bend. Set just below 180° so noise from path-flattening sampling doesn't
+// abort the lead-in walk on a clearly-straight shaft.
+const straightThresholdDeg = 170.0
+
+// checkMinLeadIn enforces the minimum straight tube length between an
+// electrode and the first bend on a run. The validator only sees the live
+// arc (designdoc.ToSVG strips the dead arc on closed runs), so OPEN
+// polyline endpoints are the electrode positions for this rule. Closed
+// polylines have no electrodes by definition and are skipped.
+//
+// Walks forward from each endpoint, accumulating arc length until either
+// (a) a vertex with interior angle < straightThresholdDeg is reached
+// (the first real bend), or (b) the polyline runs out (a perfectly
+// straight tube — no bend, no issue). If the accumulated length is below
+// the limit, an issue is emitted at the electrode position.
+func checkMinLeadIn(polylines []Polyline, limits Limits) []Issue {
+	var issues []Issue
+	for _, pl := range polylines {
+		if pl.Closed {
+			continue
+		}
+		pts := pl.Points
+		n := len(pts)
+		if n < 2 {
+			continue
+		}
+		limitMM := effectiveMinLeadInMM(pl, limits)
+		if limitMM <= 0 {
+			continue
+		}
+		hairpinD := runDiameterMM(pl, limits)
+		// Two endpoints to evaluate; walk inward from each.
+		endpoints := []struct {
+			start int
+			step  int
+		}{
+			{0, 1},
+			{n - 1, -1},
+		}
+		for _, ep := range endpoints {
+			length := 0.0
+			bendFound := false
+			i := ep.start
+			prev := i
+			for {
+				next := i + ep.step
+				if next < 0 || next >= n {
+					break
+				}
+				length += dist(pts[prev], pts[next])
+				// Check the interior angle at `next` (the vertex we just
+				// stepped onto). It needs neighbors on both sides; if
+				// `next` is the far endpoint, there's no vertex to
+				// inspect — the tube is one straight shaft, no bend.
+				farIdx := next + ep.step
+				if farIdx < 0 || farIdx >= n {
+					break
+				}
+				ang := interiorAngleDeg(pts[i], pts[next], pts[farIdx])
+				if ang < straightThresholdDeg {
+					bendFound = true
+					// Suppress the warning if this first bend is itself
+					// the apex of a documented hairpin double-back —
+					// the user has explicitly opted into that geometry.
+					if hasUserDoubleback(pts[next], pl.DoublebackMarks, hairpinD) {
+						bendFound = false
+					}
+					break
+				}
+				prev = next
+				i = next
+			}
+			if !bendFound {
+				continue
+			}
+			if length >= limitMM {
+				continue
+			}
+			issues = append(issues, Issue{
+				Rule:     RuleMinLeadIn,
+				Severity: SeverityWarning,
+				Message: fmt.Sprintf(
+					"electrode lead-in %.1fmm below recommended minimum %.1fmm — short lead-ins crack at the seal under handling and thermal cycling",
+					length, limitMM),
+				XMM: pts[ep.start].X,
+				YMM: pts[ep.start].Y,
+			})
+		}
+	}
+	return issues
+}
+
+// checkSharpBendAngles flags interior vertices whose included angle is at
+// or below the configured threshold (default 85°). Hairpin double-back
+// apices — both the geometric heuristic and user-marked ones — are
+// exempted because a U-turn is, by definition, a 180°-flip whose apex
+// sweeps through angles well below the threshold.
+//
+// Operates on resampled points (so the hairpin detector has the spacing
+// it expects) but reports issues at the resampled vertex coordinate, then
+// clusters so a tight curve doesn't produce a swarm of markers.
+func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
+	thresholdDeg := effectiveSharpBendAngleDeg(limits)
+	if thresholdDeg <= 0 {
+		return nil
+	}
+	var issues []Issue
+	for _, pl := range polylines {
+		// Resample so the hairpin detector's K-step look-around has stable
+		// spacing. Use the same step heuristic as checkBendRadius for
+		// consistency: tied to the bend-radius limit when present, else
+		// a sensible mm value that survives short straight legs.
+		step := 1.0
+		if limits.MinBendRadiusMM > 0 {
+			step = math.Max(0.5, math.Min(limits.MinBendRadiusMM/4, 5))
+		}
+		sampled := resampleUniform(pl, step)
+		pts := sampled.Points
+		n := len(pts)
+		if n < 3 {
+			continue
+		}
+		hairpinD := runDiameterMM(pl, limits)
+		// Closed polyline: every vertex (including the seam at index 0
+		// and n-1) is interior. Open polyline: skip the two endpoints.
+		first, last := 1, n-1
+		if sampled.Closed {
+			first, last = 0, n
+		}
+		for idx := first; idx < last; idx++ {
+			var aIdx, cIdx int
+			if sampled.Closed {
+				aIdx = (idx - 1 + n) % n
+				cIdx = (idx + 1) % n
+				// Skip the duplicated closing point, if any.
+				if idx == n-1 && pts[0] == pts[n-1] {
+					continue
+				}
+			} else {
+				aIdx = idx - 1
+				cIdx = idx + 1
+			}
+			ang := interiorAngleDeg(pts[aIdx], pts[idx], pts[cIdx])
+			if ang > thresholdDeg {
+				continue
+			}
+			if isDoubleBackHairpin(pts, sampled.Closed, idx, step, hairpinD) {
+				continue
+			}
+			if hasUserDoubleback(pts[idx], pl.DoublebackMarks, hairpinD) {
+				continue
+			}
+			issues = append(issues, Issue{
+				Rule:     RuleSharpBendAngle,
+				Severity: SeverityWarning,
+				Message: fmt.Sprintf(
+					"sharp bend %.0f° (≤ %.0f°) — concentrates stress at the apex; consider a wider sweep",
+					ang, thresholdDeg),
+				XMM: pts[idx].X,
+				YMM: pts[idx].Y,
+			})
+		}
+	}
+	// Cluster nearby same-rule flags so a single tight bend doesn't fire
+	// multiple markers along its arc.
+	radius := 5.0
+	if limits.MinBendRadiusMM > 0 {
+		radius = math.Max(limits.MinBendRadiusMM*1.5, 5)
+	}
+	return clusterIssues(issues, radius)
+}
+
 // checkCapHeight emits a warning when the design's bbox height exceeds the
 // threshold above which Miller (1935 p.125) recommends multi-blank
 // construction with internal welds. The bbox height is a proxy for "cap
