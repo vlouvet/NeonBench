@@ -40,4 +40,5 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.pdf", s.handlePrintPDF)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.dxf", s.handlePrintDXF)
 	mux.HandleFunc("GET /api/projects/{id}/export.neonbench", s.handleExportBundle)
+	mux.HandleFunc("POST /api/projects/import", s.handleImportBundle)
 }

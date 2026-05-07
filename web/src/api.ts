@@ -240,6 +240,22 @@ export const api = {
       signal,
     }),
   exportBundleURL: (projectId: number) => `/api/projects/${projectId}/export.neonbench`,
+  importBundle: async (file: File): Promise<Project> => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const res = await fetch('/api/projects/import', { method: 'POST', body: fd });
+    if (!res.ok) {
+      let msg = res.statusText;
+      try {
+        const body = (await res.json()) as { error?: string };
+        if (body?.error) msg = body.error;
+      } catch {
+        // server returned non-JSON; fall back to status text
+      }
+      throw new Error(`${res.status} ${msg}`);
+    }
+    return (await res.json()) as Project;
+  },
   printPDFURL: (
     projectId: number,
     versionId: number,

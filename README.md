@@ -150,10 +150,13 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    layered per run id) for feeding to CNC tube benders; geometry
    only, no annotations.
 
-8. **Export.** Need to share the project with another install? The
-   project page's "Export bundle" button downloads
+8. **Export / import.** Need to share the project with another install?
+   The project page's "Export bundle" button downloads
    `<projectName>.neonbench` — a portable zip of every design version
-   plus a manifest. Import is a planned follow-up.
+   plus a manifest. The Projects list page has an "Import .neonbench"
+   button that round-trips the same bundle back into a fresh project
+   (it appends "(imported)" if the name collides and reuses any
+   matching tube spec instead of duplicating one).
 
 ## Architecture
 

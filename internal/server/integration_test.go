@@ -1,7 +1,9 @@
 package server
 
 import (
+	"archive/zip"
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -765,6 +767,444 @@ func buildCirclePolylineSVG(radius, cx, cy, sideMM, stepDeg float64) string {
 	b.WriteString(` Z" fill="none" stroke="black"/>`)
 	b.WriteString(`</svg>`)
 	return b.String()
+}
+
+// TestExportImportRoundtrip is the closing assertion on Tier 2 #12: a
+// bundle produced by `GET /export.neonbench` must be re-importable via
+// `POST /api/projects/import` and yield a project with the same name
+// and the same number of versions, with byte-identical SVG payloads.
+// This is what unblocks the "move project between installs" story.
+//
+// The test seeds two design versions directly via storage (no need to
+// run the vectorizer), exports the project, posts the zip back to the
+// import endpoint, and walks both projects' version lists to compare
+// SVG bytes one-to-one.
+func TestExportImportRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "roundtrip source",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// Two versions with distinguishable SVG bodies + a label so the
+	// label round-trip is exercised too.
+	svg1 := `<svg xmlns="http://www.w3.org/2000/svg" data-marker="v1"/>`
+	svg2 := `<svg xmlns="http://www.w3.org/2000/svg" data-marker="v2"/>`
+	if _, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		Label:     "first cut",
+		SVGData:   svg1,
+	}); err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	if _, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		Label:     "second cut",
+		SVGData:   svg2,
+	}); err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+
+	// 1) Export.
+	bundleResp, err := client.Get(base + "/api/projects/" + itoa(projectID) + "/export.neonbench")
+	if err != nil {
+		t.Fatalf("export.neonbench: %v", err)
+	}
+	bundleBytes, _ := io.ReadAll(bundleResp.Body)
+	bundleResp.Body.Close()
+	if bundleResp.StatusCode != 200 {
+		t.Fatalf("export.neonbench status %d: %s", bundleResp.StatusCode, bundleBytes)
+	}
+	if !bytes.HasPrefix(bundleBytes, []byte("PK")) {
+		t.Fatalf("export did not return a zip")
+	}
+
+	// 2) Import the same bytes back. Project name will collide with the
+	// source, so the importer should suffix "(imported)".
+	imported := postBundle(t, client, base+"/api/projects/import", "first.neonbench", bundleBytes)
+	importedID := int64(imported["id"].(float64))
+	if name := imported["name"].(string); name != "roundtrip source (imported)" {
+		t.Errorf("imported project name: want %q, got %q", "roundtrip source (imported)", name)
+	}
+	if tsID := int64(imported["tube_spec_id"].(float64)); tsID != tubeSpecID {
+		t.Errorf("imported tube_spec_id: want %d (matched seed), got %d", tubeSpecID, tsID)
+	}
+
+	// 3) Walk both projects' version lists; SVG bytes must match
+	// version-for-version, and labels must round-trip.
+	var srcVersions, impVersions []map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", &srcVersions)
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID)+"/design_versions", &impVersions)
+	if len(srcVersions) != len(impVersions) {
+		t.Fatalf("version count: source %d, imported %d", len(srcVersions), len(impVersions))
+	}
+	if len(impVersions) != 2 {
+		t.Fatalf("expected 2 versions imported, got %d", len(impVersions))
+	}
+	// design_versions list endpoint returns newest-first; sort by
+	// version_no for a deterministic comparison.
+	sortByVersionNo := func(arr []map[string]any) {
+		// stable insertion sort — small slice, no need for sort import
+		for i := 1; i < len(arr); i++ {
+			for j := i; j > 0 && arr[j]["version_no"].(float64) < arr[j-1]["version_no"].(float64); j-- {
+				arr[j], arr[j-1] = arr[j-1], arr[j]
+			}
+		}
+	}
+	sortByVersionNo(srcVersions)
+	sortByVersionNo(impVersions)
+
+	for i := range srcVersions {
+		srcID := int64(srcVersions[i]["id"].(float64))
+		impID := int64(impVersions[i]["id"].(float64))
+		var srcFull, impFull map[string]any
+		getJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions/"+itoa(srcID), &srcFull)
+		getJSON(t, client, base+"/api/projects/"+itoa(importedID)+"/design_versions/"+itoa(impID), &impFull)
+		if srcFull["svg_data"].(string) != impFull["svg_data"].(string) {
+			t.Errorf("v%d svg_data did not survive round-trip", i+1)
+		}
+		if fmt.Sprint(srcFull["label"]) != fmt.Sprint(impFull["label"]) {
+			t.Errorf("v%d label: source %v, imported %v", i+1, srcFull["label"], impFull["label"])
+		}
+		if int64(srcFull["version_no"].(float64)) != int64(impFull["version_no"].(float64)) {
+			t.Errorf("v%d version_no: source %v, imported %v", i+1, srcFull["version_no"], impFull["version_no"])
+		}
+	}
+
+	// 4) Re-importing the same bundle a second time must succeed and
+	// yield a third project with a deeper "(imported 2)" suffix —
+	// proves the name-collision fallback iterates rather than crashing.
+	imported2 := postBundle(t, client, base+"/api/projects/import", "second.neonbench", bundleBytes)
+	if name := imported2["name"].(string); name != "roundtrip source (imported 2)" {
+		t.Errorf("second import name: want %q, got %q", "roundtrip source (imported 2)", name)
+	}
+}
+
+// TestImportBundleCreatesNewTubeSpec covers the dedup branch: when a
+// bundle's tube-spec snapshot doesn't dimensionally match anything on
+// the target install, the importer must mint a new tube_specs row
+// (rather than silently retargeting the project at a default spec).
+func TestImportBundleCreatesNewTubeSpec(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	specsBefore, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs: %v", err)
+	}
+
+	// Hand-roll a bundle whose tube_spec dimensions don't match any
+	// seeded spec (24mm diameter — none of the seeds use it).
+	bundle := buildSyntheticBundle(t, "exotic project", storage.TubeSpec{
+		Name:               "24mm exotic",
+		DiameterMM:         24,
+		MinBendRadiusMM:    55,
+		MaxSegmentLengthMM: 4000,
+		MinSpacingMM:       28,
+	}, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg" data-marker="exotic-v1"/>`, Label: "only"},
+	})
+
+	imported := postBundle(t, client, base+"/api/projects/import", "exotic.neonbench", bundle)
+	importedID := int64(imported["id"].(float64))
+	tsID := int64(imported["tube_spec_id"].(float64))
+
+	specsAfter, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs after: %v", err)
+	}
+	if len(specsAfter) != len(specsBefore)+1 {
+		t.Fatalf("expected one new tube_spec row; before=%d after=%d", len(specsBefore), len(specsAfter))
+	}
+
+	created, err := storage.GetTubeSpec(t.Context(), db, tsID)
+	if err != nil {
+		t.Fatalf("get new spec: %v", err)
+	}
+	if created.DiameterMM != 24 || created.MinBendRadiusMM != 55 ||
+		created.MaxSegmentLengthMM != 4000 || created.MinSpacingMM != 28 {
+		t.Errorf("new spec dimensions did not match snapshot: %+v", created)
+	}
+	if created.IsDefault {
+		t.Error("imported spec should not be marked is_default — would override seeded default")
+	}
+
+	// Sanity: the imported project should reference exactly that new
+	// spec, and the version row should exist with the expected SVG.
+	var versions []map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID)+"/design_versions", &versions)
+	if len(versions) != 1 {
+		t.Fatalf("expected 1 version, got %d", len(versions))
+	}
+	var full map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID)+"/design_versions/"+itoa(int64(versions[0]["id"].(float64))), &full)
+	if !strings.Contains(full["svg_data"].(string), "exotic-v1") {
+		t.Errorf("imported SVG body lost: %q", full["svg_data"])
+	}
+
+	// Re-importing the same exotic bundle MUST reuse the now-present
+	// tube spec rather than creating yet another row — confirms the
+	// dimension-based dedup actually kicks in across imports.
+	postBundle(t, client, base+"/api/projects/import", "exotic2.neonbench", bundle)
+	specsAgain, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs again: %v", err)
+	}
+	if len(specsAgain) != len(specsAfter) {
+		t.Errorf("second import created an additional tube_spec — dedup failed (had %d, now %d)",
+			len(specsAfter), len(specsAgain))
+	}
+}
+
+// TestImportBundleRejectsMalformed is the negative-path guard for the
+// import handler. Each case must come back as 400 with a human message
+// (the importer is the user's first interaction with a foreign file —
+// vague "internal error" responses are unhelpful here).
+func TestImportBundleRejectsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	cases := []struct {
+		name string
+		body []byte
+	}{
+		{name: "not a zip", body: []byte("this is not a zip file at all")},
+		{name: "zip without manifest", body: zipOf(t, map[string][]byte{"random.txt": []byte("hi")})},
+		{name: "manifest missing bundle marker", body: zipOf(t, map[string][]byte{
+			"manifest.json": []byte(`{"schema":1,"project":{"name":"x"},"versions":[]}`),
+		})},
+		{name: "manifest missing project name", body: zipOf(t, map[string][]byte{
+			"manifest.json": []byte(`{"bundle":"neonbench","schema":1,"project":{"name":""},"versions":[{"version_no":1}]}`),
+		})},
+		{name: "manifest with no versions", body: zipOf(t, map[string][]byte{
+			"manifest.json": []byte(`{"bundle":"neonbench","schema":1,"project":{"name":"x"},"versions":[]}`),
+		})},
+		{name: "manifest references missing svg", body: zipOf(t, map[string][]byte{
+			"manifest.json": []byte(`{"bundle":"neonbench","schema":1,"project":{"name":"x"},"tube_spec":{"name":"t","diameter_mm":12,"min_bend_radius_mm":27,"max_segment_length_mm":2500,"min_spacing_mm":14},"versions":[{"version_no":1}]}`),
+		})},
+	}
+
+	specsBefore := mustListSpecs(t, db)
+	projsBefore := mustListProjects(t, db)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := postBundleRaw(t, client, base+"/api/projects/import", "bad.neonbench", tc.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				body, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				t.Fatalf("want 400, got %d: %s", resp.StatusCode, body)
+			}
+			resp.Body.Close()
+		})
+	}
+	// None of the failure paths should have left rows behind.
+	if got := mustListSpecs(t, db); len(got) != len(specsBefore) {
+		t.Errorf("malformed imports created tube_specs (%d → %d)", len(specsBefore), len(got))
+	}
+	if got := mustListProjects(t, db); len(got) != len(projsBefore) {
+		t.Errorf("malformed imports left orphan projects (%d → %d)", len(projsBefore), len(got))
+	}
+}
+
+// --- helpers shared by the import tests ---------------------------------
+
+type syntheticVersion struct {
+	VersionNo int64
+	Label     string
+	SVG       string
+	Doc       string
+	Report    string
+}
+
+// buildSyntheticBundle hand-rolls a .neonbench zip exactly the way
+// handleExportBundle does, so import tests can exercise edge cases
+// (exotic tube specs, custom version contents) without going through
+// the export endpoint.
+func buildSyntheticBundle(t *testing.T, projectName string, spec storage.TubeSpec, versions []syntheticVersion) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	manifest := bundleManifest{
+		Bundle:     "neonbench",
+		Schema:     1,
+		ExportedAt: "2026-05-07T00:00:00.000Z",
+		Project: bundleProject{
+			Name:      projectName,
+			Units:     "mm",
+			CreatedAt: "2026-05-07T00:00:00.000Z",
+			UpdatedAt: "2026-05-07T00:00:00.000Z",
+		},
+		TubeSpec: spec,
+		Versions: make([]bundleVersionRef, 0, len(versions)),
+	}
+	for _, v := range versions {
+		ref := bundleVersionRef{
+			VersionNo: v.VersionNo,
+			Label:     v.Label,
+			CreatedAt: "2026-05-07T00:00:00.000Z",
+			HasDoc:    v.Doc != "",
+			HasReport: v.Report != "",
+		}
+		manifest.Versions = append(manifest.Versions, ref)
+		base := fmt.Sprintf("history/v%03d", v.VersionNo)
+		mustZip(t, zw, base+".svg", []byte(v.SVG))
+		if v.Doc != "" {
+			mustZip(t, zw, base+".design.json", []byte(v.Doc))
+		}
+		if v.Report != "" {
+			mustZip(t, zw, base+".report.json", []byte(v.Report))
+		}
+	}
+	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	mustZip(t, zw, "manifest.json", manifestJSON)
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func mustZip(t *testing.T, zw *zip.Writer, name string, data []byte) {
+	t.Helper()
+	w, err := zw.Create(name)
+	if err != nil {
+		t.Fatalf("zip create %q: %v", name, err)
+	}
+	if _, err := w.Write(data); err != nil {
+		t.Fatalf("zip write %q: %v", name, err)
+	}
+}
+
+func zipOf(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, data := range files {
+		mustZip(t, zw, name, data)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func postBundle(t *testing.T, c *http.Client, url, filename string, data []byte) map[string]any {
+	t.Helper()
+	resp := postBundleRaw(t, c, url, filename, data)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode/100 != 2 {
+		t.Fatalf("POST %s status %d: %s", url, resp.StatusCode, body)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode import response: %v (body=%s)", err, body)
+	}
+	return out
+}
+
+func postBundleRaw(t *testing.T, c *http.Client, url, filename string, data []byte) *http.Response {
+	t.Helper()
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	hdr := make(map[string][]string)
+	hdr["Content-Disposition"] = []string{`form-data; name="file"; filename="` + filename + `"`}
+	hdr["Content-Type"] = []string{"application/zip"}
+	part, err := mw.CreatePart(hdr)
+	if err != nil {
+		t.Fatalf("multipart: %v", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		t.Fatalf("multipart write: %v", err)
+	}
+	mw.Close()
+	req, err := http.NewRequest("POST", url, &buf)
+	if err != nil {
+		t.Fatalf("import req: %v", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("import POST: %v", err)
+	}
+	return resp
+}
+
+func mustListSpecs(t *testing.T, db *sql.DB) []storage.TubeSpec {
+	t.Helper()
+	specs, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list tube specs: %v", err)
+	}
+	return specs
+}
+
+func mustListProjects(t *testing.T, db *sql.DB) []storage.Project {
+	t.Helper()
+	projs, err := storage.ListProjects(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	return projs
 }
 
 // keep imports honest
