@@ -172,6 +172,24 @@ export function setRunNotes(doc: DesignDoc, runId: string, notes: string): Desig
   });
 }
 
+// setRunChannelLetterFace toggles the per-run "this is a channel-letter
+// face silhouette" flag (NW #106). When true, the print PDF emits an
+// unfolded return-strip page for this run. When false, we strip the
+// key entirely so the design-doc JSON stays clean (omitempty).
+export function setRunChannelLetterFace(
+  doc: DesignDoc,
+  runId: string,
+  isFace: boolean,
+): DesignDoc {
+  return mapRun(doc, runId, (run) => {
+    if (!isFace) {
+      const { is_channel_letter_face: _drop, ...rest } = run;
+      return rest;
+    }
+    return { ...run, is_channel_letter_face: true };
+  });
+}
+
 // appendRuns inserts pre-built runs at the end of the design doc and
 // rewrites their ids so they don't collide with existing run names. Used
 // by the Hershey "Add text" tool, which generates one run per stroke per

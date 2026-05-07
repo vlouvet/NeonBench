@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
+  DEFAULT_CHANNEL_LETTER_DEPTH_MM,
   DEFAULT_TUBE_END_GAP_MM,
   parseReport,
   type Asset,
@@ -178,6 +179,17 @@ export default function ProjectDetail() {
           value={project.tube_end_gap_mm}
           onSave={async (next) => {
             const updated = await api.updateProject(projectId, { tube_end_gap_mm: next });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        {' · '}
+        <ChannelLetterDepthField
+          value={project.channel_letter_depth_mm}
+          onSave={async (next) => {
+            const updated = await api.updateProject(projectId, {
+              channel_letter_depth_mm: next,
+            });
             setProject(updated);
           }}
           onError={(msg) => setError(msg)}
@@ -542,6 +554,112 @@ function TubeEndGapField({
         value={draft}
         disabled={busy}
         placeholder={`${DEFAULT_TUBE_END_GAP_MM} (default)`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setDraft(initialDraft);
+            setEditing(false);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
+// ChannelLetterDepthField is the inline editor for the optional
+// per-project channel-letter depth setting (NW #106). The display
+// shows either the project's explicit value or the shop default
+// flagged with "(default)" so the operator always sees the active
+// target. Same click-to-edit pattern as TubeEndGapField, but the
+// validation range is [10, 500] mm instead of [0, 100].
+function ChannelLetterDepthField({
+  value,
+  onSave,
+  onError,
+}: {
+  value: number | undefined;
+  onSave: (next: number | null) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const initialDraft = value === undefined ? '' : String(value);
+  const [draft, setDraft] = useState(initialDraft);
+  const [busy, setBusy] = useState(false);
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue && !editing) {
+    setLastValue(value);
+    setDraft(value === undefined ? '' : String(value));
+  }
+
+  async function commit() {
+    if (busy) return;
+    const trimmed = draft.trim();
+    let next: number | null;
+    if (trimmed === '') {
+      next = null;
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 10 || parsed > 500) {
+        onError('Channel letter depth: must be a number between 10 and 500 mm.');
+        setDraft(initialDraft);
+        setEditing(false);
+        return;
+      }
+      next = parsed;
+    }
+    if (next === (value ?? null)) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch (e) {
+      onError(`Channel letter depth: ${(e as Error).message}`);
+      setDraft(initialDraft);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    const display =
+      value === undefined
+        ? `${DEFAULT_CHANNEL_LETTER_DEPTH_MM} (default)`
+        : `${value}`;
+    return (
+      <span className="job-field">
+        <strong>Channel letter depth (mm):</strong>{' '}
+        <button
+          type="button"
+          className="job-field-value"
+          onClick={() => setEditing(true)}
+          title="Height of the U-channel sheet-metal box around each face (NW #106). Drives the height of the unfolded return-strip page on the print PDF. Empty = use shop default of 100 mm (≈ 4 in)."
+        >
+          {display}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="job-field">
+      <strong>Channel letter depth (mm):</strong>{' '}
+      <input
+        autoFocus
+        type="number"
+        min={10}
+        max={500}
+        step={1}
+        value={draft}
+        disabled={busy}
+        placeholder={`${DEFAULT_CHANNEL_LETTER_DEPTH_MM} (default)`}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {
