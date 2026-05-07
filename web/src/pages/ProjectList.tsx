@@ -1,6 +1,27 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, type Project, type TubeSpec } from '../api';
+import { isOverdue } from '../lib/dueDate';
+
+// SortMode controls the order of the rendered project list.
+//   'updated' — server's natural recency order (descending updated_at).
+//   'due'     — ascending due_date with empty/invalid dates pushed to the
+//               end; ties break by recency so two same-day jobs still
+//               surface the most-recently-touched one first.
+//   'name'    — case-insensitive ascending by display name.
+type SortMode = 'updated' | 'due' | 'name';
+
+// parseDueKey turns a project's due_date into a sortable number. Empty /
+// unparseable values map to +Infinity so they sink to the end of the
+// ascending sort. We don't use isOverdue here — the sort key needs the
+// actual chronological order, not just the past/future bucket.
+function parseDueKey(iso: string): number {
+  if (!iso) return Number.POSITIVE_INFINITY;
+  const d = new Date(iso + 'T00:00:00');
+  const t = d.getTime();
+  if (Number.isNaN(t)) return Number.POSITIVE_INFINITY;
+  return t;
+}
 
 // isBundleFile decides whether a dropped file looks like a .neonbench
 // bundle. Filename test catches the canonical case; the application/zip
@@ -23,6 +44,12 @@ export default function ProjectList() {
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  // Tier 3 #23: client-side sort + search state. No URL/localStorage
+  // persistence in V1 — the list is small enough that re-typing on each
+  // page load is fine, and skipping persistence keeps the surface area
+  // tight. Promoting either to a stored preference is a follow-up.
+  const [query, setQuery] = useState('');
+  const [sortMode, setSortMode] = useState<SortMode>('updated');
   const importInputRef = useRef<HTMLInputElement | null>(null);
   // dragenter fires on the parent AND on each child as the cursor
   // crosses it; without a counter, dragleave from the parent flips
@@ -134,8 +161,54 @@ export default function ProjectList() {
     void runImport(file);
   }
 
+  // Tier 3 #23: derive the visible list. Filter first, then sort. The
+  // memo runs whenever the raw list, query, or sort mode change; that
+  // covers every keystroke without recomputing on unrelated re-renders
+  // (drag overlay toggles, modal open/close, etc.).
+  const displayedProjects = useMemo(() => {
+    if (!projects) return null;
+    const q = query.trim().toLowerCase();
+    const filtered = q
+      ? projects.filter((p) => {
+          const name = p.name.toLowerCase();
+          if (name.includes(q)) return true;
+          const customer = (p.customer || '').toLowerCase();
+          if (customer.includes(q)) return true;
+          const job = (p.job_number || '').toLowerCase();
+          if (job.includes(q)) return true;
+          return false;
+        })
+      : projects.slice();
+    if (sortMode === 'updated') {
+      // Make the default deterministic regardless of server order.
+      filtered.sort(
+        (a, b) =>
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      );
+    } else if (sortMode === 'due') {
+      // Empty / invalid due dates land at +Infinity so they sink to the
+      // bottom; ties (including the all-empty tail) break by recency so
+      // the bottom block still mirrors the default sort.
+      filtered.sort((a, b) => {
+        const ka = parseDueKey(a.due_date);
+        const kb = parseDueKey(b.due_date);
+        if (ka !== kb) return ka - kb;
+        return (
+          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        );
+      });
+    } else {
+      // 'name' — case-insensitive ascending.
+      filtered.sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      );
+    }
+    return filtered;
+  }, [projects, query, sortMode]);
+
   if (error && !projects) return <p className="error">{error}</p>;
-  if (!projects || !tubeSpecs) return <p className="meta">Loading…</p>;
+  if (!projects || !tubeSpecs || !displayedProjects)
+    return <p className="meta">Loading…</p>;
 
   const tubeSpecById = new Map(tubeSpecs.map((t) => [t.id, t]));
 
@@ -177,11 +250,42 @@ export default function ProjectList() {
         </div>
       )}
       {error && projects && <p className="error">{error}</p>}
+      {projects.length > 0 && (
+        // Tier 3 #23: search + sort controls. Sit directly above the
+        // list so the relationship is obvious and they stay below the
+        // page title + import/new buttons. The <input type="search">
+        // gets a built-in clear-X in most browsers; no debouncing
+        // because the in-memory list is small enough to recompute on
+        // every keystroke.
+        <div className="project-list-controls">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by name, customer, or job number"
+            aria-label="Search projects"
+          />
+          <label>
+            Sort:{' '}
+            <select
+              value={sortMode}
+              onChange={(e) => setSortMode(e.target.value as SortMode)}
+              aria-label="Sort projects"
+            >
+              <option value="updated">Recently updated</option>
+              <option value="due">Due date (next first)</option>
+              <option value="name">Name (A–Z)</option>
+            </select>
+          </label>
+        </div>
+      )}
       {projects.length === 0 ? (
         <p className="empty">No projects yet. Create one to start.</p>
+      ) : displayedProjects.length === 0 ? (
+        <p className="empty">No projects match this search.</p>
       ) : (
         <ul className="project-list">
-          {projects.map((p) => (
+          {displayedProjects.map((p) => (
             <li key={p.id}>
               <Link to={`/projects/${p.id}`}>
                 <strong>
@@ -191,6 +295,12 @@ export default function ProjectList() {
                 <span className="meta">
                   {tubeSpecById.get(p.tube_spec_id)?.name ?? `tube #${p.tube_spec_id}`}
                   {p.due_date ? ` · due ${p.due_date}` : ''}
+                  {p.due_date && isOverdue(p.due_date) && (
+                    <>
+                      {' '}
+                      <span className="badge-overdue">Overdue</span>
+                    </>
+                  )}
                   {' · updated '}
                   {new Date(p.updated_at).toLocaleString()}
                 </span>

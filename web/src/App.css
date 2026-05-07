@@ -874,3 +874,77 @@
   color: var(--muted);
   font-style: italic;
 }
+
+/* Tier 3 #23 — job-tracking polish (project-list controls, overdue
+   badge, click-to-edit metadata fields). Kept at the bottom of the
+   file so the diff stays additive and easy to revert. */
+.project-list-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0.75rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.project-list-controls input[type='search'] {
+  flex: 1 1 220px;
+  min-width: 180px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.875rem;
+}
+.project-list-controls select {
+  font-size: 0.875rem;
+  padding: 0.25rem 0.4rem;
+}
+.project-list-controls label {
+  /* Compact "Sort: <select>" so the label hugs the dropdown rather
+     than stacking onto its own line like the form labels elsewhere. */
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.badge-overdue {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--error);
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  /* Keep the pill from pushing the row taller than its neighbours. */
+  vertical-align: baseline;
+}
+
+/* The .job-field labels behave like other muted metadata; only the
+   click-to-edit value gets the affordance hint so the row reads as
+   text by default and the interactive piece is obvious on hover. */
+.job-field {
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.job-field-value {
+  /* Strip the default <button> chrome so the inline value blends
+     with the surrounding text the way the existing tube-spec
+     dropdown does. */
+  background: transparent;
+  border: none;
+  padding: 0 0.15rem;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  border-radius: 2px;
+}
+.job-field-value:hover,
+.job-field-value:focus-visible {
+  color: var(--text);
+  border-bottom-color: var(--border);
+  background: var(--panel);
+  outline: none;
+}
+

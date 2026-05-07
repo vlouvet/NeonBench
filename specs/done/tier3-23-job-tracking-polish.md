@@ -1,6 +1,6 @@
 # Tier 3 #23 — Job-tracking polish: sort, search, overdue badge, .job-field CSS
 
-> **Status:** active · started 2026-05-07 · branch `task/23-job-tracking-polish`
+> **Status:** done · shipped 2026-05-07 · branch `task/23-job-tracking-polish`
 
 ## Goal
 
