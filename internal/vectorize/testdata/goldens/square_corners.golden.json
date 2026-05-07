@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "threshold": 128,
+  "smoothing_mm": 0,
+  "min_spur_mm": 0,
+  "target_width_mm": 200,
+  "diameter_mm": 12,
+  "polylines": [
+    {
+      "points": [
+        [
+          166,
+          34
+        ],
+        [
+          166,
+          164
+        ],
+        [
+          164,
+          164
+        ],
+        [
+          164,
+          166
+        ],
+        [
+          34,
+          166
+        ],
+        [
+          34,
+          34
+        ]
+      ],
+      "closed": true
+    }
+  ],
+  "total_length_mm": 528,
+  "run_count": 1
+}

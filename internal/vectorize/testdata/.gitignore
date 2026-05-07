@@ -1,0 +1,9 @@
+# Ad-hoc bitmaps dropped here for one-off debugging — gitignored to keep the
+# repo lean. The vetted fixture corpus under goldens/ is explicitly retained.
+*.scratch.png
+*.tmp.png
+
+# Belt-and-braces: nothing in goldens/ should ever be ignored. The negation
+# below counters any future broader rule that might creep in elsewhere.
+!goldens/
+!goldens/**
