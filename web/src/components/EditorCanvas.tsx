@@ -142,6 +142,17 @@ export default function EditorCanvas({
     t: number;
     side: 'left' | 'right';
   } | null>(null);
+  // Node-edit tool (Tier 3 #25): the polyline vertex the cursor is
+  // currently snapping toward while the user holds Alt to preview an
+  // insert. When non-null we render a hover ring on that vertex so
+  // "alt-click here will reuse the existing vertex" is visually
+  // distinct from "alt-click here will insert a new one". Cleared on
+  // tool change (see the prevTool reset block below) and on Alt
+  // release / pointer leave.
+  const [hoveredVertex, setHoveredVertex] = useState<{
+    runId: string;
+    pointIndex: number;
+  } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
   // Drop staged state when leaving the corresponding tool so a previously
@@ -173,6 +184,7 @@ export default function EditorCanvas({
       if (arcHover !== null) setArcHover(null);
     }
     if (tool !== 'insert-doubleback' && dbHover !== null) setDbHover(null);
+    if (tool !== 'node' && hoveredVertex !== null) setHoveredVertex(null);
   }
 
   // Pen / arc tools: Enter commits the in-progress pen polyline (if it has
@@ -335,6 +347,33 @@ export default function EditorCanvas({
     if (tool === 'arc' && arcPoints.length > 0 && arcPoints.length < 3) {
       const w = clientToWorldSnapped(e.clientX, e.clientY);
       if (w) setArcHover(w);
+    }
+    // Tier 3 #25 — node-edit alt-hover. When the user holds Alt over the
+    // selected run while the node tool is active, find the nearest
+    // existing vertex and (if within the snap radius) flag it as the
+    // current snap target. The visible ring renders below; the alt-click
+    // handler in onRunClick consults the same state to skip a redundant
+    // insert.
+    if (tool === 'node') {
+      if (e.altKey && selectedRunId) {
+        const w = clientToWorld(e.clientX, e.clientY);
+        const run = w ? doc.runs.find((r) => r.id === selectedRunId) : null;
+        if (w && run) {
+          const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
+          const hit = nearestVertexWithin(run.polyline.points, w, snap);
+          if (hit !== null) {
+            const next = { runId: run.id, pointIndex: hit };
+            if (!hoveredVertex || hoveredVertex.runId !== next.runId || hoveredVertex.pointIndex !== next.pointIndex) {
+              setHoveredVertex(next);
+            }
+          } else if (hoveredVertex) {
+            setHoveredVertex(null);
+          }
+        }
+      } else if (hoveredVertex) {
+        // Alt released or run unselected — drop the highlight.
+        setHoveredVertex(null);
+      }
     }
     if (shapeDrag) {
       const w = clientToWorldSnapped(e.clientX, e.clientY);
@@ -521,6 +560,17 @@ export default function EditorCanvas({
       if (e.altKey && run.id === selectedRunId) {
         const world = clientToWorld(e.clientX, e.clientY);
         if (!world) return;
+        // Tier 3 #25 — if the click landed within the snap-to-vertex
+        // radius of an existing vertex, skip the insert (would be a
+        // 0-distance duplicate). The hover ring already telegraphs this
+        // visually; clicking is a no-op for a smoother UX. We re-test
+        // the snap here rather than trusting hoveredVertex alone, so a
+        // click without a preceding mousemove (e.g. via keyboard) still
+        // gets the dedup.
+        const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
+        if (nearestVertexWithin(run.polyline.points, world, snap) !== null) {
+          return;
+        }
         const { segmentIndex, t } = nearestSegmentT(run.polyline.points, world);
         onInsertVertex(run.id, segmentIndex, t);
         return;
@@ -990,6 +1040,33 @@ export default function EditorCanvas({
                 />
               ));
             })()}
+          {/* Tier 3 #25 — node-edit snap-to-vertex hover ring. When the
+              user holds Alt over a vertex on the selected run while the
+              node tool is active, draw a teal ring on that vertex so the
+              "your alt-click will reuse this vertex" cue is unmistakable.
+              Rendered before the NodeHandle layer so the white-filled
+              vertex handle paints on top of the ring. Color (#1aa37a) and
+              stroke width chosen to differ from both the white-fill +
+              blue-stroke node handle and the pink selection halo. */}
+          {tool === 'node' && hoveredVertex && (() => {
+            const run = doc.runs.find((r) => r.id === hoveredVertex.runId);
+            if (!run) return null;
+            const p = run.polyline.points[hoveredVertex.pointIndex];
+            if (!p) return null;
+            const r = 8 / transform.k;
+            return (
+              <circle
+                cx={p[0]}
+                cy={p[1]}
+                r={r}
+                fill="none"
+                stroke="#1aa37a"
+                strokeWidth={6 / transform.k}
+                strokeOpacity={0.75}
+                pointerEvents="none"
+              />
+            );
+          })()}
           {tool === 'node' &&
             (() => {
               // Default mode: only show handles for the currently selected
@@ -1501,6 +1578,42 @@ function ValidationIssueMarker({
       <title>{`${issue.rule}: ${issue.message}`}</title>
     </circle>
   );
+}
+
+// Tier 3 #25 — snap-to-vertex radius (mm) used by the node-edit alt-
+// hover. The MAX of "8 device pixels at the current zoom" and "half
+// the user's snap-grid setting" — the first keeps the target visually
+// generous regardless of zoom, the second ties grabbing radius to the
+// drawing precision the user has already chosen. When snap is
+// disabled or zero, only the pixel-based floor matters.
+function nodeSnapRadiusMM(k: number, snapEnabled: boolean, snapMM: number): number {
+  const pixelMM = 8 / k;
+  if (snapEnabled && snapMM > 0) return Math.max(pixelMM, snapMM / 2);
+  return pixelMM;
+}
+
+// Tier 3 #25 — find the index of the polyline vertex closest to
+// `target` within `radius` mm. Returns null when no vertex is within
+// range. Squared-distance compare avoids the sqrt; the cost is one
+// extra multiply on `radius`.
+function nearestVertexWithin(
+  points: [number, number][],
+  target: [number, number],
+  radius: number,
+): number | null {
+  const r2 = radius * radius;
+  let best: number | null = null;
+  let bestD = r2;
+  for (let i = 0; i < points.length; i++) {
+    const dx = points[i][0] - target[0];
+    const dy = points[i][1] - target[1];
+    const d = dx * dx + dy * dy;
+    if (d <= bestD) {
+      bestD = d;
+      best = i;
+    }
+  }
+  return best;
 }
 
 function nearestPointIndex(points: [number, number][], target: [number, number]): number {
