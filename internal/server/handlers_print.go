@@ -59,6 +59,16 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 		opts.DesignVersionLabel = fmt.Sprintf("v%d", v.VersionNo)
 	}
 	opts.TubeSpecName = tubeSpec.Name
+	// Tube end gap (NW #135) — informational footer only. NULL on the
+	// project means "shop default of 6.35 mm" (Miller App I §126); use
+	// the explicit override when present, fall back otherwise. Either
+	// way the footer shows a value so the bender / installer sees the
+	// active end-gap target on the printed pattern.
+	if project.TubeEndGapMM != nil {
+		opts.TubeEndGapMM = *project.TubeEndGapMM
+	} else {
+		opts.TubeEndGapMM = defaultTubeEndGapMM
+	}
 
 	var data []byte
 	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {

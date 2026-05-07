@@ -22,6 +22,11 @@ type Options struct {
 	ProjectName        string
 	DesignVersionLabel string
 	TubeSpecName       string
+	// TubeEndGapMM is the project's tube-end-gap setting (NW #135).
+	// Zero means "not set; show nothing in the footer". V1 surfaces
+	// this as informational text only — Tier 3 #27 will turn it into
+	// a validation rule once a frame/substrate model exists.
+	TubeEndGapMM float64
 }
 
 // DefaultOptions returns conservative paper-template defaults.
@@ -515,6 +520,11 @@ func drawTileOverlay(pdf *gofpdf.Fpdf, opts Options, pageW, pageH, contentW, con
 	}
 	if opts.TubeSpecName != "" {
 		footerText += "  •  " + opts.TubeSpecName
+	}
+	if opts.TubeEndGapMM > 0 {
+		// Tube end gap (NW #135) — distance from tube end to channel
+		// letter / substrate edge. Informational footer only in V1.
+		footerText += fmt.Sprintf("  •  End gap %.2fmm", opts.TubeEndGapMM)
 	}
 	footerText += fmt.Sprintf("  •  Tile %d,%d of %d×%d  •  %s", col+1, row+1, cols, rows, time.Now().UTC().Format("2006-01-02"))
 	pdf.SetFont("Helvetica", "", 7)

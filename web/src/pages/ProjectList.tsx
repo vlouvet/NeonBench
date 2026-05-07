@@ -146,6 +146,12 @@ function NewProjectModal({
   const [designer, setDesigner] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [jobNumber, setJobNumber] = useState('');
+  // Tube end gap (NW #135). Empty string means "unset; use the shop
+  // default of 6.35 mm at render-time". We only forward a value to the
+  // server when the user typed something — that way the column stays
+  // NULL for default-only projects, matching how existing rows survive
+  // the migration.
+  const [tubeEndGap, setTubeEndGap] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -153,6 +159,17 @@ function NewProjectModal({
     e.preventDefault();
     setSubmitting(true);
     setError(null);
+    let gapMM: number | undefined;
+    const trimmedGap = tubeEndGap.trim();
+    if (trimmedGap !== '') {
+      const parsed = Number(trimmedGap);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        setError('Tube end gap must be a number between 0 and 100 mm.');
+        setSubmitting(false);
+        return;
+      }
+      gapMM = parsed;
+    }
     try {
       const p = await api.createProject({
         name: name.trim(),
@@ -161,6 +178,7 @@ function NewProjectModal({
         designer: designer.trim() || undefined,
         due_date: dueDate || undefined,
         job_number: jobNumber.trim() || undefined,
+        tube_end_gap_mm: gapMM,
       });
       onCreated(p);
     } catch (err) {
@@ -197,6 +215,18 @@ function NewProjectModal({
                 </option>
               ))}
             </select>
+          </label>
+          <label>
+            Tube end gap (mm) (optional)
+            <input
+              type="number"
+              min={0}
+              max={100}
+              step={0.05}
+              value={tubeEndGap}
+              onChange={(e) => setTubeEndGap(e.target.value)}
+              placeholder="6.35 (default)"
+            />
           </label>
           <label>
             Customer (optional)

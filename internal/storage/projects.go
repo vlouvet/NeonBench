@@ -20,14 +20,18 @@ type CreateProjectParams struct {
 	Designer  string
 	DueDate   string
 	JobNumber string
+	// Optional tube end gap (mm). Nil means "no per-project override";
+	// the column stays NULL and the API surface returns no value, so
+	// consumers fall back to the shop default at render-time.
+	TubeEndGapMM *float64
 }
 
 func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Project, error) {
 	if p.Units == "" {
 		p.Units = "mm"
 	}
-	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number)
-	           VALUES (?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := db.ExecContext(ctx, q,
 		p.Name,
 		p.TubeSpecID,
@@ -36,6 +40,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 		nullableText(p.Designer),
 		nullableText(p.DueDate),
 		nullableText(p.JobNumber),
+		nullableFloat(p.TubeEndGapMM),
 	)
 	if err != nil {
 		return Project{}, fmt.Errorf("insert project: %w", err)
@@ -48,7 +53,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 }
 
 func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, created_at, updated_at
 	           FROM projects ORDER BY updated_at DESC`
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -68,7 +73,7 @@ func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
 }
 
 func GetProject(ctx context.Context, db *sql.DB, id int64) (Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, created_at, updated_at
 	           FROM projects WHERE id = ?`
 	row := db.QueryRowContext(ctx, q, id)
 	p, err := scanProject(row)
@@ -93,12 +98,18 @@ type UpdateProjectParams struct {
 	Designer   *string
 	DueDate    *string
 	JobNumber  *string
+	// TubeEndGapMM is a pointer-to-pointer so the handler can distinguish
+	// three states: omitted (don't touch the column), set to nil (clear
+	// the column → NULL → "use shop default"), and set to a concrete
+	// float (write that value).
+	TubeEndGapMM **float64
 }
 
 // UpdateProject applies a partial update and bumps updated_at.
 func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectParams) (Project, error) {
 	if p.Name == nil && p.TubeSpecID == nil && p.Units == nil &&
-		p.Customer == nil && p.Designer == nil && p.DueDate == nil && p.JobNumber == nil {
+		p.Customer == nil && p.Designer == nil && p.DueDate == nil && p.JobNumber == nil &&
+		p.TubeEndGapMM == nil {
 		return GetProject(ctx, db, id)
 	}
 	sets := []string{}
@@ -130,6 +141,10 @@ func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectPar
 	if p.JobNumber != nil {
 		sets = append(sets, "job_number = ?")
 		args = append(args, nullableText(*p.JobNumber))
+	}
+	if p.TubeEndGapMM != nil {
+		sets = append(sets, "tube_end_gap_mm = ?")
+		args = append(args, nullableFloat(*p.TubeEndGapMM))
 	}
 	sets = append(sets, `updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
 	q := `UPDATE projects SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`
@@ -172,6 +187,18 @@ func nullableText(s string) any {
 	return sql.NullString{String: s, Valid: true}
 }
 
+// nullableFloat returns sql.NullFloat64{Valid:false} for nil pointers so
+// the column gets stored as NULL, and Valid:true with the pointed-to
+// value otherwise. NULL is the "use shop default" signal for the
+// optional tube end gap; the caller is responsible for upstream
+// validation (range checks live in the API handler).
+func nullableFloat(f *float64) any {
+	if f == nil {
+		return sql.NullFloat64{}
+	}
+	return sql.NullFloat64{Float64: *f, Valid: true}
+}
+
 // scanRow is the subset of *sql.Row / *sql.Rows we need.
 type scanRow interface {
 	Scan(dest ...any) error
@@ -180,9 +207,11 @@ type scanRow interface {
 func scanProject(r scanRow) (Project, error) {
 	var p Project
 	var customer, designer, dueDate, jobNumber sql.NullString
+	var tubeEndGapMM sql.NullFloat64
 	if err := r.Scan(
 		&p.ID, &p.Name, &p.TubeSpecID, &p.Units,
 		&customer, &designer, &dueDate, &jobNumber,
+		&tubeEndGapMM,
 		&p.CreatedAt, &p.UpdatedAt,
 	); err != nil {
 		return Project{}, err
@@ -191,5 +220,9 @@ func scanProject(r scanRow) (Project, error) {
 	p.Designer = designer.String
 	p.DueDate = dueDate.String
 	p.JobNumber = jobNumber.String
+	if tubeEndGapMM.Valid {
+		v := tubeEndGapMM.Float64
+		p.TubeEndGapMM = &v
+	}
 	return p, nil
 }

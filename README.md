@@ -53,7 +53,12 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
 1. **Open the app.** You'll land on the project list. Click "New
    project", pick a tube spec from the dropdown (the seeded specs map
    to the wall-thinning bend-radius derivation in
-   `docs/neon-rules/bend-radius.md`), and name your project.
+   `docs/neon-rules/bend-radius.md`), and name your project. The
+   optional **Tube end gap (mm)** field sets the distance from each
+   glass-tube endpoint to the inside edge of its channel letter or
+   substrate (NW #135); leave it blank to use the standard 6.35 mm
+   (¼ in) default per Miller App I §126 (see
+   `docs/neon-rules/spacing.md`).
 
 2. **Upload a source image** — *or skip this step entirely if you want
    to draw the design from scratch in the editor*. PNG, JPG, or SVG up

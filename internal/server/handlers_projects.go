@@ -1,6 +1,9 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +21,20 @@ const (
 	maxJobNumberLen = 50
 )
 
+// Tube end gap (NW #135) bounds, in millimeters. Negative values are
+// nonsense; 100 mm is a generous ceiling that comfortably covers GTO
+// cable terminations and any realistic shop's clearance preference.
+// The most-cited shop default is ¼ in / 6.35 mm per Miller App I §126
+// (see docs/neon-rules/spacing.md). The default is what the print PDF
+// footer / detail page display when the project leaves the column
+// NULL — we render *some* value rather than nothing because the
+// bender wants to know the active target either way.
+const (
+	minTubeEndGapMM     = 0.0
+	maxTubeEndGapMM     = 100.0
+	defaultTubeEndGapMM = 6.35
+)
+
 type createProjectReq struct {
 	Name       string `json:"name"`
 	TubeSpecID int64  `json:"tube_spec_id"`
@@ -26,6 +43,9 @@ type createProjectReq struct {
 	Designer   string `json:"designer,omitempty"`
 	DueDate    string `json:"due_date,omitempty"`
 	JobNumber  string `json:"job_number,omitempty"`
+	// Pointer so an explicit `null` (or omission) leaves the column
+	// NULL — the API surface treats "no value" as "use shop default".
+	TubeEndGapMM *float64 `json:"tube_end_gap_mm,omitempty"`
 }
 
 func (s *apiServer) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -70,14 +90,19 @@ func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := validateTubeEndGap(req.TubeEndGapMM); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	p, err := storage.CreateProject(r.Context(), s.db, storage.CreateProjectParams{
-		Name:       strings.TrimSpace(req.Name),
-		TubeSpecID: req.TubeSpecID,
-		Units:      req.Units,
-		Customer:   customer,
-		Designer:   designer,
-		DueDate:    dueDate,
-		JobNumber:  jobNumber,
+		Name:         strings.TrimSpace(req.Name),
+		TubeSpecID:   req.TubeSpecID,
+		Units:        req.Units,
+		Customer:     customer,
+		Designer:     designer,
+		DueDate:      dueDate,
+		JobNumber:    jobNumber,
+		TubeEndGapMM: req.TubeEndGapMM,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -107,6 +132,12 @@ type updateProjectReq struct {
 	Designer   *string `json:"designer,omitempty"`
 	DueDate    *string `json:"due_date,omitempty"`
 	JobNumber  *string `json:"job_number,omitempty"`
+	// Raw so we can distinguish three PATCH states: omitted (don't
+	// touch), explicit `null` (clear → fall back to shop default), and
+	// a JSON number (write that value). A bare `*float64` collapses
+	// "absent" and "null" into the same nil and we'd lose the
+	// "clear me" gesture.
+	TubeEndGapMM json.RawMessage `json:"tube_end_gap_mm,omitempty"`
 }
 
 func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -161,14 +192,24 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	endGap, endGapSet, msg := parseTubeEndGapPatch(req.TubeEndGapMM)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	var endGapField **float64
+	if endGapSet {
+		endGapField = &endGap
+	}
 	out, err := storage.UpdateProject(r.Context(), s.db, id, storage.UpdateProjectParams{
-		Name:       req.Name,
-		TubeSpecID: req.TubeSpecID,
-		Units:      req.Units,
-		Customer:   req.Customer,
-		Designer:   req.Designer,
-		DueDate:    req.DueDate,
-		JobNumber:  req.JobNumber,
+		Name:         req.Name,
+		TubeSpecID:   req.TubeSpecID,
+		Units:        req.Units,
+		Customer:     req.Customer,
+		Designer:     req.Designer,
+		DueDate:      req.DueDate,
+		JobNumber:    req.JobNumber,
+		TubeEndGapMM: endGapField,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -227,4 +268,43 @@ func strDeref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// validateTubeEndGap returns "" if the optional value is acceptable.
+// Nil (omitted on create) is always fine: the column stays NULL and
+// renderers fall back to the shop default. Otherwise the value must be
+// in [0, 100] mm.
+func validateTubeEndGap(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	if *v < minTubeEndGapMM || *v > maxTubeEndGapMM {
+		return fmt.Sprintf("tube_end_gap_mm must be between %g and %g (got %g)",
+			minTubeEndGapMM, maxTubeEndGapMM, *v)
+	}
+	return ""
+}
+
+// parseTubeEndGapPatch interprets the raw JSON for tube_end_gap_mm in
+// a PATCH body. It returns:
+//   - (nil, false, "") when the field was omitted entirely;
+//   - (nil, true,  "") when the field was explicitly `null` (clear it);
+//   - (&v,  true,  "") when the field was a valid number in range;
+//   - (nil, false, "<msg>") on any parse / validation failure.
+func parseTubeEndGapPatch(raw json.RawMessage) (*float64, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var v float64
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return nil, false, "tube_end_gap_mm must be a number or null"
+	}
+	if msg := validateTubeEndGap(&v); msg != "" {
+		return nil, false, msg
+	}
+	return &v, true, ""
 }
