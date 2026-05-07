@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
@@ -378,6 +378,294 @@ describe('vertex ops', () => {
     };
     const next = ops.deleteVertex(doc, 'run-x', 0);
     expect(next.runs[0].polyline.points.length).toBe(3);
+  });
+});
+
+describe('insertVertex', () => {
+  function lineDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [10, 0]], closed: false },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+  }
+
+  it('inserts at midpoint of a 2-vertex segment with 3 vertices, middle = average', () => {
+    const next = ops.insertVertex(lineDoc(), 'run-1', 0, 0.5);
+    const pts = next.runs[0].polyline.points;
+    expect(pts.length).toBe(3);
+    expect(pts[0]).toEqual([0, 0]);
+    expect(pts[1][0]).toBeCloseTo(5, 6);
+    expect(pts[1][1]).toBeCloseTo(0, 6);
+    expect(pts[2]).toEqual([10, 0]);
+  });
+
+  it('custom t = 0.25 produces the expected interpolated point', () => {
+    const next = ops.insertVertex(lineDoc(), 'run-1', 0, 0.25);
+    const pts = next.runs[0].polyline.points;
+    expect(pts[1][0]).toBeCloseTo(2.5, 6);
+    expect(pts[1][1]).toBeCloseTo(0, 6);
+  });
+
+  it('shifts an electrode at point_index >= insertion+1 up by 1', () => {
+    // Build a 5-vertex run with electrode at index 4 (the last vertex).
+    // Insert at segment 0 (between indices 0 and 1) — electrode lands
+    // at the new index 5.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 0 }, { point_index: 4 }],
+          blockouts: [{ start_live_index: 1, end_live_index: 3 }],
+          annotations: [
+            { kind: 'jump', live_index: 0 },
+            { kind: 'support', live_index: 3 },
+          ],
+          bends: [{ live_index: 0 }, { live_index: 2 }],
+        },
+      ],
+    };
+    const next = ops.insertVertex(doc, 'run-1', 0, 0.5);
+    const r = next.runs[0];
+    expect(r.polyline.points.length).toBe(6);
+    // Electrode at point_index 0 is BEFORE the insertion (which splices
+    // a new vertex at index 1, between the original vertices 0 and 1) —
+    // it stays. Electrode at 4 shifts to 5.
+    expect(r.electrodes).toEqual([{ point_index: 0 }, { point_index: 5 }]);
+    // Blockout shifts both ends by 1 (both >= 1).
+    expect(r.blockouts).toEqual([{ start_live_index: 2, end_live_index: 4 }]);
+    // Annotations: live 0 stays, live 3 shifts to 4.
+    expect(r.annotations).toEqual([
+      { kind: 'jump', live_index: 0 },
+      { kind: 'support', live_index: 4 },
+    ]);
+    // Bends: live 0 stays, live 2 shifts to 3.
+    expect(r.bends).toEqual([{ live_index: 0 }, { live_index: 3 }]);
+  });
+});
+
+describe('splitRun', () => {
+  function fiveVertexDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          color: 'classic-red',
+          notes: '15kV',
+        },
+      ],
+    };
+  }
+
+  it('splits a 5-vertex open run at pointIndex=2 → two open runs of 3 vertices each (with shared vertex)', () => {
+    const next = ops.splitRun(fiveVertexDoc(), 'run-1', 2);
+    expect(next.runs.length).toBe(2);
+    const a = next.runs[0];
+    const b = next.runs[1];
+    expect(a.id).toBe('run-1-a');
+    expect(b.id).toBe('run-1-b');
+    expect(a.polyline.points).toEqual([[0, 0], [25, 0], [50, 0]]);
+    expect(b.polyline.points).toEqual([[50, 0], [75, 0], [100, 0]]);
+    expect(a.polyline.closed).toBe(false);
+    expect(b.polyline.closed).toBe(false);
+    // Metadata duplicated.
+    expect(a.color).toBe('classic-red');
+    expect(b.color).toBe('classic-red');
+    expect(a.tube_diameter_mm).toBe(10);
+    expect(b.tube_diameter_mm).toBe(10);
+    expect(a.notes).toBe('15kV');
+    expect(b.notes).toBe('15kV');
+  });
+
+  it('splitting a closed run produces two open runs', () => {
+    // Square loop: 4 distinct vertices marked closed.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'sq',
+          polyline: { points: [[0, 0], [10, 0], [10, 10], [0, 10]], closed: true },
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'sq', 2);
+    expect(next.runs.length).toBe(2);
+    expect(next.runs[0].polyline.closed).toBe(false);
+    expect(next.runs[1].polyline.closed).toBe(false);
+  });
+
+  it('partitions electrodes / blockouts / annotations correctly across the split', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 1 }, { point_index: 4 }],
+          annotations: [
+            { kind: 'jump', live_index: 0 },
+            { kind: 'support', live_index: 4 },
+          ],
+          bends: [{ live_index: 1 }, { live_index: 3 }],
+        },
+      ],
+    };
+    // Split at pointIndex = 2.
+    const next = ops.splitRun(doc, 'run-1', 2);
+    const a = next.runs[0];
+    const b = next.runs[1];
+    expect(a.electrodes).toEqual([{ point_index: 1 }]);
+    expect(b.electrodes).toEqual([{ point_index: 2 }]); // 4 - 2 = 2
+    expect(a.annotations).toEqual([{ kind: 'jump', live_index: 0 }]);
+    expect(b.annotations).toEqual([{ kind: 'support', live_index: 2 }]); // 4 - 2 = 2
+    expect(a.bends).toEqual([{ live_index: 1 }]);
+    expect(b.bends).toEqual([{ live_index: 1 }]); // 3 - 2 = 1
+  });
+
+  it('drops a blockout straddling the split point with a console.warn', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          blockouts: [{ start_live_index: 1, end_live_index: 3 }],
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'run-1', 2);
+    const a = next.runs[0];
+    const b = next.runs[1];
+    expect(a.blockouts).toBeUndefined();
+    expect(b.blockouts).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+});
+
+describe('joinRuns', () => {
+  function makeRun(id: string, pts: [number, number][]): DesignRun {
+    return { id, polyline: { points: pts, closed: false } };
+  }
+
+  it('tail-to-head join with no reversal: [A,B,C] + [C,D,E] → [A,B,C,D,E] (duplicate dropped)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        makeRun('a', [[0, 0], [1, 0], [2, 0]]),
+        makeRun('b', [[2, 0], [3, 0], [4, 0]]),
+      ],
+    };
+    const next = ops.joinRuns(doc, 'a', 'tail', 'b', 'head');
+    expect(next.runs.length).toBe(1);
+    expect(next.runs[0].id).toBe('a');
+    expect(next.runs[0].polyline.points).toEqual([[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]]);
+    expect(next.runs[0].polyline.closed).toBe(false);
+  });
+
+  it('tail-to-tail: second run is reversed before concatenation', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        makeRun('a', [[0, 0], [1, 0], [2, 0]]),
+        // Tail of b is at (2,0); reversing b gives [2,0],[3,0],[4,0].
+        makeRun('b', [[4, 0], [3, 0], [2, 0]]),
+      ],
+    };
+    const next = ops.joinRuns(doc, 'a', 'tail', 'b', 'tail');
+    expect(next.runs[0].polyline.points).toEqual([[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]]);
+  });
+
+  it('head-to-head: first run reversed, then concatenated normally', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        // Both runs share the head vertex (0,0). reverse(a) = [2,0],[1,0],[0,0];
+        // concat with b yields [2,0],[1,0],[0,0],[1,0],[2,0] after seam dedup.
+        makeRun('a', [[0, 0], [1, 0], [2, 0]]),
+        makeRun('b', [[0, 0], [1, 0], [2, 0]]),
+      ],
+    };
+    const next = ops.joinRuns(doc, 'a', 'head', 'b', 'head');
+    // reverse(a) ends at (0,0); b starts at (0,0); seam dedupes.
+    expect(next.runs[0].polyline.points).toEqual([[2, 0], [1, 0], [0, 0], [1, 0], [2, 0]]);
+  });
+
+  it('self-join (head + tail) on a 4-vertex polyline produces a closed run', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [makeRun('a', [[0, 0], [1, 0], [1, 1], [0, 1]])],
+    };
+    const next = ops.joinRuns(doc, 'a', 'head', 'a', 'tail');
+    expect(next.runs.length).toBe(1);
+    expect(next.runs[0].polyline.points.length).toBe(4);
+    expect(next.runs[0].polyline.closed).toBe(true);
+  });
+
+  it('electrodes from both runs end up on the result with correctly transformed indices', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'a',
+          polyline: { points: [[0, 0], [1, 0], [2, 0]], closed: false },
+          electrodes: [{ point_index: 0 }],
+        },
+        {
+          id: 'b',
+          polyline: { points: [[2, 0], [3, 0], [4, 0]], closed: false },
+          electrodes: [{ point_index: 2 }],
+        },
+      ],
+    };
+    const next = ops.joinRuns(doc, 'a', 'tail', 'b', 'head');
+    // After seam dedupe, joined points are [0,0],[1,0],[2,0],[3,0],[4,0].
+    // a's electrode at index 0 stays at 0 (physical [0,0]).
+    // b's electrode at index 2 (physical [4,0]) lands at index 4 in the
+    // joined polyline (aLen=3, bStartIdx=1, so 3 + (2 - 1) = 4).
+    expect(next.runs[0].electrodes).toEqual([
+      { point_index: 0 },
+      { point_index: 4 },
+    ]);
+    expect(next.runs[0].polyline.points[0]).toEqual([0, 0]);
+    expect(next.runs[0].polyline.points[4]).toEqual([4, 0]);
   });
 });
 
