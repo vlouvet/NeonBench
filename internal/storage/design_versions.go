@@ -103,6 +103,21 @@ func ListDesignVersions(ctx context.Context, db *sql.DB, projectID int64) ([]Des
 	return out, rows.Err()
 }
 
+// DeleteDesignVersion removes a single design version by id. Returns
+// ErrNotFound if no row matched. Other versions for the same project are
+// untouched; callers should refresh their "latest" view after deleting.
+func DeleteDesignVersion(ctx context.Context, db *sql.DB, id int64) error {
+	res, err := db.ExecContext(ctx, `DELETE FROM design_versions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete design_version: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // UpdateDesignVersionReport replaces the validation_report_json for a
 // version. Used when re-validating a design after the tube spec changed.
 func UpdateDesignVersionReport(ctx context.Context, db *sql.DB, id int64, reportJSON string) (DesignVersion, error) {

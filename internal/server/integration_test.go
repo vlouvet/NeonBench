@@ -399,5 +399,130 @@ func uploadAsset(t *testing.T, c *http.Client, base string, projectID int64, fil
 	return out
 }
 
+// TestDeleteDesignVersion covers the DELETE /api/projects/{id}/design_versions/{vid}
+// route added for Tier 1 #1: a botched vectorize must be removable from the
+// shop's history. The flow is create-project, create-version directly via
+// storage, hit DELETE, then expect 404 on a follow-up GET.
+func TestDeleteDesignVersion(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "delete-version test",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// Insert two design versions directly so we can delete one and see the
+	// other still on the list.
+	dv1, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		Label:     "first",
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	if err != nil {
+		t.Fatalf("create v1: %v", err)
+	}
+	dv2, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		Label:     "second",
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	if err != nil {
+		t.Fatalf("create v2: %v", err)
+	}
+
+	// Delete v1.
+	delURL := base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(dv1.ID)
+	req, err := http.NewRequest("DELETE", delURL, nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", delURL, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE expected 204, got %d", resp.StatusCode)
+	}
+
+	// Subsequent GET on the deleted version → 404.
+	getResp, err := client.Get(delURL)
+	if err != nil {
+		t.Fatalf("GET deleted: %v", err)
+	}
+	getResp.Body.Close()
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET deleted: want 404, got %d", getResp.StatusCode)
+	}
+
+	// A second DELETE on the same id → 404 (idempotency-of-status guard).
+	dupReq, _ := http.NewRequest("DELETE", delURL, nil)
+	dupResp, err := client.Do(dupReq)
+	if err != nil {
+		t.Fatalf("DELETE again: %v", err)
+	}
+	dupResp.Body.Close()
+	if dupResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE missing: want 404, got %d", dupResp.StatusCode)
+	}
+
+	// v2 still there.
+	var remaining []map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", &remaining)
+	if len(remaining) != 1 || int64(remaining[0]["id"].(float64)) != dv2.ID {
+		t.Fatalf("after delete, want only v2 remaining, got %v", remaining)
+	}
+
+	// Cross-project guard: a version that belongs to a different project
+	// must not be deletable via this project's URL.
+	otherProj := storage.CreateProjectParams{Name: "other", TubeSpecID: tubeSpecID, Units: "mm"}
+	op, err := storage.CreateProject(t.Context(), db, otherProj)
+	if err != nil {
+		t.Fatalf("create other project: %v", err)
+	}
+	otherDV, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: op.ID,
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	if err != nil {
+		t.Fatalf("create other dv: %v", err)
+	}
+	wrongURL := base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(otherDV.ID)
+	wrongReq, _ := http.NewRequest("DELETE", wrongURL, nil)
+	wrongResp, err := client.Do(wrongReq)
+	if err != nil {
+		t.Fatalf("DELETE wrong project: %v", err)
+	}
+	wrongResp.Body.Close()
+	if wrongResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE wrong project: want 404, got %d", wrongResp.StatusCode)
+	}
+}
+
 // keep imports honest
 var _ = strings.NewReader
