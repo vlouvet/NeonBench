@@ -903,6 +903,157 @@ func TestProjectJobManagerFields(t *testing.T) {
 	}
 }
 
+// TestProjectTubeEndGap covers create + GET + PATCH + validation for
+// the optional tube_end_gap_mm setting added in Tier 2 #15 (NW #135).
+// The column is nullable on purpose: nil means "no per-project
+// override; renderers fall back to the shop default of 6.35 mm". The
+// test verifies that round-trip + clear-with-explicit-null + range
+// rejection all work end-to-end.
+func TestProjectTubeEndGap(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	// Create with an explicit value.
+	var created map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":            "end-gap roundtrip",
+		"tube_spec_id":    tubeSpecID,
+		"tube_end_gap_mm": 8.0,
+	}, &created)
+	if got := created["tube_end_gap_mm"]; got != 8.0 {
+		t.Errorf("create echo: got %v, want 8", got)
+	}
+	pid := int64(created["id"].(float64))
+
+	// GET should round-trip the same value.
+	var fetched map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(pid), &fetched)
+	if got := fetched["tube_end_gap_mm"]; got != 8.0 {
+		t.Errorf("GET: got %v, want 8", got)
+	}
+
+	patchURL := base + "/api/projects/" + itoa(pid)
+	patch := func(t *testing.T, body string) (int, map[string]any) {
+		t.Helper()
+		req, _ := http.NewRequest("PATCH", patchURL, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH: %v", err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if resp.StatusCode/100 == 2 {
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+		}
+		return resp.StatusCode, out
+	}
+
+	// PATCH with a new in-range value writes through.
+	if code, body := patch(t, `{"tube_end_gap_mm": 12.5}`); code/100 != 2 {
+		t.Fatalf("PATCH set: status %d", code)
+	} else if body["tube_end_gap_mm"] != 12.5 {
+		t.Errorf("PATCH set: got %v, want 12.5", body["tube_end_gap_mm"])
+	}
+
+	// PATCH with an unrelated field leaves tube_end_gap_mm untouched.
+	if code, body := patch(t, `{"name": "renamed"}`); code/100 != 2 {
+		t.Fatalf("PATCH unrelated: status %d", code)
+	} else if body["tube_end_gap_mm"] != 12.5 {
+		t.Errorf("PATCH unrelated should preserve gap: got %v", body["tube_end_gap_mm"])
+	}
+
+	// PATCH with explicit null clears the override; the response should
+	// then omit the field (the storage column goes back to NULL and the
+	// JSON tag is omitempty on the pointer).
+	if code, body := patch(t, `{"tube_end_gap_mm": null}`); code/100 != 2 {
+		t.Fatalf("PATCH null: status %d", code)
+	} else if _, present := body["tube_end_gap_mm"]; present {
+		t.Errorf("PATCH null should clear field, but response still has it: %v", body["tube_end_gap_mm"])
+	}
+
+	// Validation: out-of-range rejected.
+	for _, bad := range []string{
+		`{"tube_end_gap_mm": -1}`,
+		`{"tube_end_gap_mm": 101}`,
+		`{"tube_end_gap_mm": "six"}`,
+	} {
+		if code, _ := patch(t, bad); code != http.StatusBadRequest {
+			t.Errorf("PATCH %s: want 400, got %d", bad, code)
+		}
+	}
+
+	// Same range check on CREATE.
+	resp, err := client.Post(base+"/api/projects", "application/json",
+		strings.NewReader(`{"name":"x","tube_spec_id":`+itoa(tubeSpecID)+`,"tube_end_gap_mm":250}`))
+	if err != nil {
+		t.Fatalf("create out-of-range: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("create out-of-range: want 400, got %d", resp.StatusCode)
+	}
+
+	// A fresh project that omits the field stays unset (response omits
+	// the key entirely; matches the migration's "leave existing rows
+	// NULL" intent).
+	var minimal map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "no end-gap",
+		"tube_spec_id": tubeSpecID,
+	}, &minimal)
+	if _, present := minimal["tube_end_gap_mm"]; present {
+		t.Errorf("minimal create: tube_end_gap_mm should be omitted, got %v", minimal["tube_end_gap_mm"])
+	}
+}
+
+// TestMigration0006Reversible exercises the goose Down step for the
+// 0006_tube_end_gap migration so we catch any future SQLite/driver
+// breakage that would brick a user mid-rollback. Mirrors the
+// 0005 reversibility test pattern.
+func TestMigration0006Reversible(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if _, err := db.Exec("SELECT tube_end_gap_mm FROM projects"); err != nil {
+		t.Fatalf("post-up SELECT failed: %v", err)
+	}
+	if err := goose.Down(db, "migrations"); err != nil {
+		t.Fatalf("down 1: %v", err)
+	}
+	if _, err := db.Exec("SELECT tube_end_gap_mm FROM projects"); err == nil {
+		t.Errorf("column tube_end_gap_mm still present after down migration")
+	}
+}
+
 // TestMigration0005Reversible exercises the goose Down step for the
 // 0005_project_metadata migration. SQLite supports DROP COLUMN since
 // 3.35.0 so the four ALTER TABLE statements should round-trip cleanly;
@@ -922,8 +1073,10 @@ func TestMigration0005Reversible(t *testing.T) {
 	if _, err := db.Exec("SELECT customer, designer, due_date, job_number FROM projects"); err != nil {
 		t.Fatalf("post-up SELECT failed: %v", err)
 	}
-	if err := goose.Down(db, "migrations"); err != nil {
-		t.Fatalf("down 1: %v", err)
+	// Roll back every migration newer than 0005, then 0005 itself, so
+	// this test doesn't break each time a later migration lands.
+	if err := goose.DownTo(db, "migrations", 4); err != nil {
+		t.Fatalf("down to 4: %v", err)
 	}
 	// After Down the columns must be gone — a SELECT referencing
 	// any of them is required to fail.
