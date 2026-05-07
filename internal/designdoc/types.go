@@ -59,6 +59,20 @@ type Run struct {
 	// emits an additional page per run with the unfolded return strip
 	// and bend marks at every polyline vertex (NW #106).
 	IsChannelLetterFace bool `json:"is_channel_letter_face,omitempty"`
+	// ChannelLetterDepthMM optionally overrides the project-wide
+	// channel-letter depth for this run (Tier 3 #26). nil means "use
+	// the project default; if the project also has no value, the
+	// renderer falls back to the 100 mm shop default." Only meaningful
+	// when IsChannelLetterFace is true. Lets one project mix tall and
+	// shallow returns (e.g. main letterforms vs. bracket frames).
+	ChannelLetterDepthMM *float64 `json:"channel_letter_depth_mm,omitempty"`
+	// RacewayID optionally groups runs that share a single back-channel
+	// strip (Strattman raceway construction — e.g. all letters in
+	// "OPEN" share one continuous return). Free-form short string;
+	// runs with the same value are concatenated into one combined
+	// unfolded strip page in declaration order. Empty = ungrouped
+	// (one strip per face run, the original behavior).
+	RacewayID string `json:"raceway_id,omitempty"`
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.

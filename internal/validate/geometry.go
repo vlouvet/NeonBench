@@ -42,11 +42,17 @@ func circumradius3(a, b, c Point) float64 {
 // DoublebackMarks are world-space (mm) points the user explicitly marked
 // as the apex of an intentional double-back hairpin. The bend-radius rule
 // suppresses errors within ~max(2D, 10mm) of any marked apex.
+//
+// IsChannelLetterFace is parsed from the data-channel-letter-face SVG
+// attribute (Tier 3 #26). When true, the polyline is the silhouette of
+// a sheet-metal face and participates in the perimeter-vs-blank rule.
+// When false, the polyline is a live tube path and the rule is skipped.
 type Polyline struct {
-	Points          []Point
-	Closed          bool
-	DiameterMM      float64
-	DoublebackMarks []Point
+	Points              []Point
+	Closed              bool
+	DiameterMM          float64
+	DoublebackMarks     []Point
+	IsChannelLetterFace bool
 }
 
 // Length returns the total arc length of the polyline.

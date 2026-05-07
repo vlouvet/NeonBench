@@ -774,6 +774,65 @@ func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 	return clusterIssues(issues, radius)
 }
 
+// blankLengthMM is the standard sheet-metal coil width fabricators use
+// to roll channel-letter return strips. 1168 mm ≈ 46 in (Strattman NT
+// Ch.5: "blank coils ship in 46-inch widths and the strip is sheared
+// off the side"). A face polyline whose perimeter exceeds this value
+// can't be wrapped from a single blank — the operator has to either
+// upsize the coil (rare; the supplier doesn't always carry > 46-in
+// stock) or seam two pieces together. The rule below warns when this
+// will be necessary so the user can plan the seam location. Tier 3 #26.
+const blankLengthMM = 1168.0
+
+// checkFacePerimeter walks the polylines and emits a warning for any
+// face-flagged polyline whose perimeter exceeds the standard blank
+// length. Non-face polylines are skipped entirely (live tube paths
+// don't go through a sheet-metal blank).
+//
+// Severity is intentionally warning, not error: shops with documented
+// seam practice accept faces over the blank length, so the firm
+// "error" behaviour would belong to a per-shop policy (escalation
+// toggle is a Tier 3 follow-up, not part of v1). The marker location
+// uses the run's centroid (average of polyline points) — close enough
+// for the canvas overlay; a perfectly accurate seam-suggestion point
+// would require knowing the operator's preferred seam axis.
+func checkFacePerimeter(polylines []Polyline) []Issue {
+	var issues []Issue
+	for _, pl := range polylines {
+		if !pl.IsChannelLetterFace {
+			continue
+		}
+		perim := pl.Length()
+		if perim <= blankLengthMM {
+			continue
+		}
+		// Centroid of the polyline points. Acceptable approximation;
+		// the validator's marker just needs to land near the run.
+		var sx, sy float64
+		var n int
+		for _, p := range pl.Points {
+			sx += p.X
+			sy += p.Y
+			n++
+		}
+		var cx, cy float64
+		if n > 0 {
+			cx = sx / float64(n)
+			cy = sy / float64(n)
+		}
+		issues = append(issues, Issue{
+			Rule:     RuleFacePerimeterExceedsBlank,
+			Severity: SeverityWarning,
+			Message: fmt.Sprintf(
+				"face perimeter %.0fmm exceeds standard %dmm blank — needs documented seam",
+				perim, int(blankLengthMM)),
+			XMM: cx,
+			YMM: cy,
+		})
+	}
+	return issues
+}
+
 // checkCapHeight emits a warning when the design's bbox height exceeds the
 // threshold above which Miller (1935 p.125) recommends multi-blank
 // construction with internal welds. The bbox height is a proxy for "cap

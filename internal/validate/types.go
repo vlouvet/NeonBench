@@ -2,7 +2,7 @@ package validate
 
 // Issue is a single validation finding with a location in millimeters.
 type Issue struct {
-	Rule     string  `json:"rule"`     // min_bend_radius | max_segment_length | min_spacing | min_lead_in | sharp_bend_angle | unsupported_path | …
+	Rule     string  `json:"rule"`     // min_bend_radius | max_segment_length | min_spacing | min_lead_in | sharp_bend_angle | face_perimeter_exceeds_blank | unsupported_path | …
 	Severity string  `json:"severity"` // "error" | "warning"
 	Message  string  `json:"message"`
 	XMM      float64 `json:"x_mm,omitempty"`
@@ -21,6 +21,13 @@ const (
 	RuleMinLeadIn             = "min_lead_in"
 	RuleSharpBendAngle        = "sharp_bend_angle"
 	RuleUnsupportedPath       = "unsupported_path"
+	// RuleFacePerimeterExceedsBlank fires when a channel-letter face
+	// run's perimeter exceeds the standard sheet-metal blank length
+	// (1168 mm = 46" coil, Strattman NT Ch.5). Severity is warning,
+	// not error: shops with documented seam practice accept faces
+	// over the blank length, so the rule informs rather than blocks.
+	// Tier 3 #26.
+	RuleFacePerimeterExceedsBlank = "face_perimeter_exceeds_blank"
 )
 
 // Report summarizes the validation pass for a design version.

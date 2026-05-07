@@ -19,6 +19,7 @@ func ValidateSVG(svgData []byte, limits Limits) (*Report, error) {
 	issues = append(issues, checkSpacing(polylines, limits)...)
 	issues = append(issues, checkMinLeadIn(polylines, limits)...)
 	issues = append(issues, checkSharpBendAngles(polylines, limits)...)
+	issues = append(issues, checkFacePerimeter(polylines)...)
 	issues = append(issues, checkCapHeight(bbox)...)
 
 	var totalLen float64

@@ -70,7 +70,7 @@ func ToSVG(doc *Doc) []byte {
 		segments := splitByBlockouts(liveIndices, run.Blockouts, closed)
 		dbPoints := doublebackWorldPoints(run, liveIndices)
 		for _, seg := range segments {
-			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM, dbPoints)
+			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM, dbPoints, run.IsChannelLetterFace)
 		}
 	}
 	buf.WriteString(`</svg>`)
@@ -213,7 +213,7 @@ func doublebackWorldPoints(run Run, liveIndices []int) []string {
 	return pairs
 }
 
-func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64, dbPoints []string) {
+func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64, dbPoints []string, isChannelLetterFace bool) {
 	if len(indices) < 2 {
 		return
 	}
@@ -226,10 +226,19 @@ func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isB
 		// Space-separated x,y pairs so the validator can split cheaply.
 		dbAttr = fmt.Sprintf(` data-doubleback-mm="%s"`, strings.Join(dbPoints, " "))
 	}
+	// Tier 3 #26: surface the channel-letter face flag on the SVG so
+	// the validator's perimeter-vs-blank rule can identify which
+	// polylines it should evaluate. Blockout segments inherit the
+	// flag too — the perimeter rule sums every contributing segment
+	// of a face run anyway.
+	faceAttr := ""
+	if isChannelLetterFace {
+		faceAttr = ` data-channel-letter-face="1"`
+	}
 	if isBlockout {
-		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s%s d="`, diameterAttr, dbAttr)
+		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s%s%s d="`, diameterAttr, dbAttr, faceAttr)
 	} else {
-		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s%s d="`, diameterAttr, dbAttr)
+		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s%s%s d="`, diameterAttr, dbAttr, faceAttr)
 	}
 	for j, idx := range indices {
 		cmd := "L"

@@ -101,6 +101,7 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 				dAttr := ""
 				var diameterMM float64
 				var dbMarks []Point
+				var isChannelLetterFace bool
 				for _, a := range t.Attr {
 					switch a.Name.Local {
 					case "d":
@@ -111,6 +112,15 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 						}
 					case "data-doubleback-mm":
 						dbMarks = parseDoublebackMarks(a.Value)
+					case "data-channel-letter-face":
+						// Any non-empty truthy value flags the path as a
+						// face. Canonical emit is "1"; we also accept
+						// "true" / "yes" defensively for hand-edited
+						// SVGs.
+						v := strings.TrimSpace(strings.ToLower(a.Value))
+						if v == "1" || v == "true" || v == "yes" {
+							isChannelLetterFace = true
+						}
 					}
 				}
 				if dAttr == "" {
@@ -125,6 +135,11 @@ func extractMMPolylines(svgData []byte) ([]Polyline, [4]float64, []Issue, error)
 				if len(dbMarks) > 0 {
 					for i := range ps {
 						ps[i].DoublebackMarks = dbMarks
+					}
+				}
+				if isChannelLetterFace {
+					for i := range ps {
+						ps[i].IsChannelLetterFace = true
 					}
 				}
 				polylines = append(polylines, ps...)
