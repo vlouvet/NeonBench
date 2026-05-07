@@ -61,10 +61,17 @@ export default function EditorPage() {
   // edits that land within COALESCE_MS of the previous edit into a single
   // undo step — typing into the diameter input or rapid-clicking a tool
   // shouldn't bury a meaningful prior state under 30 trivial entries.
+  //
+  // The stacks live on refs (mutable, no re-render on push/pop), but the
+  // sidebar's Undo/Redo buttons read canUndo / canRedo, which need to be
+  // derived from state — reading ref.current during render is a
+  // react-hooks/refs error. We mirror the stack lengths into separate
+  // useState slots and update them alongside every push/pop.
   const undoStackRef = useRef<DesignDoc[]>([]);
   const redoStackRef = useRef<DesignDoc[]>([]);
   const lastPushAtRef = useRef<number>(0);
-  const [historyTick, setHistoryTick] = useState(0); // bump to refresh canUndo/canRedo
+  const [undoLen, setUndoLen] = useState(0);
+  const [redoLen, setRedoLen] = useState(0);
   const COALESCE_MS = 500;
   const HISTORY_CAP = 50;
 
@@ -72,7 +79,8 @@ export default function EditorPage() {
     undoStackRef.current = [];
     redoStackRef.current = [];
     lastPushAtRef.current = 0;
-    setHistoryTick((t) => t + 1);
+    setUndoLen(0);
+    setRedoLen(0);
   }
 
   function editDoc(updater: (prev: DesignDoc) => DesignDoc) {
@@ -93,7 +101,8 @@ export default function EditorPage() {
       lastPushAtRef.current = now;
       // Any new edit invalidates the redo branch.
       redoStackRef.current = [];
-      setHistoryTick((t) => t + 1);
+      setUndoLen(stack.length);
+      setRedoLen(0);
       return next;
     });
     setDirty(true);
@@ -107,7 +116,8 @@ export default function EditorPage() {
       const prev = stack.pop()!;
       redoStackRef.current.push(cur);
       lastPushAtRef.current = 0; // next edit starts a fresh coalesce window
-      setHistoryTick((t) => t + 1);
+      setUndoLen(stack.length);
+      setRedoLen(redoStackRef.current.length);
       return prev;
     });
     setDirty(true);
@@ -121,15 +131,15 @@ export default function EditorPage() {
       const next = stack.pop()!;
       undoStackRef.current.push(cur);
       lastPushAtRef.current = 0;
-      setHistoryTick((t) => t + 1);
+      setUndoLen(undoStackRef.current.length);
+      setRedoLen(stack.length);
       return next;
     });
     setDirty(true);
   }
 
-  const canUndo = undoStackRef.current.length > 0;
-  const canRedo = redoStackRef.current.length > 0;
-  void historyTick; // referenced so React tracks the dependency for the booleans above
+  const canUndo = undoLen > 0;
+  const canRedo = redoLen > 0;
 
   useEffect(() => {
     Promise.all([
@@ -148,9 +158,6 @@ export default function EditorPage() {
         resetHistory();
       })
       .catch((e: Error) => setError(e.message));
-    // resetHistory has stable identity via refs and is intentionally omitted
-    // from deps to avoid re-running on every history bump.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, versionId]);
 
   // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo. Skipped
@@ -178,7 +185,6 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
