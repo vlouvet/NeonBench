@@ -7,6 +7,10 @@
   --muted: #8b8b94;
   --accent: #ff3b6b;
   --error: #ff6b6b;
+  /* Tier 3 #28 — amber for validator warnings. Matches the existing
+     `.rule-dot.warning` and sidebar warning chip color so the canvas
+     marker and the textual issue list line up visually. */
+  --warn: #ffaa00;
   color: var(--text);
   background: var(--bg);
   color-scheme: dark;
