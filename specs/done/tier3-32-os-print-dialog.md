@@ -1,6 +1,6 @@
 # Tier 3 #32 — Send to printer via OS print dialog
 
-> **Status:** active · started 2026-05-07 · branch `task/32-os-print-dialog`
+> **Status:** done · shipped 2026-05-07 · branch `task/32-os-print-dialog`
 
 ## Goal
 

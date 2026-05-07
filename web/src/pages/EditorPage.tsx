@@ -13,6 +13,7 @@ import {
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import HersheyTextDialog from '../components/HersheyTextDialog';
+import PrintHost from '../components/PrintHost';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as ops from '../lib/docOps';
@@ -42,6 +43,12 @@ export default function EditorPage() {
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
   const [hersheyOpen, setHersheyOpen] = useState(false);
+  // Print-via-OS-dialog state (Tier 3 #32). When non-null, a hidden
+  // iframe loads the print PDF and triggers `window.print()` against
+  // it. Cleared once the print dialog closes so the iframe unmounts.
+  // We snapshot the URL so changing tube-spec / paper after clicking
+  // Print doesn't yank the iframe content mid-spool.
+  const [printSrc, setPrintSrc] = useState<string | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
   // user picked (via the "Join from head/tail" sidebar buttons). The
   // second click in the canvas commits the join + clears this.
@@ -698,6 +705,26 @@ export default function EditorPage() {
               className="snap-input"
               title="Snap grid spacing in mm"
             />
+            <span className="toolbar-divider" aria-hidden />
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => {
+                // Snapshot the URL up front: the saved version is the
+                // source of truth (live edits aren't persisted), so we
+                // print whatever was last committed under this `vid`.
+                if (dirty) return;
+                setPrintSrc(api.printPDFURL(projectId, versionId));
+              }}
+              disabled={dirty || printSrc !== null}
+              title={
+                dirty
+                  ? 'Save your edits first — Print uses the last saved version of this design.'
+                  : 'Open the OS print dialog with the 1:1 print pattern (PDF). Pick paper / printer / driver options in the dialog.'
+              }
+            >
+              {printSrc ? 'Printing…' : 'Print'}
+            </button>
           </div>
         </div>
         <p className="meta">
@@ -1013,6 +1040,9 @@ export default function EditorPage() {
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
         />
+      )}
+      {printSrc && (
+        <PrintHost src={printSrc} onClose={() => setPrintSrc(null)} />
       )}
     </section>
   );
