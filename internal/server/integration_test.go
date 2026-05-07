@@ -1135,6 +1135,100 @@ func TestProjectChannelLetterDepth(t *testing.T) {
 	}
 }
 
+// TestProjectStripOverlap covers create + GET + PATCH + validation for
+// the optional strip_overlap_mm setting added in Tier 3 #26. Same
+// three-state PATCH semantics as tube_end_gap_mm and
+// channel_letter_depth_mm: nil/omitted leaves it alone, explicit null
+// clears the override, in-range numbers write through.
+func TestProjectStripOverlap(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var created map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":             "strip overlap roundtrip",
+		"tube_spec_id":     tubeSpecID,
+		"strip_overlap_mm": 18.0,
+	}, &created)
+	if got := created["strip_overlap_mm"]; got != 18.0 {
+		t.Errorf("create echo: got %v, want 18", got)
+	}
+	pid := int64(created["id"].(float64))
+
+	var fetched map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(pid), &fetched)
+	if got := fetched["strip_overlap_mm"]; got != 18.0 {
+		t.Errorf("GET: got %v, want 18", got)
+	}
+
+	patchURL := base + "/api/projects/" + itoa(pid)
+	patch := func(body string) (int, map[string]any) {
+		req, _ := http.NewRequest("PATCH", patchURL, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH: %v", err)
+		}
+		defer resp.Body.Close()
+		var out map[string]any
+		if resp.StatusCode/100 == 2 {
+			_ = json.NewDecoder(resp.Body).Decode(&out)
+		}
+		return resp.StatusCode, out
+	}
+
+	if code, body := patch(`{"strip_overlap_mm": 25}`); code/100 != 2 {
+		t.Fatalf("PATCH set: status %d", code)
+	} else if body["strip_overlap_mm"] != 25.0 {
+		t.Errorf("PATCH set: got %v, want 25", body["strip_overlap_mm"])
+	}
+
+	if code, body := patch(`{"strip_overlap_mm": null}`); code/100 != 2 {
+		t.Fatalf("PATCH null: status %d", code)
+	} else if _, present := body["strip_overlap_mm"]; present {
+		t.Errorf("PATCH null should clear: still present %v", body["strip_overlap_mm"])
+	}
+
+	for _, bad := range []string{
+		`{"strip_overlap_mm": -1}`,    // below 0 mm minimum
+		`{"strip_overlap_mm": 101}`,   // above 100 mm max
+		`{"strip_overlap_mm": "tip"}`, // non-numeric
+	} {
+		if code, _ := patch(bad); code != http.StatusBadRequest {
+			t.Errorf("PATCH %s: want 400, got %d", bad, code)
+		}
+	}
+
+	// Project with no override gets the field omitted from the response.
+	var minimal map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "no overlap override",
+		"tube_spec_id": tubeSpecID,
+	}, &minimal)
+	if _, present := minimal["strip_overlap_mm"]; present {
+		t.Errorf("minimal create: should omit strip_overlap_mm, got %v", minimal["strip_overlap_mm"])
+	}
+}
+
 // TestChannelLetterReturnPattern is the end-to-end regression guard
 // for NW #106 / Tier 2 #10. It creates a project with an explicit
 // channel-letter depth, posts a design version where one run is
@@ -1312,6 +1406,32 @@ func TestMigration0009Reversible(t *testing.T) {
 		if _, err := db.Exec("SELECT " + col + " FROM tube_specs"); err == nil {
 			t.Errorf("column %q still present after down migration", col)
 		}
+	}
+}
+
+// TestMigration0011Reversible exercises the goose Down step for the
+// 0011_project_strip_overlap migration (Tier 3 #26). Mirrors the
+// 0005 / 0006 / 0007 / 0009 / 0010 reversibility tests so a future
+// SQLite/driver regression that breaks DROP COLUMN gets caught
+// before users hit it mid-rollback.
+func TestMigration0011Reversible(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	if _, err := db.Exec("SELECT strip_overlap_mm FROM projects"); err != nil {
+		t.Fatalf("post-up SELECT failed: %v", err)
+	}
+	if err := goose.DownTo(db, "migrations", 10); err != nil {
+		t.Fatalf("down to 10: %v", err)
+	}
+	if _, err := db.Exec("SELECT strip_overlap_mm FROM projects"); err == nil {
+		t.Errorf("column strip_overlap_mm still present after down migration")
 	}
 }
 

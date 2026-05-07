@@ -77,6 +77,14 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts.ChannelLetterDepthMM = defaultChannelLetterDepthMM
 	}
+	// Strip overlap allowance (Tier 3 #26) — drawn as a dashed shear
+	// line on each unfolded return-strip page. NULL on the project
+	// means "use shop default of 12.7 mm (½ in)".
+	if project.StripOverlapMM != nil {
+		opts.StripOverlapMM = *project.StripOverlapMM
+	} else {
+		opts.StripOverlapMM = defaultStripOverlapMM
+	}
 
 	var data []byte
 	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {
