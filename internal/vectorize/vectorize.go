@@ -14,6 +14,15 @@ type Request struct {
 	SmoothingMM       float64 // RDP epsilon (mm). 0 → derive from DefaultDiameterMM
 	MinSpurMM         float64 // spur prune threshold (mm). 0 → derive from DefaultDiameterMM
 	DefaultDiameterMM float64 // project tube diameter; drives spur+smoothing defaults. 0 → 12mm
+
+	// Optional pre-binarize bitmap adjustments. Each is a no-op at its zero
+	// value, preserving the original Decode→Binarize behaviour for callers
+	// that don't set them. Apply order: rotate → crop → brightness →
+	// contrast → luminance → threshold.
+	RotationDeg float64 // -45..+45, 0 = no rotation
+	Crop        *Crop   // nil = full image (post-rotation coordinates)
+	Brightness  int     // -100..+100, 0 = no change
+	Contrast    float64 // 0.5..2.0, 0 or 1 = no change
 }
 
 // Result holds the output of a successful vectorize call.
@@ -52,18 +61,20 @@ func VectorizeRaster(ctx context.Context, req Request) (*Result, error) {
 		D = defaultDiameterMM
 	}
 
-	gray, err := DecodeImage(req.SourceBytes)
+	bin, widthPx, heightPx, err := PreprocessAndBinarize(req.SourceBytes, PreprocessOptions{
+		RotationDeg: req.RotationDeg,
+		Crop:        req.Crop,
+		Brightness:  req.Brightness,
+		Contrast:    req.Contrast,
+		Threshold:   req.Threshold,
+	})
 	if err != nil {
 		return nil, err
 	}
-	bounds := gray.Bounds()
-	widthPx := bounds.Dx()
-	heightPx := bounds.Dy()
 	if widthPx == 0 || heightPx == 0 {
 		return nil, fmt.Errorf("decoded image has zero size")
 	}
 
-	bin := Binarize(gray, req.Threshold)
 	skel := Thin(bin)
 
 	mmPerPx := req.TargetWidthMM / float64(widthPx)
