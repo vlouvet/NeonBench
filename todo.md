@@ -121,7 +121,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Phase 2 export
 
 - [x] PDF includes: numbered bend apex markers per run on the tile pages, electrode markers (open circle + cross), blockout segments dashed, doc-level dimension lines + text labels, and a final "Bend list" page summarizing each run's geometry, color, diameter, notes, and bend table. Total-length-per-run and gas-color callouts are still future polish.
-- [x] Export project as a `.neonbench` bundle (zip of SVG + design doc + validation report per version, plus a manifest with project metadata and tube-spec snapshot). Import path is still TODO.
+- [x] Export project as a `.neonbench` bundle (zip of SVG + design doc + validation report per version, plus a manifest with project metadata and tube-spec snapshot). Import shipped in PR #13 — `POST /api/projects/import` closes the round-trip with tube-spec dedup, name-collision suffixes, and transactional rollback.
 
 ---
 
@@ -145,7 +145,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [ ] Auto-update mechanism (check GitHub releases on launch, prompt to update)
 - [ ] Telemetry opt-in for crash reports only
 - [ ] Import from NeonWizard format (if file format is documented or reverse-engineerable) — eases migration story
-- [ ] DXF export for CNC tube benders (was option B for v1; deferred)
+- [x] DXF export for CNC tube benders — shipped in PR #12 as R12 ASCII LWPOLYLINE per run, mm units, layer-per-run.
 - [ ] Multi-user / shop mode (auth, shared project library) — only if there's demand
 - [ ] Localization scaffolding (en first, i18n-ready strings)
 
@@ -182,11 +182,11 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Design Tools | 4 | 5 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
 | Vector Graphics | 1 | 3 | 6 | 0 |
-| Image Manipulation | 1 | 1 | 5 | 0 |
-| Cutting/Plotting/Printing | 2 | 2 | 5 | 9 |
-| Productivity | 2 | 3 | 5 | 0 |
+| Image Manipulation | 5 | 1 | 1 | 0 |
+| Cutting/Plotting/Printing | 3 | 2 | 4 | 9 |
+| Productivity | 3 | 2 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **15** | **17** | **101** | **15** |
+| **Totals** | **21** | **16** | **96** | **15** |
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -244,21 +244,21 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 ### Image Manipulation (7 features)
 
-- ✅ #85 Export Original Bitmap (source asset persisted under `assets/<project>/`)
+- ✅ #85 Export Original Bitmap (source asset persisted under `assets/<project>/`) · #86 Bitmap Rotate · #87 Brightness · #88 Contrast · #90 Crop (all four shipped in PR #15)
 - 🟡 #84 Bitmap Filters (PNG/JPG only)
-- ❌ #86–90 Rotate, brightness, contrast, saturation, crop — we have a single binarize threshold
+- ❌ #89 Saturation (color saturation adjustment doesn't help binarize-into-tube-paths and was deliberately skipped)
 
 ### Cutting / Plotting / Printing (18 features)
 
-- ✅ #93 Horizontal/Vertical Paneling (oversize tiling) · #96 Plot to File (1:1 PDF)
+- ✅ #93 Horizontal/Vertical Paneling (oversize tiling) · #96 Plot to File (1:1 PDF) · #108 DXF Routing/Engraving export (PR #12)
 - 🟡 #92 All Windows Printers (download → OS print dialog) · #97 Print Preview (PDF is the preview)
-- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat · #106 Channel Letter Return Patterns · #108 DXF Routing/Engraving export
+- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat · #106 Channel Letter Return Patterns
 - 🚫 #91, 95, 100–105, 107: plotter/cutter drivers, network plot, plot manager, USB cutter, weed lines/borders, Windows print driver, pen fill — neon shops use a printed full-size pattern, not a vinyl cutter
 
 ### Productivity (10 features)
 
-- ✅ #109 Auto Save (every save → design_version row) · #117 Zooming (pointer/wheel)
-- 🟡 #112 Job Manager (project name + tube spec only; no customer/designer/due date) · #115 Tool Tips · #116 Unlimited Undo (cross-session yes; in-session no)
+- ✅ #109 Auto Save (every save → design_version row) · #112 Job Manager (customer / designer / due_date / job_number shipped in PR #14) · #117 Zooming (pointer/wheel)
+- 🟡 #115 Tool Tips · #116 Unlimited Undo (cross-session yes; in-session no)
 - ❌ #110 Customizable toolbar · #111 Email Layout · #113 Online Help · #114 Spell Checker · #118 Programmable Hotkeys
 
 ### Wide Format Printing (7 features)
@@ -286,12 +286,12 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 8. **In-session undo/redo with coalescing** (todo.md:106; NW #44, #116). Cross-session is already covered by the version log.
 9. **Node insert / break / join** (todo.md:102, 104; NW #78). Click on a segment to add a vertex; split a polyline at a vertex; join two endpoints.
 10. **Channel letter return patterns** (NW #106). The single channel-letter shop feature missing — measured return depth and trim outline per letter.
-11. **DXF export for CNC tube benders** (todo.md:148; NW #108). Already in cross-cutting. Promote if a shop asks.
-12. **Import the .neonbench bundle** (todo.md:124). Export exists at `handlers_export.go`; round-trip is missing.
-13. **Job Manager fields: customer, designer, due date, job number** (NW #112). Cheap SQL columns + form fields.
+11. ✅ **DXF export for CNC tube benders** (todo.md:148; NW #108). Shipped in PR #12. R12 ASCII (lowest-common-denominator across CAM importers), `LWPOLYLINE` per run, mm units (`$INSUNITS=4`), layer-per-run (`RUN_<id>`) for filterable selection in CAD. No annotations in V1 (DXF is the bender geometry feed; PDF stays the human pattern). Same validation-error gate as PDF.
+12. ✅ **Import the .neonbench bundle** (todo.md:124). Shipped in PR #13. Closes the export round-trip via `POST /api/projects/import`. Tube-spec dedup by **dimensions** (within 1µm) so re-importing reuses seeded specs instead of duplicating. Project name collision → `(imported)`/`(imported 2)` suffixes. Single transaction wraps project + all versions; rollback on any failure. Zip-bomb safe with per-entry size cap.
+13. ✅ **Job Manager fields: customer, designer, due date, job number** (NW #112). Shipped in PR #14. Migration `0005_project_metadata.sql` (reversible Down test). All four optional, trim + length validation, strict `YYYY-MM-DD` format check. Click-to-edit pattern on detail page matches existing tube-spec dropdown's auto-save UX.
 14. **Insert Doubleback tool** (NW #128). Click a polyline midpoint → emit a hairpin segment of configurable depth (default 1.5× tube ø per Strattman).
 15. **Tube End Gap setting** (NW #135). Distance from tube end to channel letter edge as a project-level percentage.
-16. **Bitmap pre-vectorize adjustments: rotate / crop / brightness / contrast** (NW #86–90). Currently a single threshold.
+16. ✅ **Bitmap pre-vectorize adjustments: rotate / crop / brightness / contrast** (NW #86–90). Shipped in PR #15. Apply order: `rotate → crop → brightness → contrast → luminance → threshold`. Each adjustment is a no-op at zero so the existing fast path stays intact. Live preview chain extended from PR #5's cached pixel buffer through all four adjustments client-side BEFORE the threshold pass. UI in a collapsed `<details>` block (collapsed by default).
 
 ### Tier 3 — Polish & validator depth
 
@@ -299,14 +299,18 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 18. **Fan tube-spec change to revalidate every design version, not just the current one.** PR #6 added auto-revalidate-on-change but only for the currently-loaded version; older versions in the history list keep their stale `validation_report_json` until someone manually clicks "Re-validate" on each one. After a tube-spec change, iterate `ListDesignVersions` and re-run validation server-side; surface a "revalidating N versions…" progress hint in the editor. Backend already has `handleRevalidate` and `UpdateDesignVersionReport` — this is fan-out + UI signaling, not a new rule.
 19. **Hershey text — kerning / multi-line / additional faces.** PR #8 ships single-line Roman Simplex with uniform tracking. Three follow-ups: per-letter custom kerning (drag handles in the modal preview), multi-line input with line-height control, and bundling additional Hershey faces (Roman Duplex for thicker channel letters; Sans Simplex / Futural for geometric-sans look). The converter at `scripts/build-hershey-font.mjs` already handles any rowman-style JHF — pointing it at additional sources is mostly mechanical.
 20. **Drawing-tool polish.** PR #10 ships pen + rect + circle + arc; deferred items are: regular-polygon tool (NW #56), bezier handles on pen finish (NW #75 — currently emits polylines only), rotation handle on rect (axis-aligned in V1), rounded-rectangle (closes NW #32 fully), and fixing the pen tool's hit-zone collision with existing runs (clicking on top of a run currently selects the run instead of dropping a new vertex — fine for blank designs, awkward when extending an existing one).
-21. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-22. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-23. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-24. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-25. **Send to printer via OS print dialog** (todo.md:75).
-26. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-27. **Snap-to-angle and snap-to-geometry** (todo.md:104) — also drives angular-snap during pen / primitive draw (the props are wired but not yet consumed by the new tools).
-28. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+21. **DXF annotations layer + post-processor variants.** PR #12 ships geometry-only DXF (LWPOLYLINE per run, no electrodes / labels / dimensions). Follow-ups: emit electrode markers as CIRCLE entities, run labels as TEXT on a separate layer, dimension lines as DIMENSION entities. Separately, **G-code direct export** for shops driving CNC tube benders directly (no CAD round-trip) needs a per-bender post-processor (Eagle, Pines, etc.) — punt until a shop asks.
+22. **Bundle-import polish.** PR #13 ships `POST /api/projects/import` via a hidden file input. Follow-ups: drag-drop import on the project list page (overlaps with #28 below), and **schema-versioned bundle branching** for when the export format eventually bumps `manifest.schema` past 1 (we'll need a small forward-migration switch in the import handler).
+23. **Job-tracking polish.** PR #14 ships the four metadata fields. Follow-ups: filter/sort the project list by `due_date` (next-up dispatcher view), an "Overdue" badge on rows where `due_date < today`, cross-project search by customer/job_number, and CSS for `.job-field` so the click-to-edit affordance visually matches `.meta` text.
+24. **Bitmap-adjustment polish.** PR #15 ships rotate/crop/brightness/contrast via numeric inputs and sliders. Follow-ups: a draggable crop overlay rendered on the live preview canvas (much faster to operate than typing X/Y/W/H), and an auto-rotate button that runs Hough on dominant lines to suggest a deskew angle.
+25. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+26. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+27. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+28. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+29. **Send to printer via OS print dialog** (todo.md:75).
+30. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+31. **Snap-to-angle and snap-to-geometry** (todo.md:104) — also drives angular-snap during pen / primitive draw (the props are wired but not yet consumed by the new tools).
+32. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
