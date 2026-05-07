@@ -177,7 +177,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
-| Neon Design Tools | 5 | 1 | 17 | 0 |
+| Neon Design Tools | 7 | 0 | 16 | 0 |
 | Fonts & Text | 0 | 2 | 16 | 0 |
 | Design Tools | 5 | 4 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
@@ -186,7 +186,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Cutting/Plotting/Printing | 3 | 2 | 4 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **23** | **14** | **96** | **15** |
+| **Totals** | **25** | **13** | **95** | **15** |
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -201,14 +201,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | 125 | Connect Tubes | ❌ | |
 | 126 | Create Custom Housings | ❌ | |
 | 127 | Current Tube / Total Length | ✅ | live status badge in editor header |
-| 128 | Insert Doublebacks | 🟡 | DB *annotation* exists; no "insert DB at this point" tool |
+| 128 | Insert Doublebacks | ✅ | "Insert DB" tool splices 4 vertices for a hairpin U at click point; default 1.5× ø depth + 1.0× ø gap (PR #18) |
 | 129 | Maximum Tube Length | ✅ | validation rule + arc-midpoint flag |
 | 130 | Move Opening / Break Tube Open | ❌ | path split/join is on Phase 2 todo |
 | 131 | Neonize (outline → tube path) | ❌ | killer missing op |
 | 132 | Neon Summary | ✅ | bend-list PDF page per run |
 | 133 | Raceway Support | ❌ | |
 | 134 | Switch Drop / Flat Blend | ❌ | |
-| 135 | Tube End Gap | ❌ | |
+| 135 | Tube End Gap | ✅ | Per-project optional setting, default 6.35mm; stored, displayed, in PDF footer (PR #19) |
 | 136 | Tube Support Holes | ❌ | |
 | 137 | Neon Auto Tube Count | ❌ | |
 | 138 | Neon Auto Spacing | ❌ | |
@@ -291,8 +291,8 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 11. ✅ **DXF export for CNC tube benders** (todo.md:148; NW #108). Shipped in PR #12. R12 ASCII (lowest-common-denominator across CAM importers), `LWPOLYLINE` per run, mm units (`$INSUNITS=4`), layer-per-run (`RUN_<id>`) for filterable selection in CAD. No annotations in V1 (DXF is the bender geometry feed; PDF stays the human pattern). Same validation-error gate as PDF.
 12. ✅ **Import the .neonbench bundle** (todo.md:124). Shipped in PR #13. Closes the export round-trip via `POST /api/projects/import`. Tube-spec dedup by **dimensions** (within 1µm) so re-importing reuses seeded specs instead of duplicating. Project name collision → `(imported)`/`(imported 2)` suffixes. Single transaction wraps project + all versions; rollback on any failure. Zip-bomb safe with per-entry size cap.
 13. ✅ **Job Manager fields: customer, designer, due date, job number** (NW #112). Shipped in PR #14. Migration `0005_project_metadata.sql` (reversible Down test). All four optional, trim + length validation, strict `YYYY-MM-DD` format check. Click-to-edit pattern on detail page matches existing tube-spec dropdown's auto-save UX.
-14. **Insert Doubleback tool** (NW #128). Click a polyline midpoint → emit a hairpin segment of configurable depth (default 1.5× tube ø per Strattman).
-15. **Tube End Gap setting** (NW #135). Distance from tube end to channel letter edge as a project-level percentage.
+14. ✅ **Insert Doubleback tool** (NW #128). Shipped in PR #18. Click a polyline segment with the new "Insert DB" tool → 4 vertices spliced in to form a hairpin U-bend (default depth 1.5× tube ø, gap 1.0× tube ø per Strattman). Honors per-run tube_diameter override before falling back to project tube spec. Shift-click flips the hairpin to the opposite side. Index-shifting unified across electrodes / blockouts / annotations / bends with full test coverage of the boundary condition.
+15. ✅ **Tube End Gap setting** (NW #135). Shipped in PR #19. Per-project optional value (default 6.35mm = 1/4 inch per Miller App I §126 / UL 1930). Stored via migration 0006, validated 0–100mm range, surfaced in project metadata + create modal + PDF footer. PATCH uses `json.RawMessage` to distinguish omitted / null / explicit number so users can clear an override back to default. V1 stores and displays only — actual frame/substrate-aware validation tracked under Tier 3 #27.
 16. ✅ **Bitmap pre-vectorize adjustments: rotate / crop / brightness / contrast** (NW #86–90). Shipped in PR #15. Apply order: `rotate → crop → brightness → contrast → luminance → threshold`. Each adjustment is a no-op at zero so the existing fast path stays intact. Live preview chain extended from PR #5's cached pixel buffer through all four adjustments client-side BEFORE the threshold pass. UI in a collapsed `<details>` block (collapsed by default).
 
 ### Tier 3 — Polish & validator depth
