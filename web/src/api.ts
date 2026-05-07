@@ -243,6 +243,11 @@ export const api = {
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
+  // dxfURL points at the geometry-only DXF export (Tier 2 #11) — for
+  // CNC tube benders. No paper/landscape options: DXF is just polylines
+  // in millimeters, no page layout.
+  dxfURL: (projectId: number, versionId: number) =>
+    `/api/projects/${projectId}/design_versions/${versionId}/print.dxf`,
 };
 
 export const PAPER_OPTIONS = [

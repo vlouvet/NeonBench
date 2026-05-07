@@ -138,7 +138,10 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    the editor sidebar), blockout dashed segments, doc-level
    labels/dimensions, and a final "Bend list" page summarizing each
    run's bends with arc-length offsets, turn angles, and per-run
-   notes.
+   notes. The same panel offers a **Download DXF** button — an
+   AutoCAD R12 ASCII file with one polyline per run (millimeters,
+   layered per run id) for feeding to CNC tube benders; geometry
+   only, no annotations.
 
 8. **Export.** Need to share the project with another install? The
    project page's "Export bundle" button downloads
