@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, parseReport, type Asset, type DesignVersion, type Project, type TubeSpec } from '../api';
+import {
+  api,
+  DEFAULT_TUBE_END_GAP_MM,
+  parseReport,
+  type Asset,
+  type DesignVersion,
+  type Project,
+  type TubeSpec,
+} from '../api';
 import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
 import PrintPanel from '../components/PrintPanel';
@@ -165,6 +173,15 @@ export default function ProjectDetail() {
             ))}
           </select>
         </label>
+        {' · '}
+        <TubeEndGapField
+          value={project.tube_end_gap_mm}
+          onSave={async (next) => {
+            const updated = await api.updateProject(projectId, { tube_end_gap_mm: next });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
         {' · Units: '}
         {project.units}
         {' · Created '}
@@ -424,6 +441,116 @@ function ProjectMetaField({
           } else if (e.key === 'Escape') {
             e.preventDefault();
             setDraft(value);
+            setEditing(false);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
+// TubeEndGapField is the inline editor for the optional per-project
+// tube-end-gap setting (NW #135). The display shows either the
+// project's explicit value or the shop default flagged with "(default)"
+// so the bender always sees the active target. Editing is the same
+// click-to-edit pattern as ProjectMetaField, but the storage shape is
+// number-or-null instead of string-or-empty:
+//   - empty input on commit → null on the wire (clear the override).
+//   - any in-range number → that number on the wire.
+//   - parse failure or out-of-range → onError + revert (no PATCH).
+function TubeEndGapField({
+  value,
+  onSave,
+  onError,
+}: {
+  value: number | undefined;
+  onSave: (next: number | null) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const initialDraft = value === undefined ? '' : String(value);
+  const [draft, setDraft] = useState(initialDraft);
+  const [busy, setBusy] = useState(false);
+  // Snap the draft to the latest server-acknowledged value when it
+  // changes outside our control (e.g. another field's PATCH refreshes
+  // the project).
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue && !editing) {
+    setLastValue(value);
+    setDraft(value === undefined ? '' : String(value));
+  }
+
+  async function commit() {
+    if (busy) return;
+    const trimmed = draft.trim();
+    let next: number | null;
+    if (trimmed === '') {
+      next = null;
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        onError('Tube end gap: must be a number between 0 and 100 mm.');
+        setDraft(initialDraft);
+        setEditing(false);
+        return;
+      }
+      next = parsed;
+    }
+    if (next === (value ?? null)) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch (e) {
+      onError(`Tube end gap: ${(e as Error).message}`);
+      setDraft(initialDraft);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    const display =
+      value === undefined ? `${DEFAULT_TUBE_END_GAP_MM} (default)` : `${value}`;
+    return (
+      <span className="job-field">
+        <strong>Tube end gap (mm):</strong>{' '}
+        <button
+          type="button"
+          className="job-field-value"
+          onClick={() => setEditing(true)}
+          title="Distance from the tube's actual endpoint to the inside edge of the channel letter or substrate (NW #135). Empty = use shop default of 6.35 mm (¼ in)."
+        >
+          {display}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="job-field">
+      <strong>Tube end gap (mm):</strong>{' '}
+      <input
+        autoFocus
+        type="number"
+        min={0}
+        max={100}
+        step={0.05}
+        value={draft}
+        disabled={busy}
+        placeholder={`${DEFAULT_TUBE_END_GAP_MM} (default)`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setDraft(initialDraft);
             setEditing(false);
           }
         }}

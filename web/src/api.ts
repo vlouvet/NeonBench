@@ -20,9 +20,18 @@ export type Project = {
   designer: string;
   due_date: string;
   job_number: string;
+  // Optional tube end gap in millimeters (NW #135). Server omits the
+  // field entirely when the column is NULL; the UI falls back to the
+  // shop default of 6.35 mm at render time.
+  tube_end_gap_mm?: number;
   created_at: string;
   updated_at: string;
 };
+
+// Default tube end gap, in millimeters. ¼ in (6.35 mm) is the most-cited
+// shop convention (Miller App I §126 — UL minimum tube-to-grounded-metal
+// clearance). Used wherever the project hasn't set its own override.
+export const DEFAULT_TUBE_END_GAP_MM = 6.35;
 
 export type AssetKind = 'source_image' | 'vector' | 'print_output';
 
@@ -180,6 +189,7 @@ export const api = {
     designer?: string;
     due_date?: string;
     job_number?: string;
+    tube_end_gap_mm?: number;
   }) =>
     req<Project>('/api/projects', {
       method: 'POST',
@@ -197,6 +207,9 @@ export const api = {
       designer?: string;
       due_date?: string;
       job_number?: string;
+      // number to write a new value, null to clear (fall back to
+      // shop default), undefined / omitted to leave it untouched.
+      tube_end_gap_mm?: number | null;
     },
   ) =>
     req<Project>(`/api/projects/${id}`, {
