@@ -9,6 +9,7 @@ import {
   type DesignVersion,
   type Project,
   type TubeSpec,
+  type UpdateTubeSpecBody,
 } from '../api';
 import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
@@ -28,6 +29,10 @@ export default function ProjectDetail() {
   const [uploading, setUploading] = useState(false);
   const [revalidating, setRevalidating] = useState(false);
   const [creatingBlank, setCreatingBlank] = useState(false);
+  // Transient banner shown after a tube-spec edit fans out validation
+  // across every affected design version. Auto-clears on a 4-second
+  // timer (set in handleTubeSpecEdit). Tier 3 #18.
+  const [tubeSpecToast, setTubeSpecToast] = useState<string | null>(null);
 
   async function startBlankDesign() {
     if (creatingBlank) return;
@@ -149,6 +154,70 @@ export default function ProjectDetail() {
     }
   }
 
+  // handleTubeSpecEdit pushes a partial PATCH to /api/tube_specs/{id}
+  // and surfaces the server's fan-out summary as a transient banner.
+  // The fan-out itself is server-side: every design version in every
+  // project that references this spec is re-validated atomically, so
+  // older versions in the history list reflect the new spec without a
+  // manual click. After a successful PATCH we re-fetch the spec list,
+  // any version reports that may have been refreshed, and the active
+  // version so the on-screen badges update too. Tier 3 #18.
+  async function handleTubeSpecEdit(specID: number, body: UpdateTubeSpecBody) {
+    try {
+      const out = await api.updateTubeSpec(specID, body);
+      // Refresh derived state: the spec list (so the dropdown's
+      // labels show the new diameter/limit), the current project's
+      // active version (so its validation badges update), and the
+      // version history list (so older rows reflect their new
+      // reports the moment the user clicks them).
+      const [specs, vs, lat] = await Promise.all([
+        api.listTubeSpecs(),
+        api.listDesignVersions(projectId),
+        api.latestDesignVersion(projectId),
+      ]);
+      setAllSpecs(specs);
+      setVersions(vs);
+      // If we have an active version on screen, swap it for the
+      // freshly-validated copy. The fan-out has already updated the
+      // stored validation_report_json server-side; re-fetching is
+      // the simplest way to pick that up.
+      if (latest) {
+        if (lat && lat.id === latest.id) {
+          setLatest(lat);
+        } else {
+          try {
+            const refreshed = await api.getDesignVersion(projectId, latest.id);
+            setLatest(refreshed);
+          } catch {
+            // If the active version is no longer reachable (e.g.
+            // it was deleted in another tab), keep the existing
+            // copy on screen rather than blanking the panel.
+          }
+        }
+      }
+      const { project_count, version_count, failed_count } = out.revalidated;
+      if (version_count > 0) {
+        let msg = `Re-validated ${version_count} version${version_count === 1 ? '' : 's'} across ${project_count} project${project_count === 1 ? '' : 's'}.`;
+        if (failed_count > 0) {
+          msg += ` ${failed_count} skipped (corrupt SVG).`;
+        }
+        setTubeSpecToast(msg);
+        // Auto-dismiss the banner. The 4 s window matches the spec's
+        // "transient" requirement and is long enough to read at a
+        // glance without burying the editor.
+        window.setTimeout(() => setTubeSpecToast(null), 4000);
+      } else if (project_count > 0 && failed_count > 0) {
+        // Edge case: every affected version was unparseable. Surface
+        // the failure so the operator notices instead of assuming a
+        // silent success.
+        setTubeSpecToast(`Spec saved, but ${failed_count} version${failed_count === 1 ? '' : 's'} could not be re-validated (corrupt SVG).`);
+        window.setTimeout(() => setTubeSpecToast(null), 4000);
+      }
+    } catch (e) {
+      setError(`Tube spec edit: ${(e as Error).message}`);
+    }
+  }
+
   if (error) return <p className="error">{error}</p>;
   if (!project) return <p className="meta">Loading…</p>;
 
@@ -192,6 +261,11 @@ export default function ProjectDetail() {
           Export bundle
         </a>
       </div>
+      {tubeSpecToast && (
+        <p className="meta" role="status" aria-live="polite">
+          {tubeSpecToast}
+        </p>
+      )}
       <div className="meta project-settings">
         <label>
           Tube spec:{' '}
@@ -214,6 +288,11 @@ export default function ProjectDetail() {
             ))}
           </select>
         </label>
+        {' '}
+        <TubeSpecEditor
+          spec={allSpecs.find((s) => s.id === project.tube_spec_id) ?? null}
+          onSave={(body) => handleTubeSpecEdit(project.tube_spec_id, body)}
+        />
         {' · '}
         <TubeEndGapField
           value={project.tube_end_gap_mm}
@@ -713,6 +792,204 @@ function ChannelLetterDepthField({
           }
         }}
       />
+    </span>
+  );
+}
+
+// TubeSpecEditor is the inline form for editing the active tube spec's
+// dimensional fields (diameter, min_bend_radius, max_segment_length,
+// min_spacing). Saving fans validation out across every design version
+// in every project that uses this spec — Tier 3 #18. The button stays
+// dormant until the user clicks "Edit spec"; the form pre-fills from
+// the current row, validates client-side mostly to mirror the server's
+// 400s, and only PATCHes fields whose value actually changed.
+function TubeSpecEditor({
+  spec,
+  onSave,
+}: {
+  spec: TubeSpec | null;
+  onSave: (body: UpdateTubeSpecBody) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Drafts mirror the spec's four primary numerical fields. Stored as
+  // strings so the user can briefly hold an empty input mid-typing
+  // without React forcing a NaN through the controlled-input contract.
+  const [diameter, setDiameter] = useState('');
+  const [bend, setBend] = useState('');
+  const [segment, setSegment] = useState('');
+  const [spacing, setSpacing] = useState('');
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  if (!spec) {
+    return null;
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary"
+        onClick={() => {
+          setDiameter(String(spec.diameter_mm));
+          setBend(String(spec.min_bend_radius_mm));
+          setSegment(String(spec.max_segment_length_mm));
+          setSpacing(String(spec.min_spacing_mm));
+          setLocalError(null);
+          setOpen(true);
+        }}
+        title="Edit this tube spec's diameter, bend radius, and segment limits. Saving will re-validate every design version that uses this spec."
+      >
+        Edit spec
+      </button>
+    );
+  }
+
+  async function commit() {
+    if (busy || !spec) return;
+    // Build a partial PATCH containing only fields the user actually
+    // changed. Sending an unchanged value is harmless on the server
+    // but dirties the diff for nothing — the fan-out still runs the
+    // same way either way.
+    const body: UpdateTubeSpecBody = {};
+    const errors: string[] = [];
+    const checks: Array<{
+      label: string;
+      raw: string;
+      current: number;
+      min: number;
+      max: number;
+      key: keyof UpdateTubeSpecBody;
+    }> = [
+      { label: 'Diameter', raw: diameter, current: spec.diameter_mm, min: 5, max: 30, key: 'diameter_mm' },
+      { label: 'Min bend radius', raw: bend, current: spec.min_bend_radius_mm, min: 1, max: 200, key: 'min_bend_radius_mm' },
+      { label: 'Max segment length', raw: segment, current: spec.max_segment_length_mm, min: 100, max: 5000, key: 'max_segment_length_mm' },
+      { label: 'Min spacing', raw: spacing, current: spec.min_spacing_mm, min: 1, max: 100, key: 'min_spacing_mm' },
+    ];
+    for (const c of checks) {
+      const parsed = Number(c.raw);
+      if (!Number.isFinite(parsed)) {
+        errors.push(`${c.label} must be a number.`);
+        continue;
+      }
+      if (parsed < c.min || parsed > c.max) {
+        errors.push(`${c.label} must be between ${c.min} and ${c.max}.`);
+        continue;
+      }
+      if (parsed !== c.current) {
+        // The cast is safe: every key in the table maps to a numeric
+        // field on UpdateTubeSpecBody.
+        (body as Record<string, number>)[c.key] = parsed;
+      }
+    }
+    if (errors.length > 0) {
+      setLocalError(errors.join(' '));
+      return;
+    }
+    if (Object.keys(body).length === 0) {
+      setOpen(false);
+      return;
+    }
+    if (
+      body.min_bend_radius_mm !== undefined &&
+      body.diameter_mm !== undefined &&
+      body.min_bend_radius_mm < body.diameter_mm
+    ) {
+      setLocalError('Min bend radius must be at least the diameter.');
+      return;
+    }
+    setBusy(true);
+    setLocalError(null);
+    try {
+      await onSave(body);
+      setOpen(false);
+    } catch (e) {
+      setLocalError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span
+      className="tube-spec-editor"
+      style={{ display: 'inline-flex', gap: '0.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}
+    >
+      <strong>Spec:</strong>
+      <label>
+        Ø{' '}
+        <input
+          type="number"
+          step={0.1}
+          min={5}
+          max={30}
+          value={diameter}
+          disabled={busy}
+          onChange={(e) => setDiameter(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="diameter mm"
+        />
+        mm
+      </label>
+      <label>
+        bend{' '}
+        <input
+          type="number"
+          step={0.5}
+          min={1}
+          max={200}
+          value={bend}
+          disabled={busy}
+          onChange={(e) => setBend(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="min bend radius mm"
+        />
+        mm
+      </label>
+      <label>
+        seg{' '}
+        <input
+          type="number"
+          step={10}
+          min={100}
+          max={5000}
+          value={segment}
+          disabled={busy}
+          onChange={(e) => setSegment(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="max segment length mm"
+        />
+        mm
+      </label>
+      <label>
+        spacing{' '}
+        <input
+          type="number"
+          step={0.5}
+          min={1}
+          max={100}
+          value={spacing}
+          disabled={busy}
+          onChange={(e) => setSpacing(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="min spacing mm"
+        />
+        mm
+      </label>
+      <button type="button" className="btn-secondary" onClick={commit} disabled={busy}>
+        {busy ? 'Saving…' : 'Save spec'}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setLocalError(null);
+        }}
+        disabled={busy}
+      >
+        Cancel
+      </button>
+      {localError && <span className="error">{localError}</span>}
     </span>
   );
 }

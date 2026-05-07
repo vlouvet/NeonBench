@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	"github.com/vlouvet/neonbench/internal/designdoc"
@@ -2007,3 +2008,382 @@ func mustListProjects(t *testing.T, db *sql.DB) []storage.Project {
 
 // keep imports honest
 var _ = strings.NewReader
+
+// TestUpdateTubeSpecFansOutRevalidation is the regression guard for Tier
+// 3 #18: editing the dimensional fields of a tube spec must
+// re-validate every design version in every project that references
+// that spec, not just whichever version happens to be loaded in the
+// editor.
+//
+// Setup: two projects (P1, P2) both reference the same loose 8mm spec.
+// Each project gets two design versions — a 25mm-radius circle, which
+// the loose spec accepts. We tighten the spec's min_bend_radius_mm
+// past 25mm and assert:
+//
+//  1. The PATCH response carries `revalidated.project_count == 2` and
+//     `revalidated.version_count == 4` (every version touched).
+//  2. Each version's stored validation_report_json was regenerated:
+//     the new report's generated_at is strictly newer, and the new
+//     report flags the bend-radius rule that the old one did not.
+//
+// The "stale report on history versions" failure mode is the whole
+// reason for the fan-out — without this test, a fan-out regression
+// silently skipping older versions would not be caught by the
+// existing single-version revalidate tests.
+func TestUpdateTubeSpecFansOutRevalidation(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	// Pick the loose 8mm spec (limit 18mm) so the seeded value comfortably
+	// accepts a 25mm-radius circle. We will tighten this same row later.
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var looseID int64
+	var looseLimit float64
+	for _, s := range specs {
+		if s["name"].(string) == "8mm clear" {
+			looseID = int64(s["id"].(float64))
+			looseLimit = s["min_bend_radius_mm"].(float64)
+		}
+	}
+	if looseID == 0 {
+		t.Fatalf("expected seeded 8mm spec; got %v", specs)
+	}
+	if looseLimit >= 25 {
+		t.Fatalf("seeded 8mm limit unexpectedly tight: %v", looseLimit)
+	}
+
+	// Two projects share the same spec. The fan-out must touch both.
+	var p1, p2 map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "fan-out p1",
+		"tube_spec_id": looseID,
+	}, &p1)
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "fan-out p2",
+		"tube_spec_id": looseID,
+	}, &p2)
+	p1ID := int64(p1["id"].(float64))
+	p2ID := int64(p2["id"].(float64))
+
+	// Two design versions each. The 25mm-radius circle is well within
+	// the 18mm loose-spec budget, so the seeded report should have zero
+	// bend-radius issues.
+	circleSVG := buildCirclePolylineSVG(25.0, 50, 50, 100, 1)
+	versions := []struct {
+		projectID int64
+		dvID      int64
+	}{}
+	for _, pid := range []int64{p1ID, p2ID} {
+		for v := 0; v < 2; v++ {
+			dv, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+				ProjectID: pid,
+				Label:     fmt.Sprintf("v%d", v+1),
+				SVGData:   circleSVG,
+			})
+			if err != nil {
+				t.Fatalf("create design version: %v", err)
+			}
+			// Seed a baseline report by hitting the per-version
+			// revalidate endpoint — same path the editor uses.
+			revalURL := base + "/api/projects/" + itoa(pid) + "/design_versions/" + itoa(dv.ID) + "/validate"
+			postJSON(t, client, revalURL, nil, nil)
+			versions = append(versions, struct {
+				projectID int64
+				dvID      int64
+			}{pid, dv.ID})
+		}
+	}
+
+	// Capture each version's generated_at so we can assert "strictly
+	// newer" after the fan-out runs. SQLite's strftime resolution is
+	// milliseconds — fine for a test that only needs strict inequality
+	// across two server roundtrips.
+	preGenAt := make(map[int64]string, len(versions))
+	for _, v := range versions {
+		var dv map[string]any
+		getJSON(t, client, base+"/api/projects/"+itoa(v.projectID)+"/design_versions/"+itoa(v.dvID), &dv)
+		reportJSON, _ := dv["validation_report_json"].(string)
+		if reportJSON == "" {
+			t.Fatalf("version %d: missing baseline report", v.dvID)
+		}
+		var rep struct {
+			GeneratedAt string `json:"generated_at"`
+		}
+		if err := json.Unmarshal([]byte(reportJSON), &rep); err != nil {
+			t.Fatalf("unmarshal baseline report: %v", err)
+		}
+		if got := countBendRadiusIssues(t, reportJSON); got != 0 {
+			t.Fatalf("baseline (loose) version %d: want 0 bend errors, got %d", v.dvID, got)
+		}
+		preGenAt[v.dvID] = rep.GeneratedAt
+	}
+
+	// Sleep one millisecond so SQLite's strftime tick is guaranteed to
+	// advance between baseline and fan-out reports. The validate
+	// pipeline runs fast enough on this machine that consecutive calls
+	// can otherwise share a millisecond.
+	waitForClockTick()
+
+	// PATCH the spec: tighten min_bend_radius_mm to 35mm so the 25mm
+	// circle becomes a violation. Also bump max_segment_length so we
+	// exercise the multi-field path.
+	patchURL := base + "/api/tube_specs/" + itoa(looseID)
+	patchBody, _ := json.Marshal(map[string]any{
+		"min_bend_radius_mm":    35.0,
+		"max_segment_length_mm": 2400.0,
+	})
+	patchReq, _ := http.NewRequest("PATCH", patchURL, bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH tube_spec: %v", err)
+	}
+	if patchResp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(patchResp.Body)
+		patchResp.Body.Close()
+		t.Fatalf("PATCH tube_spec status %d: %s", patchResp.StatusCode, body)
+	}
+	var patchOut struct {
+		TubeSpec    storage.TubeSpec   `json:"tube_spec"`
+		Revalidated revalidatedSummary `json:"revalidated"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&patchOut); err != nil {
+		t.Fatalf("decode PATCH response: %v", err)
+	}
+	patchResp.Body.Close()
+
+	if patchOut.Revalidated.ProjectCount != 2 {
+		t.Errorf("project_count = %d, want 2", patchOut.Revalidated.ProjectCount)
+	}
+	if patchOut.Revalidated.VersionCount != 4 {
+		t.Errorf("version_count = %d, want 4", patchOut.Revalidated.VersionCount)
+	}
+	if patchOut.Revalidated.FailedCount != 0 {
+		t.Errorf("failed_count = %d, want 0", patchOut.Revalidated.FailedCount)
+	}
+	if patchOut.TubeSpec.MinBendRadiusMM != 35 {
+		t.Errorf("returned min_bend_radius_mm = %v, want 35", patchOut.TubeSpec.MinBendRadiusMM)
+	}
+	if patchOut.TubeSpec.MaxSegmentLengthMM != 2400 {
+		t.Errorf("returned max_segment_length_mm = %v, want 2400", patchOut.TubeSpec.MaxSegmentLengthMM)
+	}
+
+	// Every version's report must be strictly newer AND must now flag
+	// the bend radius the old report missed. The loose-spec baseline
+	// had zero bend errors; the tight-spec fan-out report should have
+	// > 0.
+	for _, v := range versions {
+		var dv map[string]any
+		getJSON(t, client, base+"/api/projects/"+itoa(v.projectID)+"/design_versions/"+itoa(v.dvID), &dv)
+		reportJSON, _ := dv["validation_report_json"].(string)
+		if reportJSON == "" {
+			t.Fatalf("version %d: report missing after fan-out", v.dvID)
+		}
+		var rep struct {
+			GeneratedAt string `json:"generated_at"`
+		}
+		if err := json.Unmarshal([]byte(reportJSON), &rep); err != nil {
+			t.Fatalf("unmarshal post-fan-out report v%d: %v", v.dvID, err)
+		}
+		if rep.GeneratedAt <= preGenAt[v.dvID] {
+			t.Errorf("version %d: generated_at not strictly newer (was %q, now %q)",
+				v.dvID, preGenAt[v.dvID], rep.GeneratedAt)
+		}
+		if got := countBendRadiusIssues(t, reportJSON); got == 0 {
+			t.Errorf("version %d: post-fan-out report still missing bend errors (limit 35mm vs r=25mm circle); report=%s",
+				v.dvID, reportJSON)
+		}
+	}
+}
+
+// TestUpdateTubeSpecPartialFailureContinues guarantees that a single
+// unparseable design_version doesn't abort the fan-out for siblings.
+// We seed three versions in the same project: two valid circles plus
+// one with corrupt SVG bytes. After the PATCH, the response must
+// report version_count == 2 and failed_count == 1, and the spec row
+// itself must be persisted (the user's primary action commits even
+// when the secondary fan-out partially fails).
+func TestUpdateTubeSpecPartialFailureContinues(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "8mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 8mm spec")
+	}
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "partial-failure project",
+		"tube_spec_id": specID,
+	}, &project)
+	pid := int64(project["id"].(float64))
+
+	circleSVG := buildCirclePolylineSVG(25.0, 50, 50, 100, 1)
+	for i := 0; i < 2; i++ {
+		if _, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+			ProjectID: pid,
+			Label:     fmt.Sprintf("good v%d", i+1),
+			SVGData:   circleSVG,
+		}); err != nil {
+			t.Fatalf("create good version: %v", err)
+		}
+	}
+	// Corrupt SVG: a stray "<svg" with no closing element. The
+	// validator's xml decoder rejects it, runValidation returns the
+	// empty-string sentinel, and the fan-out logs + counts it as a
+	// failure without aborting the loop.
+	if _, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: pid,
+		Label:     "broken",
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"><path d="`,
+	}); err != nil {
+		t.Fatalf("create broken version: %v", err)
+	}
+
+	patchURL := base + "/api/tube_specs/" + itoa(specID)
+	patchBody, _ := json.Marshal(map[string]any{"min_bend_radius_mm": 35.0})
+	patchReq, _ := http.NewRequest("PATCH", patchURL, bytes.NewReader(patchBody))
+	patchReq.Header.Set("Content-Type", "application/json")
+	patchResp, err := client.Do(patchReq)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	if patchResp.StatusCode/100 != 2 {
+		body, _ := io.ReadAll(patchResp.Body)
+		patchResp.Body.Close()
+		t.Fatalf("PATCH status %d: %s", patchResp.StatusCode, body)
+	}
+	var out struct {
+		TubeSpec    storage.TubeSpec   `json:"tube_spec"`
+		Revalidated revalidatedSummary `json:"revalidated"`
+	}
+	if err := json.NewDecoder(patchResp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	patchResp.Body.Close()
+
+	if out.Revalidated.ProjectCount != 1 {
+		t.Errorf("project_count = %d, want 1", out.Revalidated.ProjectCount)
+	}
+	if out.Revalidated.VersionCount != 2 {
+		t.Errorf("version_count = %d, want 2 (one corrupt SVG should be skipped, two good versions revalidated)", out.Revalidated.VersionCount)
+	}
+	if out.Revalidated.FailedCount != 1 {
+		t.Errorf("failed_count = %d, want 1", out.Revalidated.FailedCount)
+	}
+	// Confirm the spec UPDATE persisted even though one version
+	// re-validation failed.
+	if out.TubeSpec.MinBendRadiusMM != 35 {
+		t.Errorf("spec edit lost: min_bend_radius_mm = %v, want 35", out.TubeSpec.MinBendRadiusMM)
+	}
+}
+
+// TestUpdateTubeSpecValidationRejects ensures the PATCH input checks
+// reject obvious garbage (out-of-range values, empty name, bend radius
+// smaller than diameter) and that no design versions are touched on a
+// rejected request.
+func TestUpdateTubeSpecValidationRejects(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	specID := int64(specs[0]["id"].(float64))
+	originalLimit := specs[0]["min_bend_radius_mm"].(float64)
+
+	patchURL := base + "/api/tube_specs/" + itoa(specID)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"diameter too small", `{"diameter_mm":0.5}`},
+		{"diameter too large", `{"diameter_mm":99}`},
+		{"bend radius too small", `{"min_bend_radius_mm":0.5}`},
+		{"empty name", `{"name":"   "}`},
+		{"bend radius < diameter", `{"diameter_mm":12,"min_bend_radius_mm":6}`},
+	}
+	for _, tc := range cases {
+		req, _ := http.NewRequest("PATCH", patchURL, strings.NewReader(tc.body))
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: PATCH: %v", tc.name, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400 (body=%s)", tc.name, resp.StatusCode, body)
+		}
+	}
+
+	// Confirm the spec wasn't mutated by any of the rejected attempts.
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if got := specs[0]["min_bend_radius_mm"].(float64); got != originalLimit {
+		t.Errorf("rejected PATCHes leaked through: limit = %v, want %v", got, originalLimit)
+	}
+}
+
+// waitForClockTick blocks long enough for the validator's
+// generated_at timestamp (RFC3339Nano) to advance between two
+// consecutive validate runs. The validator stamps reports via
+// time.Now().UTC() at sub-millisecond precision, but two calls
+// inside the same goroutine on a fast machine can land in the same
+// nanosecond and fail a strict-inequality assertion. 2ms is overkill
+// even on the slowest CI worker.
+func waitForClockTick() {
+	time.Sleep(2 * time.Millisecond)
+}
