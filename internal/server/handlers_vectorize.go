@@ -22,6 +22,22 @@ type vectorizeReq struct {
 	SmoothingMM   float64 `json:"smoothing_mm,omitempty"`
 	MinSpurMM     float64 `json:"min_spur_mm,omitempty"`
 	Label         string  `json:"label,omitempty"`
+
+	// Pre-binarize bitmap adjustments. All optional; pointers so we can
+	// distinguish "not sent" from "explicit zero" for the integer fields
+	// that have meaningful zero values (Brightness 0 = no change).
+	RotationDeg *float64 `json:"rotation_deg,omitempty"`
+	Crop        *cropReq `json:"crop,omitempty"`
+	Brightness  *int     `json:"brightness,omitempty"`
+	Contrast    *float64 `json:"contrast,omitempty"`
+}
+
+// cropReq is the JSON shape for a source-pixel crop rectangle.
+type cropReq struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
 }
 
 func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +66,37 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 	if req.Threshold < 0 || req.Threshold > 255 {
 		writeError(w, http.StatusBadRequest, "threshold must be 0..255")
 		return
+	}
+	if req.RotationDeg != nil {
+		if *req.RotationDeg < vectorize.MinRotationDeg || *req.RotationDeg > vectorize.MaxRotationDeg {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("rotation_deg must be %g..%g", vectorize.MinRotationDeg, vectorize.MaxRotationDeg))
+			return
+		}
+	}
+	if req.Brightness != nil {
+		if *req.Brightness < vectorize.MinBrightness || *req.Brightness > vectorize.MaxBrightness {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("brightness must be %d..%d", vectorize.MinBrightness, vectorize.MaxBrightness))
+			return
+		}
+	}
+	if req.Contrast != nil {
+		if *req.Contrast < vectorize.MinContrast || *req.Contrast > vectorize.MaxContrast {
+			writeError(w, http.StatusBadRequest,
+				fmt.Sprintf("contrast must be %g..%g", vectorize.MinContrast, vectorize.MaxContrast))
+			return
+		}
+	}
+	if req.Crop != nil {
+		if req.Crop.W <= 0 || req.Crop.H <= 0 {
+			writeError(w, http.StatusBadRequest, "crop w and h must be > 0")
+			return
+		}
+		if req.Crop.X < 0 || req.Crop.Y < 0 {
+			writeError(w, http.StatusBadRequest, "crop x and y must be >= 0")
+			return
+		}
 	}
 
 	asset, err := storage.GetAsset(r.Context(), s.db, req.AssetID)
@@ -93,14 +140,27 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 			writeStorageError(w, err)
 			return
 		}
-		res, err := vectorize.VectorizeRaster(r.Context(), vectorize.Request{
+		vreq := vectorize.Request{
 			SourceBytes:       data,
 			TargetWidthMM:     req.TargetWidthMM,
 			Threshold:         threshold,
 			SmoothingMM:       req.SmoothingMM,
 			MinSpurMM:         req.MinSpurMM,
 			DefaultDiameterMM: spec.DiameterMM,
-		})
+		}
+		if req.RotationDeg != nil {
+			vreq.RotationDeg = *req.RotationDeg
+		}
+		if req.Brightness != nil {
+			vreq.Brightness = *req.Brightness
+		}
+		if req.Contrast != nil {
+			vreq.Contrast = *req.Contrast
+		}
+		if req.Crop != nil {
+			vreq.Crop = &vectorize.Crop{X: req.Crop.X, Y: req.Crop.Y, W: req.Crop.W, H: req.Crop.H}
+		}
+		res, err := vectorize.VectorizeRaster(r.Context(), vreq)
 		if err != nil {
 			writeError(w, http.StatusUnprocessableEntity, "vectorize failed: "+err.Error())
 			return
