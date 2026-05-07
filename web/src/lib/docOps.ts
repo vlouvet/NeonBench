@@ -17,7 +17,11 @@ import type {
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
 import { defaultDirection } from './runArcs';
-import { offsetPolygon } from './shapes/offset';
+import {
+  offsetOpenPolyline,
+  offsetPolygon,
+  type CornerStyle,
+} from './shapes/offset';
 
 type Electrode = { point_index: number };
 
@@ -919,10 +923,10 @@ export function insertDoubleback(
   });
 }
 
-// neonize turns a single closed run into a pair of parallel-offset runs
-// — the "double-stroke" / "Auto Tube Layout" / "Parallel Tube Layout"
-// primitive that channel-letter shops use to fabricate a thick stroke
-// out of two parallel tubes (NW #123, #131, #141 parity).
+// neonize turns a single run (closed or open) into a pair of parallel-
+// offset runs — the "double-stroke" / "Auto Tube Layout" / "Parallel
+// Tube Layout" primitive that channel-letter shops use to fabricate a
+// thick stroke out of two parallel tubes (NW #123, #131, #141 parity).
 //
 // The source run is replaced by two new runs `<id>-outer` and
 // `<id>-inner`, each offset by ±spacingMM/2 from the original outline
@@ -932,52 +936,81 @@ export function insertDoubleback(
 // the original polyline, which doesn't survive the geometry rewrite —
 // the user re-places them on the offset runs as needed).
 //
+// Tier 3 #27 added optional behavior:
+//   - opts.stitch (default false) — produce ONE continuous run named
+//     `<id>-stitched` that walks the outer offset, U-bends at the
+//     endpoints, and returns along the (reversed) inner offset. Useful
+//     for fabrications that prefer a single tube run with electrodes
+//     at the seam over two separate runs.
+//   - opts.cornerStyles — per-vertex 'miter' | 'round' | 'bevel'. Length
+//     should equal the source polyline's vertex count; missing entries
+//     default to 'miter'. For closed inputs, the array indexes the
+//     "distinct vertices" view (closing duplicate stripped).
+//   - Open polylines are now supported; the offset uses butt caps at
+//     each endpoint.
+//   - Self-intersection in the inner offset is auto-trimmed (heuristic;
+//     figure-8 cases still need manual cleanup).
+//
 // Failure modes:
-//   - Open polyline → returns the doc unchanged with a warning. Open-
-//     polyline neonize needs different geometry (parallel offset with
-//     butt caps); deferred to Tier 3.
-//   - <3 vertices (or run not found) → returns the doc unchanged.
-//   - Self-intersection on either offset → emits both runs anyway and
-//     surfaces a warning so the user can clean up with the node editor.
+//   - <3 vertices on a closed run (or <2 on open) → returns the doc
+//     unchanged.
+//   - Run not found → returns the doc unchanged.
+//   - Self-intersection that survives the trim → emits the run(s)
+//     anyway and surfaces a warning so the user can clean up with the
+//     node editor.
 //   - Acute corners that triggered the miter clamp → counted in the
 //     warning if the count is high enough to be worth flagging.
 //
 // Architectural choice: the original run is destroyed, not preserved as
 // a guide layer. Adding a "this run is a guide" flag would touch the
 // design-doc schema, the canvas renderer, and the print/DXF emitters —
-// out of scope for V1. Users who want a guide preview can copy the run
-// before neonizing.
+// out of scope for V1.
+export type NeonizeOptions = {
+  stitch?: boolean;
+  cornerStyles?: CornerStyle[];
+  hairpinDepthMM?: number;
+  hairpinGapMM?: number;
+};
+
 export function neonize(
   doc: DesignDoc,
   runId: string,
   spacingMM: number,
+  options: NeonizeOptions = {},
 ): { doc: DesignDoc; warning?: string } {
   const idx = doc.runs.findIndex((r) => r.id === runId);
   if (idx < 0) return { doc };
   const src = doc.runs[idx];
 
-  if (!src.polyline.closed) {
-    return {
-      doc,
-      warning:
-        'Neonize requires a closed polyline (head and tail must coincide). Open polylines are deferred to a future release.',
-    };
-  }
   if (!(spacingMM > 0) || !Number.isFinite(spacingMM)) {
     return { doc, warning: 'Neonize spacing must be a positive number.' };
   }
-  if (src.polyline.points.length < 3) {
-    return { doc, warning: 'Polyline is degenerate (fewer than 3 vertices).' };
+  const minPts = src.polyline.closed ? 3 : 2;
+  if (src.polyline.points.length < minPts) {
+    return { doc, warning: 'Polyline is degenerate.' };
   }
 
   const half = spacingMM / 2;
-  const outer = offsetPolygon(src.polyline.points, +half);
-  const inner = offsetPolygon(src.polyline.points, -half);
+  const cornerStyles = options.cornerStyles;
+  const stitch = options.stitch ?? false;
 
-  // Build the two replacement runs. Inheritance: only carry forward the
-  // run-level properties that aren't index-bound. Electrodes, blockouts,
-  // annotations, and bends point at vertex indices on the original
-  // polyline — they don't survive the geometry rewrite, so we drop them.
+  const offsetOpts = {
+    cornerStyles,
+    trimSelfIntersections: true,
+  };
+
+  let outer: ReturnType<typeof offsetPolygon>;
+  let inner: ReturnType<typeof offsetPolygon>;
+  if (src.polyline.closed) {
+    outer = offsetPolygon(src.polyline.points, +half, offsetOpts);
+    inner = offsetPolygon(src.polyline.points, -half, offsetOpts);
+  } else {
+    outer = offsetOpenPolyline(src.polyline.points, +half, offsetOpts);
+    inner = offsetOpenPolyline(src.polyline.points, -half, offsetOpts);
+  }
+
+  // Build the replacement run(s). Inheritance: only carry forward the
+  // run-level properties that aren't index-bound.
   function withMeta(id: string, points: [number, number][], closed: boolean): DesignRun {
     const r: DesignRun = { id, polyline: { points, closed } };
     if (src.tube_diameter_mm != null) r.tube_diameter_mm = src.tube_diameter_mm;
@@ -986,11 +1019,41 @@ export function neonize(
     return r;
   }
 
-  const outerRun = withMeta(`${src.id}-outer`, outer.points, true);
-  const innerRun = withMeta(`${src.id}-inner`, inner.points, true);
-
   const nextRuns = doc.runs.slice();
-  nextRuns.splice(idx, 1, outerRun, innerRun);
+
+  if (stitch) {
+    // Stitch the two offsets into one continuous run with hairpin U-bends
+    // at the joins. For a closed source we still treat the result as an
+    // open path: outer goes around, hairpin at the "seam" connects to
+    // reversed-inner, hairpin back to outer's start. Electrodes presumably
+    // land at that seam. Hairpin defaults reuse PR #18's convention:
+    // depth = 1.5 × tube ø, gap = spacing.
+    const tubeDiam = src.tube_diameter_mm ?? 10;
+    const depth = options.hairpinDepthMM ?? 1.5 * tubeDiam;
+    const gap = options.hairpinGapMM ?? spacingMM;
+
+    const stitched = stitchOffsets(
+      outer.points,
+      inner.points,
+      src.polyline.closed,
+      depth,
+      gap,
+    );
+    const stitchedRun = withMeta(`${src.id}-stitched`, stitched, false);
+    nextRuns.splice(idx, 1, stitchedRun);
+  } else {
+    const outerRun = withMeta(
+      `${src.id}-outer`,
+      outer.points,
+      src.polyline.closed,
+    );
+    const innerRun = withMeta(
+      `${src.id}-inner`,
+      inner.points,
+      src.polyline.closed,
+    );
+    nextRuns.splice(idx, 1, outerRun, innerRun);
+  }
 
   // Stitch any non-empty warnings into a single user-facing string.
   const warnings: string[] = [];
@@ -1009,4 +1072,115 @@ export function neonize(
     doc: { ...doc, runs: nextRuns },
     warning: warnings.length > 0 ? warnings.join(' ') : undefined,
   };
+}
+
+// stitchOffsets — concatenate the outer offset, a hairpin U-bend at one
+// end, the reversed inner offset, and a closing hairpin if the source
+// was closed. The resulting polyline is one continuous open path.
+//
+// Geometry of the hairpin (matches PR #18 insertDoubleback's straight-
+// drop combination bend, rotated to bridge two parallel paths):
+//
+//   outer-tail --A         D-- inner-head (reversed)
+//                |         |
+//                B---------C
+//
+// where AD is the gap-wide "mouth" between outer-tail and inner-head,
+// and AB / DC drop perpendicular by `depth`. For a 180° bridge across a
+// gap of `spacing`, the natural mouth width IS `spacing` and the drop
+// is `depth` outward from the path. The implementation places the
+// hairpin so it bows away from the source polyline's tangent at the
+// seam — i.e. perpendicular to the seam line.
+function stitchOffsets(
+  outer: [number, number][],
+  inner: [number, number][],
+  closed: boolean,
+  depth: number,
+  gap: number,
+): [number, number][] {
+  const reversedInner = inner.slice().reverse();
+  if (outer.length < 1 || reversedInner.length < 1) {
+    return [...outer, ...reversedInner];
+  }
+
+  // For a CLOSED source the outer and inner both wrap; we need to build
+  // a single open run by walking outer, hairpinning to the reversed-
+  // inner's first point, walking the reversed inner, and hairpinning
+  // back to outer[0]. Both hairpins go on the "outside" of the seam
+  // (away from the path's interior).
+  //
+  // For an OPEN source the outer and inner share endpoint X-coordinates
+  // (both offset perpendicular to the source's first/last segments).
+  // The hairpin spans the spacing gap at each open endpoint.
+  if (closed) {
+    // Pick a seam: outer.last -> inner.last (reversed).first = inner.last.
+    // Build a hairpin at outer's last point and another at outer's first
+    // point (closing the loop into one continuous open run).
+    const oFirst = outer[0];
+    const oLast = outer[outer.length - 1];
+    const iFirst = reversedInner[0]; // == inner[inner.length - 1]
+    const iLast = reversedInner[reversedInner.length - 1]; // == inner[0]
+    const hairpin1 = buildHairpin(oLast, iFirst, depth, gap);
+    const hairpin2 = buildHairpin(iLast, oFirst, depth, gap);
+    return [...outer, ...hairpin1, ...reversedInner, ...hairpin2];
+  }
+
+  // Open: hairpins at both endpoints. Outer.last connects to
+  // reversedInner.first; outer.first connects to reversedInner.last
+  // (which is the path's other endpoint).
+  const oFirst = outer[0];
+  const oLast = outer[outer.length - 1];
+  const iFirst = reversedInner[0];
+  const iLast = reversedInner[reversedInner.length - 1];
+  const hairpin1 = buildHairpin(oLast, iFirst, depth, gap);
+  const hairpin2 = buildHairpin(iLast, oFirst, depth, gap);
+  return [
+    ...outer,
+    ...hairpin1,
+    ...reversedInner,
+    ...hairpin2,
+    // Close the path back to outer[0] so the stitched run truly walks the
+    // full perimeter and returns to its start. Drop the duplicate.
+    oFirst,
+  ];
+}
+
+// buildHairpin — emits the 4 internal vertices A, B, C, D of a U-bend
+// that bridges from `start` to `end`. Mouth width = |end - start|; depth
+// is perpendicular to the seam, on the side opposite the half-way
+// midpoint. Returns the 4 vertices (caller appends both `start` and
+// `end` from outer/inner).
+function buildHairpin(
+  start: [number, number],
+  end: [number, number],
+  depth: number,
+  gap: number,
+): [number, number][] {
+  // Direction along the seam (start -> end) and perpendicular drop.
+  const dx = end[0] - start[0];
+  const dy = end[1] - start[1];
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-6) {
+    // Degenerate seam — emit a tiny perpendicular bump so the path
+    // still connects without zero-length edges.
+    return [
+      [start[0], start[1] + depth],
+      [start[0] + gap, start[1] + depth],
+    ];
+  }
+  const fx = dx / len;
+  const fy = dy / len;
+  // Perpendicular: 90° CCW from forward.
+  const px = -fy;
+  const py = fx;
+  // A is at start, dropped depth perpendicular.
+  const ax = start[0] + px * depth;
+  const ay = start[1] + py * depth;
+  // B is at end, dropped depth perpendicular.
+  const bx = end[0] + px * depth;
+  const by = end[1] + py * depth;
+  return [
+    [ax, ay],
+    [bx, by],
+  ];
 }

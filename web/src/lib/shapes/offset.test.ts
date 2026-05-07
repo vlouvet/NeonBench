@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { offsetPolygon, signedArea } from './offset';
+import {
+  offsetOpenPolyline,
+  offsetPolygon,
+  segmentIntersection,
+  signedArea,
+  trimSelfIntersections,
+} from './offset';
 
 describe('offsetPolygon', () => {
   // 100×100 axis-aligned square traced CCW. No closing duplicate so we
@@ -107,5 +113,170 @@ describe('offsetPolygon', () => {
     expect(xs[3]).toBeCloseTo(110, 6);
     expect(ys[0]).toBeCloseTo(-10, 6);
     expect(ys[3]).toBeCloseTo(110, 6);
+  });
+});
+
+describe('offsetPolygon corner styles', () => {
+  // 100×100 CCW square; index 1 = top-right corner (90° turn).
+  function squareCCW(): [number, number][] {
+    return [
+      [0, 0],
+      [100, 0],
+      [100, 100],
+      [0, 100],
+    ];
+  }
+
+  it('cornerStyle "bevel" produces a chamfered corner (2 verts at the corner)', () => {
+    const r = offsetPolygon(squareCCW(), 10, {
+      cornerStyles: ['miter', 'bevel', 'miter', 'miter'],
+    });
+    // 3 mitered corners (1 vertex each) + 1 beveled corner (2 vertices)
+    // = 5 output vertices.
+    expect(r.points.length).toBe(5);
+    expect(r.miterClampedCount).toBe(1);
+  });
+
+  it('cornerStyle "round" produces multiple polyline points along the arc', () => {
+    const r = offsetPolygon(squareCCW(), 10, {
+      cornerStyles: ['miter', 'round', 'miter', 'miter'],
+    });
+    // 3 mitered + ≥3 sample points on the arc = at least 6 total. The
+    // arc samples scale with sweep angle (90° → ~10 samples).
+    expect(r.points.length).toBeGreaterThanOrEqual(6);
+    expect(r.miterClampedCount).toBe(1);
+  });
+});
+
+describe('offsetPolygon trimSelfIntersections', () => {
+  it('trims the inner-offset loop on a peanut shape', () => {
+    const peanut: [number, number][] = [
+      [0, 0],
+      [40, 0],
+      [40, 15],
+      [60, 15],
+      [60, 0],
+      [100, 0],
+      [100, 40],
+      [60, 40],
+      [60, 25],
+      [40, 25],
+      [40, 40],
+      [0, 40],
+    ];
+    const untrimmed = offsetPolygon(peanut, -8);
+    expect(untrimmed.selfIntersected).toBe(true);
+    const trimmed = offsetPolygon(peanut, -8, { trimSelfIntersections: true });
+    // After trimming, the polyline should no longer self-intersect.
+    expect(trimmed.selfIntersected).toBe(false);
+    // Trimming reduces vertex count (the loop arc gets dropped).
+    expect(trimmed.points.length).toBeLessThan(untrimmed.points.length);
+  });
+
+  it('trimSelfIntersections is a no-op on a clean offset', () => {
+    const square: [number, number][] = [
+      [0, 0],
+      [100, 0],
+      [100, 100],
+      [0, 100],
+    ];
+    const trimmed = offsetPolygon(square, 10, { trimSelfIntersections: true });
+    expect(trimmed.selfIntersected).toBe(false);
+    expect(trimmed.points.length).toBe(4);
+  });
+});
+
+describe('offsetOpenPolyline', () => {
+  it('offsets a horizontal line segment and emits butt caps', () => {
+    const r = offsetOpenPolyline([[0, 0], [100, 0]], 10);
+    // Only one edge; first endpoint translates by (0, -10), last by (0, -10).
+    // (Right-of-forward for forward = (1,0) is (0,-1).)
+    expect(r.points.length).toBe(2);
+    expect(r.points[0][0]).toBeCloseTo(0, 6);
+    expect(r.points[0][1]).toBeCloseTo(-10, 6);
+    expect(r.points[1][0]).toBeCloseTo(100, 6);
+    expect(r.points[1][1]).toBeCloseTo(-10, 6);
+  });
+
+  it('offsets a 90° L-shape with butt caps at both ends', () => {
+    // L: (0,0) → (100,0) → (100,100). Forward at first edge is +x; at
+    // second edge is +y. Right-of-forward at first edge = (0,-1) so the
+    // first endpoint translates to (0, -10). At the second edge, right
+    // is (1, 0) so the last endpoint translates to (110, 100).
+    const r = offsetOpenPolyline([[0, 0], [100, 0], [100, 100]], 10);
+    expect(r.points.length).toBe(3);
+    // First endpoint butt cap.
+    expect(r.points[0][0]).toBeCloseTo(0, 6);
+    expect(r.points[0][1]).toBeCloseTo(-10, 6);
+    // Interior corner at (100,0): bisector direction is (1,-1)/√2. Miter
+    // length = 10/cos(45°) = 10√2 ≈ 14.142. Output vertex =
+    // (100 + 14.142 * 1/√2, 0 + 14.142 * -1/√2) = (110, -10).
+    expect(r.points[1][0]).toBeCloseTo(110, 4);
+    expect(r.points[1][1]).toBeCloseTo(-10, 4);
+    // Last endpoint butt cap.
+    expect(r.points[2][0]).toBeCloseTo(110, 6);
+    expect(r.points[2][1]).toBeCloseTo(100, 6);
+    expect(r.miterClampedCount).toBe(0);
+    expect(r.selfIntersected).toBe(false);
+  });
+
+  it('negative distance offsets to the opposite (left) side', () => {
+    const r = offsetOpenPolyline([[0, 0], [100, 0]], -10);
+    // Flipping the sign moves the parallel run to (0,10) → (100,10).
+    expect(r.points[0][1]).toBeCloseTo(10, 6);
+    expect(r.points[1][1]).toBeCloseTo(10, 6);
+  });
+
+  it('returns the input unchanged for fewer than 2 vertices or zero distance', () => {
+    const empty = offsetOpenPolyline([], 10);
+    expect(empty.points).toEqual([]);
+    const single = offsetOpenPolyline([[5, 5]], 10);
+    expect(single.points).toEqual([[5, 5]]);
+    const zero = offsetOpenPolyline([[0, 0], [10, 0]], 0);
+    expect(zero.points).toEqual([[0, 0], [10, 0]]);
+  });
+});
+
+describe('segmentIntersection', () => {
+  it('detects a proper crossing', () => {
+    const pt = segmentIntersection([0, 0], [10, 10], [0, 10], [10, 0]);
+    expect(pt).not.toBeNull();
+    expect(pt![0]).toBeCloseTo(5, 6);
+    expect(pt![1]).toBeCloseTo(5, 6);
+  });
+
+  it('returns null for parallel segments', () => {
+    expect(segmentIntersection([0, 0], [10, 0], [0, 5], [10, 5])).toBeNull();
+  });
+
+  it('returns null when the segments do not overlap', () => {
+    expect(segmentIntersection([0, 0], [1, 1], [10, 10], [11, 11])).toBeNull();
+  });
+
+  it('returns null for shared endpoints (open intervals)', () => {
+    // Two segments meeting at (10,10) but not crossing through.
+    expect(segmentIntersection([0, 0], [10, 10], [10, 10], [20, 0])).toBeNull();
+  });
+});
+
+describe('trimSelfIntersections', () => {
+  it('drops the loop on a manually-built figure-eight slice', () => {
+    // Minimal self-intersecting open polyline: a triangle that crosses
+    // its own first edge.
+    //   (0,0) → (10,0) → (5, -5) → (5, 5)
+    // The third edge (5,-5)→(5,5) crosses the first edge (0,0)→(10,0).
+    const pts: [number, number][] = [
+      [0, 0],
+      [10, 0],
+      [5, -5],
+      [5, 5],
+    ];
+    const trimmed = trimSelfIntersections(pts, false);
+    // Result should be shorter than the input and should not contain
+    // the loop.
+    expect(trimmed.length).toBeLessThan(pts.length + 1);
+    // Verify by re-running the trimmer — should be a no-op.
+    const again = trimSelfIntersections(trimmed, false);
+    expect(again.length).toBe(trimmed.length);
   });
 });

@@ -856,7 +856,9 @@ describe('neonize', () => {
     expect(Math.max(...iYs)).toBeCloseTo(90, 6);
   });
 
-  it('returns a warning and leaves the doc untouched when the run is open', () => {
+  it('neonizes an open polyline into two parallel offset runs with butt caps', () => {
+    // Horizontal open run with one corner. Tier 3 #27: open-polyline
+    // neonize emits two parallel runs, no closing geometry.
     const doc: DesignDoc = {
       version: 1,
       view_box_mm: [0, 0, 100, 100],
@@ -864,13 +866,28 @@ describe('neonize', () => {
         {
           id: 'open',
           polyline: { points: [[0, 0], [50, 0], [100, 0]], closed: false },
+          tube_diameter_mm: 10,
         },
       ],
     };
     const result = ops.neonize(doc, 'open', 10);
-    expect(result.warning).toBeDefined();
-    expect(result.warning!.length).toBeGreaterThan(0);
-    expect(result.doc).toBe(doc); // strict identity: no-op
+    expect(result.warning).toBeUndefined();
+    expect(result.doc.runs.length).toBe(2);
+    const outer = result.doc.runs.find((r) => r.id === 'open-outer');
+    const inner = result.doc.runs.find((r) => r.id === 'open-inner');
+    expect(outer).toBeDefined();
+    expect(inner).toBeDefined();
+    expect(outer!.polyline.closed).toBe(false);
+    expect(inner!.polyline.closed).toBe(false);
+    // Both endpoints are butt caps offset by ±5mm perpendicular to the
+    // (purely horizontal) source.
+    expect(outer!.polyline.points[0][0]).toBeCloseTo(0, 6);
+    expect(outer!.polyline.points.at(-1)![0]).toBeCloseTo(100, 6);
+    expect(inner!.polyline.points[0][0]).toBeCloseTo(0, 6);
+    expect(inner!.polyline.points.at(-1)![0]).toBeCloseTo(100, 6);
+    // outer is on one side, inner the other — different y signs.
+    expect(Math.sign(outer!.polyline.points[0][1]))
+      .not.toBe(Math.sign(inner!.polyline.points[0][1]));
   });
 
   it('preserves color, tube_diameter_mm, and notes on both new runs', () => {
@@ -890,5 +907,66 @@ describe('neonize', () => {
     const result = ops.neonize(doc, 'does-not-exist', 10);
     expect(result.warning).toBeUndefined();
     expect(result.doc).toBe(doc);
+  });
+
+  it('stitch=true produces one continuous run instead of two', () => {
+    const { doc } = ops.neonize(squareDoc(), 'sq', 20, { stitch: true });
+    expect(doc.runs.length).toBe(1);
+    expect(doc.runs[0].id).toBe('sq-stitched');
+    expect(doc.runs[0].polyline.closed).toBe(false);
+    // Length ≈ outer (4 pts) + 2 hairpin verts + reversed inner (4 pts)
+    // + 2 hairpin verts + return-to-start = 13 vertices for a square.
+    expect(doc.runs[0].polyline.points.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it('stitch=true on an open polyline produces a single run', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'open',
+          polyline: { points: [[0, 0], [50, 0], [100, 0]], closed: false },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'open', 10, { stitch: true });
+    expect(result.doc.runs.length).toBe(1);
+    expect(result.doc.runs[0].id).toBe('open-stitched');
+    expect(result.doc.runs[0].polyline.closed).toBe(false);
+  });
+
+  it('cornerStyles option threads through to the offset geometry', () => {
+    // Square with one beveled corner: the beveled corner adds an extra
+    // output vertex on each offset (so vertex counts grow by 1 each).
+    const { doc: defaultDoc } = ops.neonize(squareDoc(), 'sq', 20);
+    const { doc: beveledDoc } = ops.neonize(squareDoc(), 'sq', 20, {
+      cornerStyles: ['miter', 'bevel', 'miter', 'miter'],
+    });
+    const defaultOuter = defaultDoc.runs.find((r) => r.id === 'sq-outer')!;
+    const beveledOuter = beveledDoc.runs.find((r) => r.id === 'sq-outer')!;
+    expect(beveledOuter.polyline.points.length).toBe(
+      defaultOuter.polyline.points.length + 1,
+    );
+  });
+
+  it('auto-trims self-intersection on the inner offset (no warning when fully cleaned)', () => {
+    // Concave peanut shape whose inner offset would loop without the
+    // trim heuristic. After trim the result should not surface a self-
+    // intersection warning.
+    const peanut: [number, number][] = [
+      [0, 0], [40, 0], [40, 15], [60, 15], [60, 0], [100, 0],
+      [100, 40], [60, 40], [60, 25], [40, 25], [40, 40], [0, 40],
+    ];
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 50],
+      runs: [{ id: 'p', polyline: { points: peanut, closed: true } }],
+    };
+    const result = ops.neonize(doc, 'p', 16);
+    // The trim should clean up the inner offset; no self-intersection
+    // warning should remain.
+    expect(result.warning ?? '').not.toMatch(/Inner offset self-intersects/);
   });
 });

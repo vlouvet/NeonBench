@@ -411,14 +411,21 @@ export default function EditorPage() {
     editDoc((prev) => ops.reverseRun(prev, selected));
   }
 
-  // Neonize replaces the selected closed run with two parallel offset
-  // runs (outer + inner) — the "double-stroke" channel-letter primitive
-  // (NW #123/131/141). Default spacing = 2 × tube diameter, giving a
-  // roughly square cross-section between the two tubes (Strattman NT
-  // Ch.7 shop default). Open polylines or degenerate runs surface a
-  // warning instead of mutating; we route that through the same
-  // setError channel that tube-spec / save errors use.
-  function neonizeSelected() {
+  // Neonize replaces the selected run with parallel offset run(s) — the
+  // "double-stroke" channel-letter primitive (NW #123/131/141). Default
+  // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
+  //
+  // Tier 3 #27 polish:
+  //   - Open polylines now produce two parallel runs with butt caps
+  //     instead of refusing.
+  //   - Self-intersection on the inner offset is auto-trimmed before
+  //     returning (heuristic; figure-8 cases still need node editing).
+  //   - `stitch` (controlled from a small popover next to the button)
+  //     concatenates the two offsets via hairpin U-bends into ONE
+  //     continuous run named `<id>-stitched`.
+  //   - Per-corner cap-style overrides flow through the docOps API but
+  //     have no UI in this PR — see Tier 3 follow-ups.
+  function neonizeSelected(opts: { stitch: boolean }) {
     if (!selected) return;
     if (!doc) return;
     const run = doc.runs.find((r) => r.id === selected);
@@ -434,14 +441,14 @@ export default function EditorPage() {
       setError('Neonize spacing must be a positive number.');
       return;
     }
-    const result = ops.neonize(doc, selected, spacing);
+    const result = ops.neonize(doc, selected, spacing, { stitch: opts.stitch });
     if (result.warning) setError(result.warning);
     else setError(null);
     if (result.doc !== doc) {
       editDoc(() => result.doc);
-      // The selected run was destroyed; pick the outer offset so the
-      // user keeps a sensible selection rather than losing focus.
-      setSelected(`${selected}-outer`);
+      // The selected run was destroyed; pick the new run so the user
+      // keeps a sensible selection rather than losing focus.
+      setSelected(opts.stitch ? `${selected}-stitched` : `${selected}-outer`);
     }
   }
 
@@ -838,7 +845,7 @@ export default function EditorPage() {
               <PathOpsRow
                 onSimplify={simplifySelected}
                 onReverse={reverseSelected}
-                onNeonize={neonizeSelected}
+                onNeonize={(o) => neonizeSelected(o)}
                 pointCount={selectedRun.polyline.points.length}
                 isClosed={selectedRun.polyline.closed}
               />
@@ -1014,11 +1021,17 @@ function PathOpsRow({
 }: {
   onSimplify: (epsilonMM: number) => void;
   onReverse: () => void;
-  onNeonize: () => void;
+  onNeonize: (opts: { stitch: boolean }) => void;
   pointCount: number;
   isClosed: boolean;
 }) {
   const [eps, setEps] = useState(0.5);
+  // Tier 3 #27: stitch toggle for the Neonize op. When checked, the two
+  // parallel offsets are joined via hairpin U-bends into one continuous
+  // run rather than emitted as `<id>-outer` / `<id>-inner`. State lives
+  // here (not lifted) because it's UI-local and doesn't need to survive
+  // run reselects.
+  const [stitchEnds, setStitchEnds] = useState(false);
   return (
     <div className="path-ops-row">
       <label className="diameter-picker">
@@ -1038,18 +1051,33 @@ function PathOpsRow({
         <button type="button" className="btn-secondary" onClick={onReverse} title="Reverse this run's polyline order. Flips electrode anchors so they keep pointing at the same physical points.">
           Reverse
         </button>
+        {/* Tier 3 #27: Neonize button + stitch toggle. The toggle sits
+            next to the button (not in a separate popover) to keep the
+            click-flow at one tap when defaults are fine. Open polylines
+            now neonize as well (butt-capped parallel offsets). */}
         <button
           type="button"
           className="btn-secondary"
-          onClick={onNeonize}
+          onClick={() => onNeonize({ stitch: stitchEnds })}
           title={
             isClosed
-              ? 'Replace this closed run with two parallel offset runs (outer + inner) — the double-stroke / channel-letter pattern.'
-              : 'Neonize requires a closed polyline; clicking will surface an explanatory warning.'
+              ? 'Replace this run with parallel offset runs — the double-stroke / channel-letter pattern. Toggle "stitch" to emit one continuous tube via U-bends.'
+              : 'Replace this open run with two butt-capped parallel offsets. Toggle "stitch" to emit one continuous tube via U-bends.'
           }
         >
           Neonize
         </button>
+        <label
+          className="meta neonize-stitch"
+          title="Stitch the outer + inner offsets into one continuous run by inserting hairpin U-bends at the ends. Useful for fabrications that prefer one tube run with electrodes at the seam."
+        >
+          <input
+            type="checkbox"
+            checked={stitchEnds}
+            onChange={(e) => setStitchEnds(e.target.checked)}
+          />
+          {' '}stitch ends
+        </label>
       </div>
     </div>
   );
