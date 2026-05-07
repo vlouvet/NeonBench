@@ -411,6 +411,40 @@ export default function EditorPage() {
     editDoc((prev) => ops.reverseRun(prev, selected));
   }
 
+  // Neonize replaces the selected closed run with two parallel offset
+  // runs (outer + inner) — the "double-stroke" channel-letter primitive
+  // (NW #123/131/141). Default spacing = 2 × tube diameter, giving a
+  // roughly square cross-section between the two tubes (Strattman NT
+  // Ch.7 shop default). Open polylines or degenerate runs surface a
+  // warning instead of mutating; we route that through the same
+  // setError channel that tube-spec / save errors use.
+  function neonizeSelected() {
+    if (!selected) return;
+    if (!doc) return;
+    const run = doc.runs.find((r) => r.id === selected);
+    if (!run) return;
+    const defaultSpacing = 2 * (run.tube_diameter_mm ?? projDiam);
+    const spacingStr = window.prompt(
+      'Spacing between the two parallel tubes (mm). Tip: stroke width = 2 × tube diameter + spacing.',
+      String(defaultSpacing),
+    );
+    if (spacingStr === null) return;
+    const spacing = Number(spacingStr);
+    if (!Number.isFinite(spacing) || spacing <= 0) {
+      setError('Neonize spacing must be a positive number.');
+      return;
+    }
+    const result = ops.neonize(doc, selected, spacing);
+    if (result.warning) setError(result.warning);
+    else setError(null);
+    if (result.doc !== doc) {
+      editDoc(() => result.doc);
+      // The selected run was destroyed; pick the outer offset so the
+      // user keeps a sensible selection rather than losing focus.
+      setSelected(`${selected}-outer`);
+    }
+  }
+
   // Drawing tools (pen / rect / circle / arc) hand a finished polyline up
   // here; we wrap it in a DesignRun and let appendRuns assign a stable id
   // following the per-prefix counter convention used by the Hershey tool.
@@ -804,7 +838,9 @@ export default function EditorPage() {
               <PathOpsRow
                 onSimplify={simplifySelected}
                 onReverse={reverseSelected}
+                onNeonize={neonizeSelected}
                 pointCount={selectedRun.polyline.points.length}
+                isClosed={selectedRun.polyline.closed}
               />
               {!selectedRun.polyline.closed && (
                 <div className="path-ops-row" title="Arm a join: pick this run's head or tail, then click another open run's endpoint in the canvas (node tool active) to merge them. Cancel by switching tools or pressing Esc.">
@@ -972,11 +1008,15 @@ export default function EditorPage() {
 function PathOpsRow({
   onSimplify,
   onReverse,
+  onNeonize,
   pointCount,
+  isClosed,
 }: {
   onSimplify: (epsilonMM: number) => void;
   onReverse: () => void;
+  onNeonize: () => void;
   pointCount: number;
+  isClosed: boolean;
 }) {
   const [eps, setEps] = useState(0.5);
   return (
@@ -997,6 +1037,18 @@ function PathOpsRow({
         </button>
         <button type="button" className="btn-secondary" onClick={onReverse} title="Reverse this run's polyline order. Flips electrode anchors so they keep pointing at the same physical points.">
           Reverse
+        </button>
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={onNeonize}
+          title={
+            isClosed
+              ? 'Replace this closed run with two parallel offset runs (outer + inner) — the double-stroke / channel-letter pattern.'
+              : 'Neonize requires a closed polyline; clicking will surface an explanatory warning.'
+          }
+        >
+          Neonize
         </button>
       </div>
     </div>

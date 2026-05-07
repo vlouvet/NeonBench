@@ -1,6 +1,6 @@
 # Tier 2 #7 — Neonize / Parallel-tube layout / Auto Double-Stroke
 
-> **Status:** active · started 2026-05-07 · branch `task/7-neonize`
+> **Status:** done · shipped 2026-05-07 · branch `task/7-neonize`
 
 ## Goal
 
