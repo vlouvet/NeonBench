@@ -20,8 +20,21 @@ type TubeSpec struct {
 	// means "no override; validator falls back to 85°". Hairpin
 	// double-backs are exempted regardless of this threshold.
 	SharpBendAngleDeg *float64 `json:"sharp_bend_angle_deg,omitempty"`
-	IsDefault         bool     `json:"is_default"`
-	CreatedAt         string   `json:"created_at"`
+	// Optional outer-wall thickness in millimeters (Tier 3 #31). Lets
+	// the bend-radius derivation in validate/rules.go pick a tighter
+	// or looser default when min_bend_radius_mm is left blank. nil
+	// means "no per-spec value; the derivation falls back to the
+	// diameter-only 2.25×D bound from docs/neon-rules/bend-radius.md".
+	// Typical clear-glass values: 1.0 mm (8 mm tube) → 1.5 mm (15 mm
+	// tube), per Miller p.115 / NT Table 3.10.
+	WallThicknessMM *float64 `json:"wall_thickness_mm,omitempty"`
+	// Optional bend technique (Tier 3 #31). One of "ribbon",
+	// "crossfire", or "hand_torch" — see derivedMinBendRadius for the
+	// K-constant table. nil means "no per-spec value; the derivation
+	// falls back to the diameter-only 2.25×D bound".
+	BendTechnique *string `json:"bend_technique,omitempty"`
+	IsDefault     bool    `json:"is_default"`
+	CreatedAt     string  `json:"created_at"`
 }
 
 type Project struct {

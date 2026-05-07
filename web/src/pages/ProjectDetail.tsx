@@ -4,8 +4,10 @@ import {
   api,
   DEFAULT_CHANNEL_LETTER_DEPTH_MM,
   DEFAULT_TUBE_END_GAP_MM,
+  derivedMinBendRadiusMM,
   parseReport,
   type Asset,
+  type BendTechnique,
   type DesignVersion,
   type Project,
   type TubeSpec,
@@ -946,6 +948,13 @@ function TubeSpecEditor({
         />
         mm
       </label>
+      <BendDerivationFields
+        spec={spec}
+        diameterDraft={diameter}
+        onUseDerived={(r) => setBend(r.toFixed(1))}
+        busy={busy}
+      />
+
       <label>
         seg{' '}
         <input
@@ -990,6 +999,68 @@ function TubeSpecEditor({
         Cancel
       </button>
       {localError && <span className="error">{localError}</span>}
+    </span>
+  );
+}
+
+// BendDerivationFields surfaces the spec's wall_thickness_mm and
+// bend_technique metadata alongside a live "Derived: NN.N mm" indicator
+// computed from the diameter the user is currently editing. The "Use
+// derived" button populates the manual `bend` input so the operator can
+// review the value before saving — this preserves the existing PATCH
+// semantics (the manual override is what gets persisted) while making
+// the wall-thinning derivation visible in the UI.
+//
+// Tier 3 #31. The wall-thickness and technique fields are display-only
+// in this PR — they're seeded by migration 0010 and will become
+// editable in a follow-up that extends the PATCH /api/tube_specs/{id}
+// route. See follow-ups in the PR body for tracking.
+function BendDerivationFields({
+  spec,
+  diameterDraft,
+  onUseDerived,
+  busy,
+}: {
+  spec: TubeSpec;
+  diameterDraft: string;
+  onUseDerived: (radiusMM: number) => void;
+  busy: boolean;
+}) {
+  const liveDiameter = Number(diameterDraft);
+  const D = Number.isFinite(liveDiameter) && liveDiameter > 0 ? liveDiameter : spec.diameter_mm;
+  const wall = spec.wall_thickness_mm;
+  const technique = spec.bend_technique as BendTechnique | undefined;
+  const derived = derivedMinBendRadiusMM(D, wall, technique);
+  const wallLabel = wall === undefined ? '(unset)' : `${wall.toFixed(2)} mm`;
+  const techLabel = technique ?? '(unset)';
+  const derivedSourceTitle =
+    wall !== undefined && technique
+      ? `K * D² / t = ${
+          technique === 'ribbon' ? '0.20' : technique === 'crossfire' ? '0.225' : '0.275'
+        } * ${D}² / ${wall.toFixed(2)} = ${derived.toFixed(2)} mm`
+      : `Diameter-only fall-back: 2.25 * D = ${derived.toFixed(2)} mm. Add wall thickness + technique to the spec for a tighter derivation.`;
+  return (
+    <span
+      style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}
+      title="Inputs to the wall-thinning bend-radius derivation (Tier 3 #31). Saved by migration; PATCH support coming in a follow-up."
+    >
+      <span style={{ opacity: 0.75 }}>
+        wall <strong>{wallLabel}</strong>, technique <strong>{techLabel}</strong>
+      </span>
+      <span style={{ opacity: 0.75 }} title={derivedSourceTitle}>
+        derived <strong>{derived > 0 ? `${derived.toFixed(1)} mm` : '—'}</strong>
+      </span>
+      <button
+        type="button"
+        className="btn-secondary"
+        disabled={busy || derived <= 0}
+        onClick={() => {
+          if (derived > 0) onUseDerived(derived);
+        }}
+        title="Copy the derived radius into the bend field above. Review and click Save spec to persist."
+      >
+        Use derived
+      </button>
     </span>
   );
 }
