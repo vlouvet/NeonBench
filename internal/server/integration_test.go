@@ -1626,6 +1626,209 @@ func TestImportBundleRejectsMalformed(t *testing.T) {
 	}
 }
 
+// TestImportBundleRejectsFutureSchema verifies the dispatcher's
+// upgrade branch: a bundle whose schema is newer than this server
+// understands must come back as 422 with a message that mentions
+// both "schema" and "upgrade", and must not leave any rows behind.
+// Pins the contract so when we eventually ship a v2 bundle, an
+// older NeonBench install fails loudly instead of silently
+// importing whatever the v1 importer happens to make of it.
+func TestImportBundleRejectsFutureSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	// Build a bundle that would be a perfectly valid v1 import...
+	bundle := buildSyntheticBundle(t, "future bundle", storage.TubeSpec{
+		Name:               "12mm clear",
+		DiameterMM:         12,
+		MinBendRadiusMM:    27,
+		MaxSegmentLengthMM: 2500,
+		MinSpacingMM:       14,
+	}, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg" data-marker="future-v1"/>`},
+	})
+	// ...then rewrite the manifest's schema to a future value. We
+	// crack open the zip we just produced rather than adding a flag
+	// to the helper — keeps the helper honest about producing
+	// "valid v1" bundles, and the rewrite is small.
+	bundle = rewriteBundleSchema(t, bundle, 2)
+
+	projsBefore := mustListProjects(t, db)
+
+	resp := postBundleRaw(t, client, base+"/api/projects/import", "future.neonbench", bundle)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("want 422, got %d: %s", resp.StatusCode, body)
+	}
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "schema") {
+		t.Errorf("error body should mention 'schema': %q", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "upgrade") {
+		t.Errorf("error body should mention 'upgrade': %q", bodyStr)
+	}
+
+	if got := mustListProjects(t, db); len(got) != len(projsBefore) {
+		t.Errorf("future-schema bundle left rows behind (%d → %d)", len(projsBefore), len(got))
+	}
+}
+
+// TestImportBundleAcceptsLegacyMissingSchema pins the missing-field
+// tolerance baked into the dispatcher: a manifest with no `schema`
+// key (zero value after JSON unmarshal) must still import as v1.
+// Bundles in the wild always set schema=1, but we don't want a
+// hand-crafted manifest to fail on a technicality the moment we
+// add schema branching.
+func TestImportBundleAcceptsLegacyMissingSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	bundle := buildSyntheticBundle(t, "legacy missing schema", storage.TubeSpec{
+		Name:               "12mm clear",
+		DiameterMM:         12,
+		MinBendRadiusMM:    27,
+		MaxSegmentLengthMM: 2500,
+		MinSpacingMM:       14,
+	}, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg" data-marker="legacy-v1"/>`, Label: "only"},
+	})
+	// Drop the schema key entirely from the manifest. This is the
+	// shape a hand-crafted manifest takes — the export endpoint
+	// always emits schema=1, but we want the importer to still
+	// accept zero-value-on-unmarshal as legacy v1.
+	bundle = rewriteBundleSchema(t, bundle, -2 /* sentinel: drop the key */)
+
+	resp := postBundleRaw(t, client, base+"/api/projects/import", "legacy.neonbench", bundle)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", resp.StatusCode, body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode response: %v (body=%s)", err, body)
+	}
+	if name, _ := got["name"].(string); name != "legacy missing schema" {
+		t.Errorf("imported project name: want %q, got %q", "legacy missing schema", name)
+	}
+}
+
+// TestImportBundleRejectsNegativeSchema covers the "weird" leg of
+// the dispatcher: a negative schema is nonsense input and should
+// fail with 400, not 422 (negative is malformed, not "from the
+// future"). Keeps the dispatcher's edge-case guard from quietly
+// rotting if someone reorders the switch later.
+func TestImportBundleRejectsNegativeSchema(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	bundle := buildSyntheticBundle(t, "negative schema", storage.TubeSpec{
+		Name:               "12mm clear",
+		DiameterMM:         12,
+		MinBendRadiusMM:    27,
+		MaxSegmentLengthMM: 2500,
+		MinSpacingMM:       14,
+	}, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg" data-marker="negative"/>`},
+	})
+	bundle = rewriteBundleSchema(t, bundle, -1)
+
+	resp := postBundleRaw(t, client, base+"/api/projects/import", "negative.neonbench", bundle)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", resp.StatusCode, body)
+	}
+}
+
+// rewriteBundleSchema cracks open a .neonbench zip we just produced,
+// patches the manifest's schema field, and re-zips. Only used by the
+// dispatcher tests. `schema == -2` is a sentinel meaning "delete the
+// schema key entirely" so we can test the missing-field path.
+func rewriteBundleSchema(t *testing.T, src []byte, schema int) []byte {
+	t.Helper()
+	zr, err := zip.NewReader(bytes.NewReader(src), int64(len(src)))
+	if err != nil {
+		t.Fatalf("re-open bundle: %v", err)
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open zip entry %q: %v", f.Name, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read zip entry %q: %v", f.Name, err)
+		}
+		if f.Name == "manifest.json" {
+			var m map[string]any
+			if err := json.Unmarshal(data, &m); err != nil {
+				t.Fatalf("decode manifest for rewrite: %v", err)
+			}
+			if schema == -2 {
+				delete(m, "schema")
+			} else {
+				m["schema"] = schema
+			}
+			data, err = json.MarshalIndent(m, "", "  ")
+			if err != nil {
+				t.Fatalf("re-encode manifest: %v", err)
+			}
+		}
+		mustZip(t, zw, f.Name, data)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip close: %v", err)
+	}
+	return out.Bytes()
+}
+
 // --- helpers shared by the import tests ---------------------------------
 
 type syntheticVersion struct {

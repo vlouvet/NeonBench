@@ -70,3 +70,36 @@ h2 {
   font-size: 1.1rem;
   margin-top: 2rem;
 }
+
+/* Tier 3 #22 — bundle drag-drop overlay on the project list page.
+   Kept self-contained so adding raw-image drag-drop (#30) can copy or
+   generalize this block without competing for selectors. */
+.project-list-section {
+  /* Make the overlay's `position: absolute` anchor to the section
+     rather than the body — keeps the dashed border hugging the list
+     content area instead of the full viewport. */
+  position: relative;
+}
+.project-list-section.drag-active {
+  /* Subtle tint behind the overlay so the page registers as a valid
+     drop target even before the user reads the hint. */
+  background: rgba(255, 59, 107, 0.04);
+}
+.drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: rgba(15, 15, 18, 0.65);
+  color: var(--text);
+  font-size: 1.1rem;
+  font-weight: 500;
+  z-index: 10;
+  /* CRITICAL: without pointer-events:none, releasing the mouse over
+     the overlay's text element fires `dragend` instead of `drop` on
+     the underlying section. */
+  pointer-events: none;
+}

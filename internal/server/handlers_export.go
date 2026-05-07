@@ -17,6 +17,13 @@ import (
 	"github.com/vlouvet/neonbench/internal/storage"
 )
 
+// currentBundleSchema is the highest bundle schema version this
+// server understands. Bumping this is a coordinated change: add a
+// new importBundleVN method, append it to the dispatcher switch,
+// and only then update this constant. The export path references
+// it directly so a server only ever writes bundles it can read.
+const currentBundleSchema = 1
+
 // bundleManifest is the top-level descriptor inside a .neonbench zip.
 // Keeps an explicit schema version so future loaders can branch on
 // it without parsing the rest first.
@@ -70,7 +77,7 @@ func (s *apiServer) handleExportBundle(w http.ResponseWriter, r *http.Request) {
 
 	manifest := bundleManifest{
 		Bundle:     "neonbench",
-		Schema:     1,
+		Schema:     currentBundleSchema,
 		ExportedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Project: bundleProject{
 			Name:      project.Name,
@@ -163,18 +170,14 @@ const tubeSpecMatchEpsilon = 1e-6
 // round-trip so users can move projects between installs (migration,
 // shared review, restore-from-backup).
 //
-// The flow is:
-//  1. Parse multipart upload (capped at maxUploadBytes), unzip in
-//     memory, decode `manifest.json`.
-//  2. Resolve a tube spec: reuse an existing one whose dimensional
-//     fields match the manifest snapshot, otherwise insert a new spec
-//     so we don't pollute the seed list with duplicates that only
-//     differ by name.
-//  3. Open a transaction, insert the project (appending "(imported)"
-//     if the name collides with an existing project), then insert
-//     every design version in version_no order. Roll back on any
-//     failure so the user never sees a half-imported project.
-//  4. Return the new project as JSON, mirroring `handleCreateProject`.
+// This entry point is a thin dispatcher: it parses the multipart
+// upload, unzips, decodes the manifest, validates the cross-version
+// invariants ("bundle"=="neonbench", non-empty name, ≥1 version),
+// then switches on `manifest.Schema` to pick the right importer.
+// Each schema version owns its own importBundleVN method which
+// writes the response on its happy path. Adding a v2 importer means
+// dropping in `importBundleV2` and bumping `currentBundleSchema` —
+// the dispatcher itself shouldn't grow.
 func (s *apiServer) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
 	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
@@ -223,6 +226,53 @@ func (s *apiServer) handleImportBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Schema dispatch. We treat 0 (zero-value / missing field) as
+	// legacy v1: bundles produced by handleExportBundle always set
+	// schema=1, but a hand-crafted manifest without the field should
+	// still import as v1 rather than 422-ing on a technicality. Use
+	// `>` for the upgrade branch so a v3 bundle on a v1 server gets
+	// the upgrade message rather than a generic 400.
+	switch {
+	case manifest.Schema < 0:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid bundle schema: %d", manifest.Schema))
+		return
+	case manifest.Schema > currentBundleSchema:
+		writeError(w, http.StatusUnprocessableEntity,
+			fmt.Sprintf("bundle schema %d is newer than this NeonBench supports (max %d); upgrade to import.",
+				manifest.Schema, currentBundleSchema))
+		return
+	case manifest.Schema == 0 || manifest.Schema == 1:
+		s.importBundleV1(w, r, manifest, files)
+		return
+	default:
+		// Unreachable today (covered by the cases above for 0..currentBundleSchema)
+		// but guards against a future bump that forgets to add a case.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid bundle schema: %d", manifest.Schema))
+		return
+	}
+}
+
+// importBundleV1 is the schema-1 importer. Owns every step from
+// version-asset resolution through the final JSON response. Kept as
+// a method on *apiServer so it can hit s.db without threading deps
+// through the call site. Behavior is byte-identical to the
+// pre-dispatcher handler — the structural split is purely so a
+// future importBundleV2 has an obvious place to land.
+//
+// Per-version flow:
+//  1. Resolve each manifest version's SVG / doc / report blobs from
+//     the in-memory file map; bail if any are missing before we
+//     touch the DB.
+//  2. Resolve a tube spec: reuse an existing one whose dimensional
+//     fields match the manifest snapshot, otherwise insert a new spec
+//     so we don't pollute the seed list with duplicates that only
+//     differ by name.
+//  3. Open a transaction, insert the project (appending "(imported)"
+//     if the name collides with an existing project), then insert
+//     every design version in version_no order. Roll back on any
+//     failure so the user never sees a half-imported project.
+//  4. Return the new project as JSON, mirroring `handleCreateProject`.
+func (s *apiServer) importBundleV1(w http.ResponseWriter, r *http.Request, manifest bundleManifest, files map[string][]byte) {
 	// Resolve every version's bundled SVG / doc / report up-front so a
 	// missing entry fails before we touch the DB.
 	type pendingVersion struct {

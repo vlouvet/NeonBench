@@ -1,6 +1,6 @@
 # Tier 3 #22 — Bundle import: drag-drop + schema-versioned branching
 
-> **Status:** active · started 2026-05-07 · branch `task/22-bundle-import-polish`
+> **Status:** done · branch `task/22-bundle-import-polish`
 
 ## Goal
 

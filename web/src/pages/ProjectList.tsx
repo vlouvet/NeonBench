@@ -2,13 +2,33 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, type Project, type TubeSpec } from '../api';
 
+// isBundleFile decides whether a dropped file looks like a .neonbench
+// bundle. Filename test catches the canonical case; the application/zip
+// MIME fallback catches users who renamed `.neonbench` to `.zip` (or
+// browsers that report the renamed-zip MIME). We deliberately don't
+// peek the magic bytes here — the server validates the zip on POST,
+// and a client-side false positive just produces the same server error
+// the existing button path would.
+function isBundleFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.neonbench')) return true;
+  if (file.type === 'application/zip') return true;
+  return false;
+}
+
 export default function ProjectList() {
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [tubeSpecs, setTubeSpecs] = useState<TubeSpec[] | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  // dragenter fires on the parent AND on each child as the cursor
+  // crosses it; without a counter, dragleave from the parent flips
+  // dragActive off the moment the cursor enters a child element. The
+  // ref approach pins the depth across renders (state would batch).
+  const dragDepthRef = useRef(0);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -34,12 +54,11 @@ export default function ProjectList() {
     }
   }
 
-  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    // Reset the input straight away so picking the same file twice in a
-    // row still fires onChange. Otherwise React drops the second pick.
-    e.target.value = '';
-    if (!file) return;
+  // runImport is the shared post-File flow used by both the hidden
+  // file input and the drag-drop handler. Keeping it as one function
+  // means the two entry points can never drift on error handling,
+  // navigation, or the importing flag.
+  async function runImport(file: File) {
     setError(null);
     setImporting(true);
     try {
@@ -57,13 +76,77 @@ export default function ProjectList() {
     }
   }
 
+  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input straight away so picking the same file twice in a
+    // row still fires onChange. Otherwise React drops the second pick.
+    e.target.value = '';
+    if (!file) return;
+    await runImport(file);
+  }
+
+  function onDragEnter(e: React.DragEvent<HTMLElement>) {
+    // Only react to drags carrying files; ignore link/text drags so
+    // we don't show the overlay for someone dragging selected text.
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    if (dragDepthRef.current === 1) setDragActive(true);
+  }
+
+  function onDragOver(e: React.DragEvent<HTMLElement>) {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    // preventDefault is mandatory; without it the browser refuses to
+    // fire the subsequent drop event at all.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+
+  function onDragLeave(e: React.DragEvent<HTMLElement>) {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0;
+      setDragActive(false);
+    }
+  }
+
+  function onDrop(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    if (files.length > 1) {
+      // Bundle import is single-file by design; surface the rest as a
+      // console hint rather than silently importing whichever file
+      // lands at index 0.
+      console.warn(
+        `Bundle import takes one file; ignoring ${files.length - 1} additional file(s).`,
+      );
+    }
+    const file = files[0];
+    if (!isBundleFile(file)) {
+      const ext = file.name.includes('.') ? file.name.slice(file.name.lastIndexOf('.')) : '';
+      setError(`Drop a .neonbench file. That looked like a ${ext || file.type || 'non-bundle file'}.`);
+      return;
+    }
+    void runImport(file);
+  }
+
   if (error && !projects) return <p className="error">{error}</p>;
   if (!projects || !tubeSpecs) return <p className="meta">Loading…</p>;
 
   const tubeSpecById = new Map(tubeSpecs.map((t) => [t.id, t]));
 
   return (
-    <section>
+    <section
+      className={dragActive ? 'project-list-section drag-active' : 'project-list-section'}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <div className="row">
         <h1>Projects</h1>
         <div className="row" style={{ gap: '0.5rem' }}>
@@ -78,13 +161,21 @@ export default function ProjectList() {
             type="button"
             onClick={() => importInputRef.current?.click()}
             disabled={importing}
-            title="Import a .neonbench bundle exported from another install"
+            title="Import a .neonbench bundle exported from another install (or drop one anywhere on this page)"
           >
             {importing ? 'Importing…' : 'Import .neonbench'}
           </button>
           <button onClick={() => setCreating(true)}>New project</button>
         </div>
       </div>
+      {dragActive && (
+        // pointer-events: none is non-negotiable: without it, releasing
+        // the mouse on the overlay's text won't fire `drop` on the
+        // section. The styling is in index.css under `/* Tier 3 #22 */`.
+        <div className="drop-overlay" aria-hidden="true">
+          <span>Drop a .neonbench bundle to import</span>
+        </div>
+      )}
       {error && projects && <p className="error">{error}</p>}
       {projects.length === 0 ? (
         <p className="empty">No projects yet. Create one to start.</p>
