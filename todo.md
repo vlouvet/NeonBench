@@ -99,8 +99,8 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Vector editor
 
 - [x] Canvas: raw SVG + custom pointer/wheel pan-zoom (lighter than Konva/Fabric, good enough for this scope)
-- [x] Node-level polyline editing: drag any vertex to reshape; shift-click to delete; electrode references shift correctly. Bezier-aware control-handle editing and segment-click insert are follow-ups.
-- [x] Path operations: simplify (Douglas-Peucker, ε configurable in sidebar) and reverse (flips polyline order, rewrites electrode anchors). Split/join still TODO.
+- [x] Node-level polyline editing: drag any vertex to reshape; shift-click to delete; alt-click empty segment to **insert vertex**; alt-click vertex to **split run**; sidebar "Join from head/tail" arms a two-click endpoint selector to **join runs**. Electrode / blockout / annotation / bend references shift correctly across all five operations (PR #23). Bezier-aware control-handle editing remains a Tier 3 follow-up.
+- [x] Path operations: simplify (Douglas-Peucker, ε configurable in sidebar), reverse (flips polyline order, rewrites electrode anchors), split + join (PR #23), and Neonize (closed-polyline polygon offset → two parallel offset runs, PR #26).
 - [x] Snap to grid (toolbar toggle + mm spacing input). Affects label/dimension placement and vertex drag; pan/zoom and run-path picks stay un-snapped. Snap-to-angle and snap-to-geometry still TODO.
 - [ ] Multi-select, group, layers
 - [x] Cross-session checkpoints: every Save writes a new `design_versions` row (history list lets you switch back). In-session undo/redo with coalescing also done — `editDoc()` records each mutation to an `undoStackRef`, 500ms coalescing collapses rapid sequential edits, Cmd/Ctrl+Z undoes and Cmd/Ctrl+Shift+Z redoes (`EditorPage.tsx:46-118`).
@@ -177,16 +177,16 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
-| Neon Design Tools | 7 | 0 | 16 | 0 |
+| Neon Design Tools | 10 | 0 | 13 | 0 |
 | Fonts & Text | 0 | 2 | 16 | 0 |
 | Design Tools | 5 | 4 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
-| Vector Graphics | 1 | 3 | 6 | 0 |
+| Vector Graphics | 2 | 2 | 6 | 0 |
 | Image Manipulation | 5 | 1 | 1 | 0 |
-| Cutting/Plotting/Printing | 3 | 2 | 4 | 9 |
+| Cutting/Plotting/Printing | 4 | 2 | 3 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **25** | **13** | **95** | **15** |
+| **Totals** | **30** | **12** | **91** | **15** |
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -196,7 +196,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | 120 | Add Common Housings | ❌ | electrodes placed, no housing geometry |
 | 121 | Add Mounting Holes | ❌ | |
 | 122 | Add Tube Supports | ✅ | click-to-place support markers |
-| 123 | Auto Tube Layout | ❌ | no auto double-stroke / parallel-tube generator |
+| 123 | Auto Tube Layout | ✅ | Neonize sidebar action emits inside + outside parallel offsets at user-set spacing (PR #26) |
 | 124 | Change Neon Tube Diameter Only | ✅ | per-run diameter override, scales bend-radius validation |
 | 125 | Connect Tubes | ❌ | |
 | 126 | Create Custom Housings | ❌ | |
@@ -204,7 +204,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | 128 | Insert Doublebacks | ✅ | "Insert DB" tool splices 4 vertices for a hairpin U at click point; default 1.5× ø depth + 1.0× ø gap (PR #18) |
 | 129 | Maximum Tube Length | ✅ | validation rule + arc-midpoint flag |
 | 130 | Move Opening / Break Tube Open | ❌ | path split/join is on Phase 2 todo |
-| 131 | Neonize (outline → tube path) | ❌ | killer missing op |
+| 131 | Neonize (outline → tube path) | ✅ | Closed-polyline angle-bisector offset with miter clamp; default spacing 2× tube diameter (PR #26) |
 | 132 | Neon Summary | ✅ | bend-list PDF page per run |
 | 133 | Raceway Support | ❌ | |
 | 134 | Switch Drop / Flat Blend | ❌ | |
@@ -214,7 +214,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | 138 | Neon Auto Spacing | ❌ | |
 | 139 | Neon Preview (glow) | ❌ | Phase 3 |
 | 140 | Neon Preview for Groups | ❌ | Phase 3 |
-| 141 | Parallel Tube Layout | ❌ | tied to #123 / #131 |
+| 141 | Parallel Tube Layout | ✅ | Same op as Neonize — emits inside + outside runs from a closed source (PR #26) |
 
 ### Fonts & Text (18 features)
 
@@ -240,7 +240,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 ### Vector Graphics Tools (10 features)
 
 - ✅ #80 Optimize Vectors (Douglas-Peucker simplify in editor sidebar)
-- 🟡 #78 Node Edit Tools (drag + delete; insert/break/join still TODO — see Phase 2 line 102) · #81 PDF Import + Export (export ✅, import ❌) · #83 Vector Filters (SVG only)
+- ✅ #78 Node Edit Tools (drag + delete + insert + split + join, all shipped — PR #23 closed insert/split/join)
+- 🟡 #81 PDF Import + Export (export ✅, import ❌) · #83 Vector Filters (SVG only)
 - ❌ #75 Bezier Tool (pen tool in PR #10 emits polylines only; bezier handles tracked in Tier 3 #20) · #74 Tangency indicator · #76 AI/EPS import · #77 AI multi-version filter · #79 On-Screen Digitizing · #82 Sharp-Corner Tool
 
 ### Image Manipulation (7 features)
@@ -253,7 +254,8 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 - ✅ #93 Horizontal/Vertical Paneling (oversize tiling) · #96 Plot to File (1:1 PDF) · #108 DXF Routing/Engraving export (PR #12)
 - 🟡 #92 All Windows Printers (download → OS print dialog) · #97 Print Preview (PDF is the preview)
-- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat · #106 Channel Letter Return Patterns
+- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat
+- ✅ #106 Channel Letter Return Patterns (per-run face flag + per-project depth + PDF unfolded-strip pages — PR #25)
 - 🚫 #91, 95, 100–105, 107: plotter/cutter drivers, network plot, plot manager, USB cutter, weed lines/borders, Windows print driver, pen fill — neon shops use a printed full-size pattern, not a vinyl cutter
 
 ### Productivity (10 features)
@@ -284,10 +286,10 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 
 ### Tier 2 — Largest NW parity gaps
 
-7. **Neonize / Parallel-tube layout / Auto Double-Stroke** (NW #123, #131, #141). Take a closed outline path, emit two parallel tube paths offset by tube diameter + spacing. Single biggest neon-specific gap.
+7. ✅ **Neonize / Parallel-tube layout / Auto Double-Stroke** (NW #123, #131, #141). Shipped in PR #26. Angle-bisector polygon offset with miter clamping (default `miterLimit = 4.0` matching SVG); closed-polyline only in V1; default spacing `2 × tube_diameter_mm` per Strattman NT Ch.7. Source run is replaced by two new runs (`<id>-outer`, `<id>-inner`); color/diameter/notes inherit. Self-intersection at concave corners surfaces a warning but emits the geometry anyway. Sidebar action only — `EditorCanvas.tsx` was kept untouched. Open polylines, self-intersection cleanup, and end-stitching via U-bends deferred to Tier 3.
 8. ✅ **In-session undo/redo with coalescing** (todo.md:106; NW #44, #116). Already shipped — `EditorPage.tsx:46-118` has `undoStackRef` / `redoStackRef`, 500ms coalescing of rapid sequential edits, Cmd/Ctrl+Z + Cmd/Ctrl+Shift+Z keyboard shortcuts. Phase 2 row 106 and Appendix A NW #38 / #116 stale claims fixed.
-9. **Node insert / break / join** (todo.md:102, 104; NW #78). Click on a segment to add a vertex; split a polyline at a vertex; join two endpoints.
-10. **Channel letter return patterns** (NW #106). The single channel-letter shop feature missing — measured return depth and trim outline per letter.
+9. ✅ **Node insert / break / join** (todo.md:102, 104; NW #78). Shipped in PR #23. Three new helpers in `docOps.ts` — `insertVertex`, `splitRun`, `joinRuns` — wired into the existing `node` tool. UX: alt-click empty segment inserts; alt-click vertex splits; sidebar "Join from head/tail" arms a two-click endpoint selector with green pulse highlight. All operations route through `editDoc()` so undo/redo just works. Index-shifting unified across electrodes / blockouts / annotations / bends; 12 tests cover the boundary conditions.
+10. ✅ **Channel letter return patterns** (NW #106). Shipped in PR #25. Per-run `IsChannelLetterFace` flag (design-doc) + per-project `ChannelLetterDepthMM` (migration `0007`, default 100mm). PDF emits one extra page per face-marked run with the unfolded return strip — rectangle perimeter × depth with a tick + cumulative arc length + signed turn angle (positive = bend inward) at every polyline vertex. Open polylines emit the strip with a red warning footer. Per-run depth override + perimeter-vs-blank-length validation deferred to Tier 3.
 11. ✅ **DXF export for CNC tube benders** (todo.md:148; NW #108). Shipped in PR #12. R12 ASCII (lowest-common-denominator across CAM importers), `LWPOLYLINE` per run, mm units (`$INSUNITS=4`), layer-per-run (`RUN_<id>`) for filterable selection in CAD. No annotations in V1 (DXF is the bender geometry feed; PDF stays the human pattern). Same validation-error gate as PDF.
 12. ✅ **Import the .neonbench bundle** (todo.md:124). Shipped in PR #13. Closes the export round-trip via `POST /api/projects/import`. Tube-spec dedup by **dimensions** (within 1µm) so re-importing reuses seeded specs instead of duplicating. Project name collision → `(imported)`/`(imported 2)` suffixes. Single transaction wraps project + all versions; rollback on any failure. Zip-bomb safe with per-entry size cap.
 13. ✅ **Job Manager fields: customer, designer, due date, job number** (NW #112). Shipped in PR #14. Migration `0005_project_metadata.sql` (reversible Down test). All four optional, trim + length validation, strict `YYYY-MM-DD` format check. Click-to-edit pattern on detail page matches existing tube-spec dropdown's auto-save UX.
@@ -305,14 +307,17 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 22. **Bundle-import polish.** PR #13 ships `POST /api/projects/import` via a hidden file input. Follow-ups: drag-drop import on the project list page (overlaps with #28 below), and **schema-versioned bundle branching** for when the export format eventually bumps `manifest.schema` past 1 (we'll need a small forward-migration switch in the import handler).
 23. **Job-tracking polish.** PR #14 ships the four metadata fields. Follow-ups: filter/sort the project list by `due_date` (next-up dispatcher view), an "Overdue" badge on rows where `due_date < today`, cross-project search by customer/job_number, and CSS for `.job-field` so the click-to-edit affordance visually matches `.meta` text.
 24. **Bitmap-adjustment polish.** PR #15 ships rotate/crop/brightness/contrast via numeric inputs and sliders. Follow-ups: a draggable crop overlay rendered on the live preview canvas (much faster to operate than typing X/Y/W/H), and an auto-rotate button that runs Hough on dominant lines to suggest a deskew angle.
-25. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-26. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-27. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-28. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-29. **Send to printer via OS print dialog** (todo.md:75).
-30. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-31. **Snap-to-angle and snap-to-geometry** (todo.md:104) — also drives angular-snap during pen / primitive draw (the props are wired but not yet consumed by the new tools).
-32. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+25. **Node-edit polish.** PR #23 ships insert / split / join. Follow-ups: split a blockout that straddles a split point into two valid pieces (currently dropped with `console.warn`); honor an existing run-numbering convention rather than `-a`/`-b` suffixes for split outputs; snap-to-vertex highlight when alt-click hovers near an existing vertex (helps the user tell insert-vs-split intent at a glance).
+26. **Channel-letter return polish.** PR #25 ships per-project depth + face flag + unfolded-strip PDF page. Follow-ups: per-run depth override (V1 only has project default); validator rule that warns/errors when face perimeter exceeds tube blank length (1168mm); draggable / configurable strip-overlap allowance (currently a footer note); multi-letter raceway groupings — sharing one return strip across joined faces (Strattman raceway construction).
+27. **Neonize polish.** PR #26 ships closed-polyline polygon offset. Follow-ups: open-polyline neonize (parallel offset with butt-caps); self-intersection cleanup pass (auto-trim the overlapping loop instead of leaving it for the user to node-edit); **stitch the two parallel runs into one continuous tube via U-bends at the ends** (true single-tube double-stroke for fabrication, matches Strattman's combination-bend pattern — high-value follow-up); per-corner cap-style override (round / bevel / miter per join, not just a global miter limit).
+28. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+29. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+30. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+31. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+32. **Send to printer via OS print dialog** (todo.md:75).
+33. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+34. **Snap-to-angle and snap-to-geometry** (todo.md:104) — also drives angular-snap during pen / primitive draw (the props are wired but not yet consumed by the new tools).
+35. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
