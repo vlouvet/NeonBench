@@ -1,12 +1,12 @@
 #!/usr/bin/env node
-// Convert the public-domain Hershey Roman Simplex font (`rowmans.jhf`) into
-// a small JSON file that the editor's "Add text" tool consumes directly.
+// Convert public-domain Hershey single-stroke fonts (`*.jhf`) into small
+// JSON files that the editor's "Add text" tool consumes directly.
 //
 // Why a script (not a one-time hand-conversion checked in raw): the JHF
 // format is a 1970s text-mode encoding ("each coordinate is one byte
 // relative to ASCII 'R'"). Doing the parse at build time lets us keep the
 // JSON small and trivially re-runnable from a fresh source if we ever swap
-// fonts (e.g. switch to Roman Duplex for thicker channel-letter strokes).
+// fonts (e.g. add a new face).
 //
 // Source: kamalmostafa/hershey-fonts on GitHub, which mirrors Jim Hurt's
 // 1980s Usenet redistribution of Dr. A. V. Hershey's original NBS data.
@@ -16,10 +16,13 @@
 // module's header comment.
 //
 // Usage:
-//   node scripts/build-hershey-font.mjs
+//   node scripts/build-hershey-font.mjs               # builds all known faces
+//   node scripts/build-hershey-font.mjs --font rowmans
+//   node scripts/build-hershey-font.mjs --font rowmand
+//   node scripts/build-hershey-font.mjs --font futural
 //
-// Output:
-//   web/src/lib/hershey/rowmans.json
+// Output (one per face):
+//   web/src/lib/hershey/<name>.json
 //
 // Reproducibility: the script is deterministic given the same upstream
 // .jhf bytes; the upstream URL is pinned by file path (the repo is
@@ -32,21 +35,42 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
 const CACHE_DIR = join(REPO_ROOT, '.hershey-cache');
-const CACHE_FILE = join(CACHE_DIR, 'rowmans.jhf');
-const OUT_FILE = join(REPO_ROOT, 'web', 'src', 'lib', 'hershey', 'rowmans.json');
-const SOURCE_URL =
-  'https://raw.githubusercontent.com/kamalmostafa/hershey-fonts/master/hershey-fonts/rowmans.jhf';
+const OUT_DIR = join(REPO_ROOT, 'web', 'src', 'lib', 'hershey');
+const SOURCE_BASE =
+  'https://raw.githubusercontent.com/kamalmostafa/hershey-fonts/master/hershey-fonts';
 
-async function fetchOrCache() {
-  if (existsSync(CACHE_FILE)) {
-    return readFileSync(CACHE_FILE, 'utf8');
+// Known faces. capHeightUnits is the JHF-unit cap height for the font —
+// computed empirically from each .jhf by measuring how far the uppercase
+// glyphs extend above y=0 (the baseline). All three simplex/duplex Roman
+// faces and Futural come out to ~12 units, which matches the original
+// CAP_HEIGHT_JHF_UNITS = 12 we shipped with rowmans.
+const FACES = {
+  rowmans: {
+    description:
+      'Hershey Roman Simplex font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. Coordinate units: byte offsets from ASCII R (~ 1/21 of cap height). Cap height in source units is approximately 21.',
+  },
+  rowmand: {
+    description:
+      'Hershey Roman Duplex font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. Each Simplex stroke is paired with a parallel offset to give a thicker "channel-letter" appearance. Coordinate units: byte offsets from ASCII R.',
+  },
+  futural: {
+    description:
+      'Hershey Futural (Sans Simplex) font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. Geometric sans-serif single-stroke face. Coordinate units: byte offsets from ASCII R.',
+  },
+};
+
+async function fetchOrCache(name) {
+  const cacheFile = join(CACHE_DIR, `${name}.jhf`);
+  if (existsSync(cacheFile)) {
+    return readFileSync(cacheFile, 'utf8');
   }
-  console.error(`Downloading ${SOURCE_URL}…`);
-  const res = await fetch(SOURCE_URL);
-  if (!res.ok) throw new Error(`fetch ${SOURCE_URL}: ${res.status}`);
+  const url = `${SOURCE_BASE}/${name}.jhf`;
+  console.error(`Downloading ${url}…`);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
   const text = await res.text();
   mkdirSync(CACHE_DIR, { recursive: true });
-  writeFileSync(CACHE_FILE, text);
+  writeFileSync(cacheFile, text);
   return text;
 }
 
@@ -116,28 +140,48 @@ function decodeGlyph(body) {
   return { left, right, strokes };
 }
 
-const text = await fetchOrCache();
-const rawGlyphs = parseJhf(text);
+async function buildFace(name) {
+  const face = FACES[name];
+  if (!face) throw new Error(`unknown face: ${name}`);
+  const text = await fetchOrCache(name);
+  const rawGlyphs = parseJhf(text);
 
-// Standard Hershey ASCII mapping for the simplex fonts: glyphs are stored
-// in sequence and map to ASCII 32 ('space') onwards. rowmans has 96 glyphs
-// covering 32..127.
-const out = { _license: '', glyphs: {} };
-out._license =
-  'Hershey Roman Simplex font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. Coordinate units: byte offsets from ASCII R (~ 1/21 of cap height). Cap height in source units is approximately 21.';
+  // Standard Hershey ASCII mapping for the simplex fonts: glyphs are stored
+  // in sequence and map to ASCII 32 ('space') onwards. Each face has 96
+  // glyphs covering ASCII 32..127.
+  const out = { _license: face.description, glyphs: {} };
 
-for (let i = 0; i < rawGlyphs.length && i < 96; i++) {
-  const ascii = 32 + i;
-  const decoded = decodeGlyph(rawGlyphs[i]);
-  // Drop empty-stroke glyphs to keep JSON small (e.g. space).
-  out.glyphs[ascii] = {
-    left: decoded.left,
-    right: decoded.right,
-    strokes: decoded.strokes,
-  };
+  for (let i = 0; i < rawGlyphs.length && i < 96; i++) {
+    const ascii = 32 + i;
+    const decoded = decodeGlyph(rawGlyphs[i]);
+    // Drop empty-stroke glyphs to keep JSON small (e.g. space).
+    out.glyphs[ascii] = {
+      left: decoded.left,
+      right: decoded.right,
+      strokes: decoded.strokes,
+    };
+  }
+
+  const outFile = join(OUT_DIR, `${name}.json`);
+  mkdirSync(dirname(outFile), { recursive: true });
+  writeFileSync(outFile, JSON.stringify(out));
+  const size = readFileSync(outFile).byteLength;
+  console.error(`wrote ${outFile} (${size} bytes, ${Object.keys(out.glyphs).length} glyphs)`);
 }
 
-mkdirSync(dirname(OUT_FILE), { recursive: true });
-writeFileSync(OUT_FILE, JSON.stringify(out));
-const size = readFileSync(OUT_FILE).byteLength;
-console.error(`wrote ${OUT_FILE} (${size} bytes, ${Object.keys(out.glyphs).length} glyphs)`);
+function parseArgs(argv) {
+  const out = { font: null };
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--font' && i + 1 < argv.length) {
+      out.font = argv[i + 1];
+      i++;
+    }
+  }
+  return out;
+}
+
+const args = parseArgs(process.argv.slice(2));
+const targets = args.font ? [args.font] : Object.keys(FACES);
+for (const name of targets) {
+  await buildFace(name);
+}
