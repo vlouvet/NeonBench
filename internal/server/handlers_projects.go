@@ -35,6 +35,16 @@ const (
 	defaultTubeEndGapMM = 6.35
 )
 
+// Channel letter depth (NW #106) bounds, in millimeters. The shop
+// industry standard is 100 mm (≈ 4 in) — Strattman NT Ch.5; Miller
+// p.88. We accept 10..500 mm to cover both shallow letters (small
+// signage, wall-mount) and oversized rooftop letters.
+const (
+	minChannelLetterDepthMM     = 10.0
+	maxChannelLetterDepthMM     = 500.0
+	defaultChannelLetterDepthMM = 100.0
+)
+
 type createProjectReq struct {
 	Name       string `json:"name"`
 	TubeSpecID int64  `json:"tube_spec_id"`
@@ -46,6 +56,9 @@ type createProjectReq struct {
 	// Pointer so an explicit `null` (or omission) leaves the column
 	// NULL — the API surface treats "no value" as "use shop default".
 	TubeEndGapMM *float64 `json:"tube_end_gap_mm,omitempty"`
+	// Same nil-means-default semantics as TubeEndGapMM. The renderer
+	// falls back to 100 mm when this column is NULL (NW #106).
+	ChannelLetterDepthMM *float64 `json:"channel_letter_depth_mm,omitempty"`
 }
 
 func (s *apiServer) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -94,15 +107,20 @@ func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := validateChannelLetterDepth(req.ChannelLetterDepthMM); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	p, err := storage.CreateProject(r.Context(), s.db, storage.CreateProjectParams{
-		Name:         strings.TrimSpace(req.Name),
-		TubeSpecID:   req.TubeSpecID,
-		Units:        req.Units,
-		Customer:     customer,
-		Designer:     designer,
-		DueDate:      dueDate,
-		JobNumber:    jobNumber,
-		TubeEndGapMM: req.TubeEndGapMM,
+		Name:                 strings.TrimSpace(req.Name),
+		TubeSpecID:           req.TubeSpecID,
+		Units:                req.Units,
+		Customer:             customer,
+		Designer:             designer,
+		DueDate:              dueDate,
+		JobNumber:            jobNumber,
+		TubeEndGapMM:         req.TubeEndGapMM,
+		ChannelLetterDepthMM: req.ChannelLetterDepthMM,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -137,7 +155,8 @@ type updateProjectReq struct {
 	// a JSON number (write that value). A bare `*float64` collapses
 	// "absent" and "null" into the same nil and we'd lose the
 	// "clear me" gesture.
-	TubeEndGapMM json.RawMessage `json:"tube_end_gap_mm,omitempty"`
+	TubeEndGapMM         json.RawMessage `json:"tube_end_gap_mm,omitempty"`
+	ChannelLetterDepthMM json.RawMessage `json:"channel_letter_depth_mm,omitempty"`
 }
 
 func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -201,15 +220,25 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 	if endGapSet {
 		endGapField = &endGap
 	}
+	depth, depthSet, msg := parseChannelLetterDepthPatch(req.ChannelLetterDepthMM)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	var depthField **float64
+	if depthSet {
+		depthField = &depth
+	}
 	out, err := storage.UpdateProject(r.Context(), s.db, id, storage.UpdateProjectParams{
-		Name:         req.Name,
-		TubeSpecID:   req.TubeSpecID,
-		Units:        req.Units,
-		Customer:     req.Customer,
-		Designer:     req.Designer,
-		DueDate:      req.DueDate,
-		JobNumber:    req.JobNumber,
-		TubeEndGapMM: endGapField,
+		Name:                 req.Name,
+		TubeSpecID:           req.TubeSpecID,
+		Units:                req.Units,
+		Customer:             req.Customer,
+		Designer:             req.Designer,
+		DueDate:              req.DueDate,
+		JobNumber:            req.JobNumber,
+		TubeEndGapMM:         endGapField,
+		ChannelLetterDepthMM: depthField,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -304,6 +333,44 @@ func parseTubeEndGapPatch(raw json.RawMessage) (*float64, bool, string) {
 		return nil, false, "tube_end_gap_mm must be a number or null"
 	}
 	if msg := validateTubeEndGap(&v); msg != "" {
+		return nil, false, msg
+	}
+	return &v, true, ""
+}
+
+// validateChannelLetterDepth returns "" when the optional value is
+// acceptable. Nil (omitted on create) is fine: the column stays NULL
+// and renderers fall back to the 100 mm shop default. Non-nil values
+// must fall in [10, 500] mm — covers everything from small wall-mount
+// letters to oversized rooftop signage.
+func validateChannelLetterDepth(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	if *v < minChannelLetterDepthMM || *v > maxChannelLetterDepthMM {
+		return fmt.Sprintf("channel_letter_depth_mm must be between %g and %g (got %g)",
+			minChannelLetterDepthMM, maxChannelLetterDepthMM, *v)
+	}
+	return ""
+}
+
+// parseChannelLetterDepthPatch mirrors parseTubeEndGapPatch for the
+// channel_letter_depth_mm PATCH field. Same three-state semantics:
+// omitted → leave column alone; explicit null → clear; in-range
+// number → write.
+func parseChannelLetterDepthPatch(raw json.RawMessage) (*float64, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var v float64
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return nil, false, "channel_letter_depth_mm must be a number or null"
+	}
+	if msg := validateChannelLetterDepth(&v); msg != "" {
 		return nil, false, msg
 	}
 	return &v, true, ""
