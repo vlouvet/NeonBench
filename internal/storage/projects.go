@@ -28,14 +28,19 @@ type CreateProjectParams struct {
 	// the column stays NULL and renderers fall back to the shop
 	// default (100 mm) when emitting return-strip pages.
 	ChannelLetterDepthMM *float64
+	// Optional strip-overlap allowance (mm). Nil means "no override";
+	// the column stays NULL and renderers fall back to the shop
+	// default (12.7 mm = ½ in) when drawing the shear line on the
+	// unfolded return strip.
+	StripOverlapMM *float64
 }
 
 func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Project, error) {
 	if p.Units == "" {
 		p.Units = "mm"
 	}
-	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm)
-	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := db.ExecContext(ctx, q,
 		p.Name,
 		p.TubeSpecID,
@@ -46,6 +51,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 		nullableText(p.JobNumber),
 		nullableFloat(p.TubeEndGapMM),
 		nullableFloat(p.ChannelLetterDepthMM),
+		nullableFloat(p.StripOverlapMM),
 	)
 	if err != nil {
 		return Project{}, fmt.Errorf("insert project: %w", err)
@@ -58,7 +64,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 }
 
 func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, created_at, updated_at
 	           FROM projects ORDER BY updated_at DESC`
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -78,7 +84,7 @@ func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
 }
 
 func GetProject(ctx context.Context, db *sql.DB, id int64) (Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, created_at, updated_at
 	           FROM projects WHERE id = ?`
 	row := db.QueryRowContext(ctx, q, id)
 	p, err := scanProject(row)
@@ -113,13 +119,16 @@ type UpdateProjectParams struct {
 	// non-nil pointer to nil = "clear column → use shop default";
 	// non-nil pointer to value = "write that value".
 	ChannelLetterDepthMM **float64
+	// StripOverlapMM uses the same three-state pattern as
+	// ChannelLetterDepthMM (Tier 3 #26).
+	StripOverlapMM **float64
 }
 
 // UpdateProject applies a partial update and bumps updated_at.
 func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectParams) (Project, error) {
 	if p.Name == nil && p.TubeSpecID == nil && p.Units == nil &&
 		p.Customer == nil && p.Designer == nil && p.DueDate == nil && p.JobNumber == nil &&
-		p.TubeEndGapMM == nil && p.ChannelLetterDepthMM == nil {
+		p.TubeEndGapMM == nil && p.ChannelLetterDepthMM == nil && p.StripOverlapMM == nil {
 		return GetProject(ctx, db, id)
 	}
 	sets := []string{}
@@ -159,6 +168,10 @@ func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectPar
 	if p.ChannelLetterDepthMM != nil {
 		sets = append(sets, "channel_letter_depth_mm = ?")
 		args = append(args, nullableFloat(*p.ChannelLetterDepthMM))
+	}
+	if p.StripOverlapMM != nil {
+		sets = append(sets, "strip_overlap_mm = ?")
+		args = append(args, nullableFloat(*p.StripOverlapMM))
 	}
 	sets = append(sets, `updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
 	q := `UPDATE projects SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`
@@ -221,12 +234,13 @@ type scanRow interface {
 func scanProject(r scanRow) (Project, error) {
 	var p Project
 	var customer, designer, dueDate, jobNumber sql.NullString
-	var tubeEndGapMM, channelLetterDepthMM sql.NullFloat64
+	var tubeEndGapMM, channelLetterDepthMM, stripOverlapMM sql.NullFloat64
 	if err := r.Scan(
 		&p.ID, &p.Name, &p.TubeSpecID, &p.Units,
 		&customer, &designer, &dueDate, &jobNumber,
 		&tubeEndGapMM,
 		&channelLetterDepthMM,
+		&stripOverlapMM,
 		&p.CreatedAt, &p.UpdatedAt,
 	); err != nil {
 		return Project{}, err
@@ -242,6 +256,10 @@ func scanProject(r scanRow) (Project, error) {
 	if channelLetterDepthMM.Valid {
 		v := channelLetterDepthMM.Float64
 		p.ChannelLetterDepthMM = &v
+	}
+	if stripOverlapMM.Valid {
+		v := stripOverlapMM.Float64
+		p.StripOverlapMM = &v
 	}
 	return p, nil
 }

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
   DEFAULT_CHANNEL_LETTER_DEPTH_MM,
+  DEFAULT_STRIP_OVERLAP_MM,
   DEFAULT_TUBE_END_GAP_MM,
   derivedMinBendRadiusMM,
   parseReport,
@@ -310,6 +311,17 @@ export default function ProjectDetail() {
           onSave={async (next) => {
             const updated = await api.updateProject(projectId, {
               channel_letter_depth_mm: next,
+            });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        {' · '}
+        <StripOverlapField
+          value={project.strip_overlap_mm}
+          onSave={async (next) => {
+            const updated = await api.updateProject(projectId, {
+              strip_overlap_mm: next,
             });
             setProject(updated);
           }}
@@ -781,6 +793,108 @@ function ChannelLetterDepthField({
         value={draft}
         disabled={busy}
         placeholder={`${DEFAULT_CHANNEL_LETTER_DEPTH_MM} (default)`}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setDraft(initialDraft);
+            setEditing(false);
+          }
+        }}
+      />
+    </span>
+  );
+}
+
+// StripOverlapField is the inline editor for the optional per-project
+// strip-overlap allowance (Tier 3 #26). Same click-to-edit pattern as
+// ChannelLetterDepthField, but the validation range is [0, 100] mm and
+// the placeholder cites the ½ in shop default.
+function StripOverlapField({
+  value,
+  onSave,
+  onError,
+}: {
+  value: number | undefined;
+  onSave: (next: number | null) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const initialDraft = value === undefined ? '' : String(value);
+  const [draft, setDraft] = useState(initialDraft);
+  const [busy, setBusy] = useState(false);
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue && !editing) {
+    setLastValue(value);
+    setDraft(value === undefined ? '' : String(value));
+  }
+
+  async function commit() {
+    if (busy) return;
+    const trimmed = draft.trim();
+    let next: number | null;
+    if (trimmed === '') {
+      next = null;
+    } else {
+      const parsed = Number(trimmed);
+      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
+        onError('Strip overlap: must be a number between 0 and 100 mm.');
+        setDraft(initialDraft);
+        setEditing(false);
+        return;
+      }
+      next = parsed;
+    }
+    if (next === (value ?? null)) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      await onSave(next);
+      setEditing(false);
+    } catch (e) {
+      onError(`Strip overlap: ${(e as Error).message}`);
+      setDraft(initialDraft);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    const display =
+      value === undefined ? `${DEFAULT_STRIP_OVERLAP_MM} (default)` : `${value}`;
+    return (
+      <span className="job-field">
+        <strong>Strip overlap (mm):</strong>{' '}
+        <button
+          type="button"
+          className="job-field-value"
+          onClick={() => setEditing(true)}
+          title="Allowance the fabricator leaves at one end of the unfolded return strip so the seam can be doubled-back welded or pop-riveted (Tier 3 #26). Drawn as a dashed shear line on the print PDF. Empty = use shop default of 12.7 mm (½ in)."
+        >
+          {display}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="job-field">
+      <strong>Strip overlap (mm):</strong>{' '}
+      <input
+        autoFocus
+        type="number"
+        min={0}
+        max={100}
+        step={0.5}
+        value={draft}
+        disabled={busy}
+        placeholder={`${DEFAULT_STRIP_OVERLAP_MM} (default)`}
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => {

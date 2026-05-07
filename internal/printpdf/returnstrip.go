@@ -259,11 +259,36 @@ func emitReturnStrip(pdf *gofpdf.Fpdf, opts Options, run designdoc.Run, depthMM 
 	}
 	pdf.SetLineWidth(opts.StrokeMM)
 
+	// Strip-overlap shear line (Tier 3 #26): a configurable per-project
+	// allowance the fabricator leaves at the right end so the seam can
+	// be doubled-back welded or pop-riveted. Drawn as a dashed vertical
+	// line `overlapMM` from the right edge with a "shear here" label.
+	// We pick the right end (not left or both) by trade convention —
+	// the operator works left to right unrolling the strip; the seam
+	// at the right end gets the doubled metal. The footer carries the
+	// active value too so the printed pattern is self-describing.
+	overlapMM := opts.StripOverlapMM
+	if overlapMM <= 0 {
+		overlapMM = 12.7
+	}
+	if overlapMM*scale < stripWidthOnPage {
+		shearX := stripX + stripWidthOnPage - overlapMM*scale
+		pdf.SetDashPattern([]float64{2, 2}, 0)
+		pdf.SetLineWidth(0.45)
+		pdf.Line(shearX, stripY-2, shearX, stripY+stripHeightOnPage+2)
+		pdf.SetDashPattern([]float64{}, 0)
+		pdf.SetLineWidth(opts.StrokeMM)
+		pdf.SetFont("Helvetica", "I", 7)
+		shearLabel := fmt.Sprintf("shear here · %.1f mm overlap", overlapMM)
+		pdf.Text(shearX+1, stripY+stripHeightOnPage-2, shearLabel)
+	}
+
 	// Footer.
 	footerY := stripY + stripHeightOnPage + 6
 	pdf.SetFont("Helvetica", "", 9)
 	pdf.Text(stripX, footerY,
-		fmt.Sprintf("Bend at each tick. Total length: %.1f mm. Add overlap allowance per shop convention.", perimeter))
+		fmt.Sprintf("Bend at each tick. Total length: %.1f mm. Shear at the dashed line for %.1f mm overlap.",
+			perimeter, overlapMM))
 	if !closed {
 		pdf.SetFont("Helvetica", "B", 9)
 		pdf.SetTextColor(160, 0, 0)

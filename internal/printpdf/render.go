@@ -30,8 +30,17 @@ type Options struct {
 	// ChannelLetterDepthMM is the project's default depth for any
 	// run flagged as a channel-letter face (NW #106). Drives the
 	// height of the unfolded "return strip" page emitted per face
-	// run. Zero falls back to 100 mm at emission time.
+	// run. Zero falls back to 100 mm at emission time. Per-run
+	// overrides on the design doc (Run.ChannelLetterDepthMM) win
+	// over this value (Tier 3 #26).
 	ChannelLetterDepthMM float64
+	// StripOverlapMM is the project's strip-overlap allowance in
+	// millimeters (Tier 3 #26). The renderer draws a dashed shear
+	// line at the right end of each unfolded return strip; the
+	// fabricator shears at this line so the doubled-back metal
+	// forms the seam. Zero falls back to 12.7 mm (½ in) at
+	// emission time.
+	StripOverlapMM float64
 }
 
 // DefaultOptions returns conservative paper-template defaults.
@@ -346,10 +355,21 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	// return-strip in printed order. Depth falls back to the shop
 	// default when the project's column is NULL — the renderer always
 	// has *some* value to draw with.
-	depth := opts.ChannelLetterDepthMM
-	if depth <= 0 {
-		depth = 100
+	//
+	// Tier 3 #26 polish:
+	//   - Per-run ChannelLetterDepthMM overrides the project default
+	//     for that run (lets one project mix tall and shallow returns).
+	//   - Runs sharing a non-empty RacewayID are emitted as ONE
+	//     combined raceway strip in declaration order (Strattman
+	//     raceway construction); ungrouped face runs continue to get
+	//     one strip page each. Raceway pages render *after* the
+	//     per-run pages so the operator's stack is "individual letters
+	//     first, then any shared raceway".
+	projectDepth := opts.ChannelLetterDepthMM
+	if projectDepth <= 0 {
+		projectDepth = 100
 	}
+	groups := groupByRaceway(doc.Runs)
 	for _, run := range doc.Runs {
 		if !run.IsChannelLetterFace {
 			continue
@@ -357,7 +377,18 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		if len(run.Polyline.Points) < 2 {
 			continue
 		}
-		emitReturnStrip(pdf, opts, run, depth)
+		if run.RacewayID != "" {
+			// Handled by the raceway emitter below.
+			continue
+		}
+		emitReturnStrip(pdf, opts, run, runDepthMM(run, projectDepth))
+	}
+	for _, gid := range groups.OrderedIDs {
+		runs := groups.ByID[gid]
+		if len(runs) == 0 {
+			continue
+		}
+		emitRacewayStrip(pdf, opts, gid, runs, projectDepth)
 	}
 
 	// Bend-list summary page (only if any bends were detected).

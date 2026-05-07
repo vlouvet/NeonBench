@@ -192,11 +192,57 @@ export function setRunChannelLetterFace(
 ): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (!isFace) {
+      // Clearing the face flag also clears the per-run depth and
+      // raceway metadata that only makes sense in face context.
+      // Keeps the doc JSON tidy and prevents stale overrides
+      // re-appearing if the user re-enables the flag later.
       const next = { ...run };
       delete next.is_channel_letter_face;
+      delete next.channel_letter_depth_mm;
+      delete next.raceway_id;
       return next;
     }
     return { ...run, is_channel_letter_face: true };
+  });
+}
+
+// setRunChannelLetterDepth sets a per-run depth override (mm) for the
+// run's return strip (Tier 3 #26). null / NaN / non-positive values
+// clear the override so the print PDF falls back to the project
+// default. Only meaningful when is_channel_letter_face is true.
+export function setRunChannelLetterDepth(
+  doc: DesignDoc,
+  runId: string,
+  depthMM: number | null,
+): DesignDoc {
+  return mapRun(doc, runId, (run) => {
+    if (depthMM == null || Number.isNaN(depthMM) || depthMM <= 0) {
+      const next = { ...run };
+      delete next.channel_letter_depth_mm;
+      return next;
+    }
+    return { ...run, channel_letter_depth_mm: depthMM };
+  });
+}
+
+// setRunRacewayID labels a run with a raceway grouping id (Tier 3 #26).
+// Empty / whitespace-only strings clear the label so the run reverts
+// to an individual return strip page. Trimming on save keeps the doc
+// JSON tidy and prevents whitespace-only strings from inadvertently
+// grouping runs together.
+export function setRunRacewayID(
+  doc: DesignDoc,
+  runId: string,
+  racewayID: string,
+): DesignDoc {
+  const trimmed = racewayID.trim();
+  return mapRun(doc, runId, (run) => {
+    if (trimmed === '') {
+      const next = { ...run };
+      delete next.raceway_id;
+      return next;
+    }
+    return { ...run, raceway_id: trimmed };
   });
 }
 

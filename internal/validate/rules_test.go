@@ -477,3 +477,84 @@ func TestValidateSVGEmitsLeadInAndSharpBend(t *testing.T) {
 		t.Errorf("expected ValidateSVG to emit sharp_bend_angle, got %d (%+v)", got, report.Issues)
 	}
 }
+
+// TestFacePerimeterExceedsBlank verifies the perimeter validator fires
+// only on face-flagged polylines whose total perimeter exceeds the
+// 1168 mm blank length, and lands a single warning at the run centroid.
+// Tier 3 #26.
+func TestFacePerimeterExceedsBlank(t *testing.T) {
+	// Closed rectangle with perimeter 1500 mm: 600×150 → 2*(600+150) = 1500.
+	tooBig := Polyline{
+		Points: []Point{{0, 0}, {600, 0}, {600, 150}, {0, 150}},
+		Closed: true,
+	}
+	tooBig.IsChannelLetterFace = true
+	short := Polyline{
+		Points: []Point{{0, 0}, {200, 0}, {200, 100}, {0, 100}},
+		Closed: true, // perimeter 600 — below threshold
+	}
+	short.IsChannelLetterFace = true
+	notFace := Polyline{
+		Points: []Point{{0, 0}, {600, 0}, {600, 150}, {0, 150}},
+		Closed: true, // perimeter 1500 but NOT a face → ignored
+	}
+
+	issues := checkFacePerimeter([]Polyline{tooBig, short, notFace})
+	if got, want := countByRule(issues, RuleFacePerimeterExceedsBlank), 1; got != want {
+		t.Fatalf("expected exactly %d face_perimeter_exceeds_blank issue, got %d (%+v)", want, got, issues)
+	}
+	iss, _ := firstByRule(issues, RuleFacePerimeterExceedsBlank)
+	if iss.Severity != SeverityWarning {
+		t.Errorf("severity: got %q, want %q (warning, not error — see rule doc)", iss.Severity, SeverityWarning)
+	}
+	// Centroid of (0,0)+(600,0)+(600,150)+(0,150) is (300, 75).
+	if math.Abs(iss.XMM-300) > 0.01 || math.Abs(iss.YMM-75) > 0.01 {
+		t.Errorf("marker landed at (%.1f, %.1f); expected centroid (300, 75)", iss.XMM, iss.YMM)
+	}
+	if !contains(iss.Message, "1500") || !contains(iss.Message, "1168") {
+		t.Errorf("message missing perimeter / blank values: %q", iss.Message)
+	}
+}
+
+// TestValidateSVGEmitsFacePerimeter wires the rule into the public
+// ValidateSVG entry point and asserts the data-channel-letter-face SVG
+// attribute is parsed end-to-end.
+func TestValidateSVGEmitsFacePerimeter(t *testing.T) {
+	// 600×150 closed rect, perimeter 1500 mm > 1168 mm blank.
+	svg := []byte(`<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800mm" height="300mm" viewBox="0 0 800 300">
+  <path data-channel-letter-face="1" d="M 0 0 L 600 0 L 600 150 L 0 150 Z" stroke="black" fill="none"/>
+</svg>`)
+	report, err := ValidateSVG(svg, Limits{DiameterMM: 12})
+	if err != nil {
+		t.Fatalf("ValidateSVG: %v", err)
+	}
+	if got := countByRule(report.Issues, RuleFacePerimeterExceedsBlank); got != 1 {
+		t.Errorf("expected 1 face_perimeter_exceeds_blank, got %d (%+v)", got, report.Issues)
+	}
+
+	// Same polyline without the data attribute: rule is silent.
+	svgPlain := []byte(`<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="800mm" height="300mm" viewBox="0 0 800 300">
+  <path d="M 0 0 L 600 0 L 600 150 L 0 150 Z" stroke="black" fill="none"/>
+</svg>`)
+	rep2, err := ValidateSVG(svgPlain, Limits{DiameterMM: 12})
+	if err != nil {
+		t.Fatalf("ValidateSVG plain: %v", err)
+	}
+	if got := countByRule(rep2.Issues, RuleFacePerimeterExceedsBlank); got != 0 {
+		t.Errorf("non-face polyline: expected 0 perimeter issues, got %d", got)
+	}
+}
+
+// contains is a tiny strings.Contains shim so tests stay free of an
+// extra import (rules_test.go already pulls in only "math" and
+// "testing").
+func contains(haystack, needle string) bool {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return true
+		}
+	}
+	return false
+}

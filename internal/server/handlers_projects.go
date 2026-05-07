@@ -45,6 +45,19 @@ const (
 	defaultChannelLetterDepthMM = 100.0
 )
 
+// Strip overlap allowance (Tier 3 #26) bounds, in millimeters. The
+// fabricator leaves this much extra metal at one end of the unfolded
+// return strip so the seam can be welded or pop-riveted through
+// doubled-up sheet. Default = ½ in (12.7 mm) — the trade-typical value
+// (Strattman NT Ch.5). Range [0, 100] covers no-overlap (rare; some
+// shops butt-weld) up to oversized 4 in overlap for heavy-gauge
+// return material.
+const (
+	minStripOverlapMM     = 0.0
+	maxStripOverlapMM     = 100.0
+	defaultStripOverlapMM = 12.7
+)
+
 type createProjectReq struct {
 	Name       string `json:"name"`
 	TubeSpecID int64  `json:"tube_spec_id"`
@@ -59,6 +72,10 @@ type createProjectReq struct {
 	// Same nil-means-default semantics as TubeEndGapMM. The renderer
 	// falls back to 100 mm when this column is NULL (NW #106).
 	ChannelLetterDepthMM *float64 `json:"channel_letter_depth_mm,omitempty"`
+	// Strip overlap allowance (Tier 3 #26). nil means "use shop
+	// default of 12.7 mm (½ in)" when drawing the shear line on the
+	// unfolded return-strip page.
+	StripOverlapMM *float64 `json:"strip_overlap_mm,omitempty"`
 }
 
 func (s *apiServer) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +128,10 @@ func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := validateStripOverlap(req.StripOverlapMM); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	p, err := storage.CreateProject(r.Context(), s.db, storage.CreateProjectParams{
 		Name:                 strings.TrimSpace(req.Name),
 		TubeSpecID:           req.TubeSpecID,
@@ -121,6 +142,7 @@ func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) 
 		JobNumber:            jobNumber,
 		TubeEndGapMM:         req.TubeEndGapMM,
 		ChannelLetterDepthMM: req.ChannelLetterDepthMM,
+		StripOverlapMM:       req.StripOverlapMM,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -157,6 +179,9 @@ type updateProjectReq struct {
 	// "clear me" gesture.
 	TubeEndGapMM         json.RawMessage `json:"tube_end_gap_mm,omitempty"`
 	ChannelLetterDepthMM json.RawMessage `json:"channel_letter_depth_mm,omitempty"`
+	// StripOverlapMM uses the same omitted/null/value PATCH semantics
+	// as the two fields above. Tier 3 #26.
+	StripOverlapMM json.RawMessage `json:"strip_overlap_mm,omitempty"`
 }
 
 func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -229,6 +254,15 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 	if depthSet {
 		depthField = &depth
 	}
+	overlap, overlapSet, msg := parseStripOverlapPatch(req.StripOverlapMM)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	var overlapField **float64
+	if overlapSet {
+		overlapField = &overlap
+	}
 	out, err := storage.UpdateProject(r.Context(), s.db, id, storage.UpdateProjectParams{
 		Name:                 req.Name,
 		TubeSpecID:           req.TubeSpecID,
@@ -239,6 +273,7 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 		JobNumber:            req.JobNumber,
 		TubeEndGapMM:         endGapField,
 		ChannelLetterDepthMM: depthField,
+		StripOverlapMM:       overlapField,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -371,6 +406,43 @@ func parseChannelLetterDepthPatch(raw json.RawMessage) (*float64, bool, string) 
 		return nil, false, "channel_letter_depth_mm must be a number or null"
 	}
 	if msg := validateChannelLetterDepth(&v); msg != "" {
+		return nil, false, msg
+	}
+	return &v, true, ""
+}
+
+// validateStripOverlap returns "" when the optional value is acceptable.
+// Nil (omitted on create) is fine: the column stays NULL and renderers
+// fall back to the 12.7 mm shop default. Non-nil values must fall in
+// [0, 100] mm — covers no-overlap to oversized welded seams. Tier 3 #26.
+func validateStripOverlap(v *float64) string {
+	if v == nil {
+		return ""
+	}
+	if *v < minStripOverlapMM || *v > maxStripOverlapMM {
+		return fmt.Sprintf("strip_overlap_mm must be between %g and %g (got %g)",
+			minStripOverlapMM, maxStripOverlapMM, *v)
+	}
+	return ""
+}
+
+// parseStripOverlapPatch mirrors parseChannelLetterDepthPatch for the
+// strip_overlap_mm PATCH field. Same three-state semantics:
+// omitted → leave column alone; explicit null → clear; in-range
+// number → write.
+func parseStripOverlapPatch(raw json.RawMessage) (*float64, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var v float64
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return nil, false, "strip_overlap_mm must be a number or null"
+	}
+	if msg := validateStripOverlap(&v); msg != "" {
 		return nil, false, msg
 	}
 	return &v, true, ""

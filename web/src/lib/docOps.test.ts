@@ -970,3 +970,56 @@ describe('neonize', () => {
     expect(result.warning ?? '').not.toMatch(/Inner offset self-intersects/);
   });
 });
+
+describe('channel-letter polish ops (Tier 3 #26)', () => {
+  function faceDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'face-1',
+          polyline: { points: [[0, 0], [10, 0], [10, 5], [0, 5]], closed: true },
+          is_channel_letter_face: true,
+        },
+      ],
+    };
+  }
+
+  it('setRunChannelLetterDepth writes a positive override', () => {
+    const next = ops.setRunChannelLetterDepth(faceDoc(), 'face-1', 75);
+    expect(next.runs[0].channel_letter_depth_mm).toBe(75);
+  });
+
+  it('setRunChannelLetterDepth(null) clears the override', () => {
+    const seeded = ops.setRunChannelLetterDepth(faceDoc(), 'face-1', 75);
+    const next = ops.setRunChannelLetterDepth(seeded, 'face-1', null);
+    expect(next.runs[0].channel_letter_depth_mm).toBeUndefined();
+  });
+
+  it('setRunChannelLetterDepth(0) clears the override (0 = "use project default")', () => {
+    const seeded = ops.setRunChannelLetterDepth(faceDoc(), 'face-1', 75);
+    const next = ops.setRunChannelLetterDepth(seeded, 'face-1', 0);
+    expect(next.runs[0].channel_letter_depth_mm).toBeUndefined();
+  });
+
+  it('setRunRacewayID labels the run with a trimmed string', () => {
+    const next = ops.setRunRacewayID(faceDoc(), 'face-1', '  main  ');
+    expect(next.runs[0].raceway_id).toBe('main');
+  });
+
+  it('setRunRacewayID("") clears the label', () => {
+    const seeded = ops.setRunRacewayID(faceDoc(), 'face-1', 'main');
+    const next = ops.setRunRacewayID(seeded, 'face-1', '');
+    expect(next.runs[0].raceway_id).toBeUndefined();
+  });
+
+  it('setRunChannelLetterFace(false) wipes channel-letter metadata', () => {
+    let doc = ops.setRunChannelLetterDepth(faceDoc(), 'face-1', 90);
+    doc = ops.setRunRacewayID(doc, 'face-1', 'main');
+    const next = ops.setRunChannelLetterFace(doc, 'face-1', false);
+    expect(next.runs[0].is_channel_letter_face).toBeUndefined();
+    expect(next.runs[0].channel_letter_depth_mm).toBeUndefined();
+    expect(next.runs[0].raceway_id).toBeUndefined();
+  });
+});
