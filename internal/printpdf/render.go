@@ -27,6 +27,11 @@ type Options struct {
 	// this as informational text only — Tier 3 #27 will turn it into
 	// a validation rule once a frame/substrate model exists.
 	TubeEndGapMM float64
+	// ChannelLetterDepthMM is the project's default depth for any
+	// run flagged as a channel-letter face (NW #106). Drives the
+	// height of the unfolded "return strip" page emitted per face
+	// run. Zero falls back to 100 mm at emission time.
+	ChannelLetterDepthMM float64
 }
 
 // DefaultOptions returns conservative paper-template defaults.
@@ -333,6 +338,26 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 			pdf.ClipEnd()
 			drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows)
 		}
+	}
+
+	// Channel-letter return-strip pages (NW #106): one extra page per
+	// face-marked run, sandwiched between the tile pages and the
+	// bend-list summary so the operator can flip from face-pattern to
+	// return-strip in printed order. Depth falls back to the shop
+	// default when the project's column is NULL — the renderer always
+	// has *some* value to draw with.
+	depth := opts.ChannelLetterDepthMM
+	if depth <= 0 {
+		depth = 100
+	}
+	for _, run := range doc.Runs {
+		if !run.IsChannelLetterFace {
+			continue
+		}
+		if len(run.Polyline.Points) < 2 {
+			continue
+		}
+		emitReturnStrip(pdf, opts, run, depth)
 	}
 
 	// Bend-list summary page (only if any bends were detected).
