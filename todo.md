@@ -294,14 +294,15 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 
 ### Tier 3 — Polish & validator depth
 
-17. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-18. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-19. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-20. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-21. **Send to printer via OS print dialog** (todo.md:75).
-22. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-23. **Snap-to-angle and snap-to-geometry** (todo.md:104).
-24. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+17. **ESLint cleanup + flip CI to hard-gate.** Tree currently has 10 pre-existing errors (`docOps.ts` unused `_drop`/`_closed`, `EditorCanvas.tsx` setState-in-effect at lines 79/104, `EditorPage.tsx` refs-during-render at lines 110/111, `ProjectDetail.tsx` setState-in-effect at line 40) + 2 unused-eslint-disable warnings. CI runs `npm run lint` with `continue-on-error: true` until this clears; after, set `continue-on-error: false` in `.github/workflows/ci.yml`.
+18. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+19. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+20. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+21. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+22. **Send to printer via OS print dialog** (todo.md:75).
+23. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+24. **Snap-to-angle and snap-to-geometry** (todo.md:104).
+25. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
