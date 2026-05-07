@@ -37,7 +37,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Image input
 
 - [x] Upload endpoint accepting PNG, JPG, SVG (max size guard, 50MB)
-- [ ] PNG/JPG: adjustable threshold preview before vectorize (currently sent as a request param; live canvas preview is a v1.x polish item)
+- [x] PNG/JPG: adjustable threshold preview before vectorize — live side-by-side Source/Binarized canvas in `VectorizePanel.tsx`, throttled with `useDeferredValue` (PR #5)
 - [x] SVG: skip vectorization, persist as design_version pass-through
 - [x] Store original asset on disk under `<data-dir>/assets/<project_id>/` with metadata in DB
 
@@ -46,7 +46,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 - [x] **Centerline extraction via skeleton-graph (replaces potrace).** Pipeline: Decode → Binarize → Zhang-Suen thin → classify (arc-count test) → merge thick junction clusters → walk graph into open + closed polylines → spur prune (iterate until stable) → mm conversion → Ramer-Douglas-Peucker simplify → emit SVG. Pure Go, no third-party deps. Produces one polyline per tube stroke (instead of potrace's outline pairs), so a 600mm "OPEN" with 12mm tube goes from 11+ outline-spacing errors to 0 spacing errors and ~7 polylines (one per stroke or letter loop). Validator gained a small junction-weld exemption so polylines meeting at a weld aren't flagged as "tubes 0mm apart".
 - [x] Vectorize parameters: target_width_mm, threshold, smoothing_mm (RDP ε override), min_spur_mm, label. Smoothing/spur default to values derived from the project tube diameter when blank.
 - [x] Normalize vectorize output to mm-canonical viewBox — emitted directly by the centerline pipeline; downstream validator/print/designdoc see identity-mapped paths.
-- [ ] Live before/after preview UI (currently just shows the result inline)
+- [x] Live before/after preview UI — shipped alongside the threshold slider (PR #5)
 
 ### Validation rules
 
@@ -77,7 +77,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 ### Frontend (Phase 1)
 
 - [x] Project list / create modal with tube spec picker
-- [ ] Edit tube spec per project (currently set on create; mutation UI is a v1.x item)
+- [x] Edit tube spec per project — project-detail dropdown shipped in 59fedea; editor-side switcher with auto-revalidate of the current version shipped in PR #6
 - [x] Project detail with file upload (click to upload; drag-drop is a v1.x polish item)
 - [x] Vectorize step with target width + threshold + smoothing/spur sliders
 - [x] Validation results panel with grouped issue lists, severity colors, re-validate button
@@ -275,8 +275,8 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 1. ✅ **Delete a design version + delete project** (UI). Shipped in PR #3. `DELETE /api/projects/{id}/design_versions/{vid}` + per-row delete buttons with confirm dialogs.
 2. **Hershey single-line text tool in the editor** (NW #1, #15, #16, #18). The right answer to "garbled OPEN N" — never raster-trace text. Type letters, pick cap height in mm, get one polyline per letter with hairpin DBs already where the font designer placed them. Public-domain JHF data, small parser, drops directly into the existing run model.
 3. **Pen tool + rect / circle / arc / polygon primitives** (NW #32, #56, #75). Completes the "design from a blank file" workflow. Reuses existing run model — each finished path becomes a new run. Bezier handles can wait.
-4. **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Highest-leverage QoL gap when the vectorizer misbehaves.
-5. **Edit tube spec per project mutation UI** (todo.md:80). Half-done — wire the existing PATCH endpoint to a sidebar field.
+4. ✅ **Live before/after threshold preview for raster vectorize** (todo.md:40, 49). Shipped in PR #5. Side-by-side Source / Binarized canvases in `VectorizePanel.tsx`, throttled with React 19's `useDeferredValue`, source pixel buffer cached so re-binarize is just an RGBA pass.
+5. ✅ **Edit tube spec per project mutation UI** (todo.md:80). Project-detail dropdown was already shipped in commit 59fedea; the actual gap was the editor itself. Shipped in PR #6: inline `<select>` in editor header that PATCHes the project, immediately re-validates the current version against the new spec, surfaces the fresh report. Regression test guards the silently-stale-report failure mode.
 6. ✅ **Windows smoke test** (todo.md:90). Shipped in PR #2 as a separate `windows-smoke` CI job (not a matrix on `test` — preserves branch protection's required-context contract). Includes `.gitattributes` `eol=lf` pin so Git Bash on Windows runners doesn't break on CRLF line endings.
 
 ### Tier 2 — Largest NW parity gaps
@@ -295,14 +295,15 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 ### Tier 3 — Polish & validator depth
 
 17. **ESLint cleanup + flip CI to hard-gate.** Tree currently has 10 pre-existing errors (`docOps.ts` unused `_drop`/`_closed`, `EditorCanvas.tsx` setState-in-effect at lines 79/104, `EditorPage.tsx` refs-during-render at lines 110/111, `ProjectDetail.tsx` setState-in-effect at line 40) + 2 unused-eslint-disable warnings. CI runs `npm run lint` with `continue-on-error: true` until this clears; after, set `continue-on-error: false` in `.github/workflows/ci.yml`.
-18. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
-19. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
-20. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
-21. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
-22. **Send to printer via OS print dialog** (todo.md:75).
-23. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
-24. **Snap-to-angle and snap-to-geometry** (todo.md:104).
-25. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
+18. **Fan tube-spec change to revalidate every design version, not just the current one.** PR #6 added auto-revalidate-on-change but only for the currently-loaded version; older versions in the history list keep their stale `validation_report_json` until someone manually clicks "Re-validate" on each one. After a tube-spec change, iterate `ListDesignVersions` and re-run validation server-side; surface a "revalidating N versions…" progress hint in the editor. Backend already has `handleRevalidate` and `UpdateDesignVersionReport` — this is fan-out + UI signaling, not a new rule.
+19. **Visual marker overlay on SVG preview** (todo.md:61) — show validation flags on the canvas.
+20. **Lead-in length / 90° angle validation** (todo.md:62) — needs electrode placement model (we have it now).
+21. **Glass-to-grounded-metal / HV-cable spacing** (todo.md:63) — needs cabinet/substrate model.
+22. **Tighten bend-radius defaults to wall-thinning derivation** (todo.md:64).
+23. **Send to printer via OS print dialog** (todo.md:75).
+24. **Drag-drop file upload + multi-select / group / layers** (todo.md:81, 105).
+25. **Snap-to-angle and snap-to-geometry** (todo.md:104).
+26. **Sample bitmaps + golden vectorized outputs** (todo.md:91).
 
 ### Tier 4 — Deliberate "no for now"
 
