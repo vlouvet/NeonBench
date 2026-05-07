@@ -317,6 +317,20 @@ export default function EditorPage() {
     editDoc((prev) => ops.deleteVertex(prev, runId, pointIndex));
   }
 
+  function insertDoubleback(runId: string, segmentIndex: number, t: number, side: 'left' | 'right') {
+    // Default depth = 1.5× tube ø, gap = 1.0× tube ø. We honor a per-run
+    // diameter override before falling back to the project's tube spec
+    // diameter — same precedence the validator uses.
+    const run = doc?.runs.find((r) => r.id === runId);
+    const diam = run?.tube_diameter_mm ?? projDiam;
+    const depth = 1.5 * diam;
+    const gap = 1.0 * diam;
+    editDoc((prev) =>
+      ops.insertDoubleback(prev, runId, segmentIndex, t, depth, gap, side),
+    );
+    setSelected(runId);
+  }
+
   function setRunNotes(runId: string, notes: string) {
     editDoc((prev) => ops.setRunNotes(prev, runId, notes));
   }
@@ -497,6 +511,12 @@ export default function EditorPage() {
             >Mark double-back</button>
             <button
               type="button"
+              className={tool === 'insert-doubleback' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('insert-doubleback')}
+              title="Splice a U-shaped hairpin into a polyline at the click point (default depth 1.5× tube ø, shift-click to flip side)"
+            >Insert DB</button>
+            <button
+              type="button"
               className={tool === 'bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('bend')}
               title="Add a manual bend point (overrides auto-detect for that run)"
@@ -612,6 +632,7 @@ export default function EditorPage() {
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
           onDeleteVertex={deleteVertex}
+          onInsertDoubleback={insertDoubleback}
           onCommitShape={commitShape}
           snapEnabled={snapEnabled}
           snapMM={snapMM}

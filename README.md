@@ -104,6 +104,11 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
      dashed in editor, prints dashed on the PDF.
    - **Mark jump / support / double-back** — single-click annotations.
      Double-back marks suppress bend-radius errors in their region.
+   - **Insert DB** — splice a U-shaped hairpin (180° fold-back) into a
+     polyline at the click point. Default depth is 1.5× tube diameter
+     and the U mouth is 1.0× — Strattman's "straight-drop combination
+     bend." Shift-click to mirror the U onto the opposite side of the
+     segment.
    - **Add bend** — manual bend overrides the auto-detected list.
      Sidebar lets you Reset to auto.
    - **Add text** — opens a modal that emits a Hershey single-stroke
