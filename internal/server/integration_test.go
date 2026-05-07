@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,10 +24,6 @@ import (
 // on. If a tool stops working the breakage shows up here without anyone
 // having to click around in a browser.
 func TestEditorPipelineFromOpenNeon(t *testing.T) {
-	if _, err := exec.LookPath("potrace"); err != nil {
-		t.Skip("potrace not on PATH; skipping integration test")
-	}
-
 	dir := t.TempDir()
 	db, err := storage.Open(dir)
 	if err != nil {
