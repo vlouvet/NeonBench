@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
@@ -482,8 +482,11 @@ describe('splitRun', () => {
     expect(next.runs.length).toBe(2);
     const a = next.runs[0];
     const b = next.runs[1];
-    expect(a.id).toBe('run-1-a');
-    expect(b.id).toBe('run-1-b');
+    // Tier 3 #25: numeric flat-id scheme. The doc had `run-1` which
+    // doesn't match the `r<n>` pattern, so the lowest unused integers
+    // are 1 and 2.
+    expect(a.id).toBe('r1');
+    expect(b.id).toBe('r2');
     expect(a.polyline.points).toEqual([[0, 0], [25, 0], [50, 0]]);
     expect(b.polyline.points).toEqual([[50, 0], [75, 0], [100, 0]]);
     expect(a.polyline.closed).toBe(false);
@@ -548,8 +551,36 @@ describe('splitRun', () => {
     expect(b.bends).toEqual([{ live_index: 1 }]); // 3 - 2 = 1
   });
 
-  it('drops a blockout straddling the split point with a console.warn', () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('preserves a straddling blockout as two pieces, one on each new run', () => {
+    // 10-point open run with blockout [2, 7] split at point index 5.
+    // Run-a covers polyline indices 0..5 (6 points); the blockout's
+    // run-a piece is [2, 4] (split point excluded). Run-b covers 5..9
+    // renumbered to 0..4 (5 points); its blockout piece is [0, 2].
+    const pts: [number, number][] = [];
+    for (let i = 0; i < 10; i++) pts.push([i * 10, 0]);
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: pts, closed: false },
+          tube_diameter_mm: 10,
+          blockouts: [{ start_live_index: 2, end_live_index: 7 }],
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'run-1', 5);
+    const a = next.runs[0];
+    const b = next.runs[1];
+    expect(a.blockouts).toEqual([{ start_live_index: 2, end_live_index: 4 }]);
+    expect(b.blockouts).toEqual([{ start_live_index: 0, end_live_index: 2 }]);
+  });
+
+  it('with a blockout that ends exactly at the split point does not synthesize an empty piece', () => {
+    // Blockout [2, 5] split at 5: hi == pointIndex, so it's NOT
+    // straddling — it stays entirely on run-a. Run-b inherits no
+    // blockout from this source.
     const doc: DesignDoc = {
       version: 1,
       view_box_mm: [0, 0, 100, 100],
@@ -557,21 +588,111 @@ describe('splitRun', () => {
         {
           id: 'run-1',
           polyline: {
-            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            points: [
+              [0, 0], [10, 0], [20, 0], [30, 0], [40, 0], [50, 0],
+              [60, 0], [70, 0], [80, 0], [90, 0],
+            ],
             closed: false,
           },
           tube_diameter_mm: 10,
-          blockouts: [{ start_live_index: 1, end_live_index: 3 }],
+          blockouts: [{ start_live_index: 2, end_live_index: 5 }],
         },
       ],
     };
-    const next = ops.splitRun(doc, 'run-1', 2);
+    const next = ops.splitRun(doc, 'run-1', 5);
     const a = next.runs[0];
     const b = next.runs[1];
-    expect(a.blockouts).toBeUndefined();
+    expect(a.blockouts).toEqual([{ start_live_index: 2, end_live_index: 5 }]);
     expect(b.blockouts).toBeUndefined();
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+  });
+
+  it('produces sequential numeric IDs (Tier 3 #25)', () => {
+    // Doc has a single run named "r1" — the `r<n>` scheme is in use, so
+    // the lowest unused integers are 2 and 3. No `-a`/`-b` suffixes.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r1',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'r1', 2);
+    expect(next.runs.map((r) => r.id)).toEqual(['r2', 'r3']);
+    // Original `r1` is removed.
+    expect(next.runs.find((r) => r.id === 'r1')).toBeUndefined();
+  });
+
+  it('repeated splits stay flat (no nested suffixes from a legacy id)', () => {
+    // A doc with a legacy `<id>-a` from a pre-Tier-3-#25 split. New
+    // splits use the numeric scheme, regardless of the source run's
+    // name — so a second split of the legacy run still produces
+    // r1/r2/etc, not `<id>-a-a` / `<id>-a-b`.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'legacy-a',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'legacy-a', 2);
+    expect(next.runs.map((r) => r.id)).toEqual(['r1', 'r2']);
+  });
+});
+
+describe('nextRunId', () => {
+  it('returns r1 on an empty doc', () => {
+    const doc: DesignDoc = { version: 1, view_box_mm: [0, 0, 10, 10], runs: [] };
+    expect(ops.nextRunId(doc)).toBe('r1');
+  });
+
+  it('skips taken ids and returns the lowest unused', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        { id: 'r3', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+      ],
+    };
+    expect(ops.nextRunId(doc)).toBe('r2');
+  });
+
+  it('ignores ids that don\'t match the prefix', () => {
+    // text-1 / circle-2 are foreign to the `r<n>` namespace, so the
+    // first allocated id is still r1.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        { id: 'text-1', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        { id: 'circle-2', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+      ],
+    };
+    expect(ops.nextRunId(doc)).toBe('r1');
+  });
+
+  it('respects a custom prefix', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        { id: 'cut-1', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        { id: 'cut-2', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+      ],
+    };
+    expect(ops.nextRunId(doc, 'cut-')).toBe('cut-3');
   });
 });
 

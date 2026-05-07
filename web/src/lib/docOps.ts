@@ -575,6 +575,29 @@ export function insertVertex(
   });
 }
 
+// nextRunId returns the lowest unused id of the form `${prefix}${n}` (n
+// starting at 1) on the doc. Defaults to prefix "r" so the first
+// allocated id is "r1", the next "r2", and so on. Independent of any
+// existing runs that don't follow this scheme — non-matching ids
+// (e.g. "text-1", "circle-2") are simply ignored when scanning for
+// collisions, so this helper neither renames them nor lets them eat
+// an integer slot.
+//
+// Used by splitRun (Tier 3 #25) to replace the old `<id>-a` / `<id>-b`
+// suffix scheme. The flat numeric form prevents nesting on repeated
+// splits (`<id>-a-a`, `<id>-a-b`, …) and keeps run ids legible.
+export function nextRunId(doc: DesignDoc, prefix: string = 'r'): string {
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
+  const taken = new Set<number>();
+  for (const r of doc.runs) {
+    const m = re.exec(r.id);
+    if (m) taken.add(parseInt(m[1], 10));
+  }
+  let n = 1;
+  while (taken.has(n)) n++;
+  return `${prefix}${n}`;
+}
+
 // splitRun splits one polyline into two new runs at a vertex. The vertex
 // at `pointIndex` is duplicated so it appears as the last vertex of the
 // first run AND the first vertex of the second run — that way joining
@@ -582,8 +605,10 @@ export function insertVertex(
 //
 // Closed runs are forced open by the split: the first new run gets
 // indices [0..pointIndex], the second gets [pointIndex..n-1], both open.
-// The first new run reuses the original id with `-a` suffix (preserves
-// name continuity for selection-by-name); the second gets `-b`. Color,
+// Both new runs receive freshly allocated numeric ids from `nextRunId`
+// (Tier 3 #25): the editor-internal convention "r1, r2, …", continuing
+// from the lowest unused integer. The original id is dropped — repeated
+// splits stay flat (no `<id>-a-a` / `<id>-a-b` nesting). Color,
 // diameter override, notes are duplicated to both.
 //
 // Electrodes / blockouts / annotations / bends partition by their
@@ -593,9 +618,13 @@ export function insertVertex(
 //   point_index − pointIndex.
 // - Electrodes exactly at pointIndex are ambiguous; V1 drops them with
 //   a console.warn — realistic users will replace them.
-// - Blockouts entirely on one side stay there; straddling blockouts are
-//   dropped with a warn (V1 — splitting a blockout into two valid
-//   pieces is a follow-up).
+// - Blockouts entirely on one side stay there; straddling blockouts
+//   (Tier 3 #25) are split into two pieces, one on each new run, so
+//   the user's intent survives. The split point itself is excluded
+//   from both pieces — run-a's piece ends at `pointIndex - 1`, run-b's
+//   starts at 0 (so the duplicated vertex isn't double-blocked-out).
+//   A piece that collapses to length 0 is dropped on its own; the
+//   surviving piece still posts.
 // - Annotations / bends partition by live_index against the live arc;
 //   for the common open-run no-electrode case live_index === polyline
 //   index so the same partition applies.
@@ -612,8 +641,10 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
   const aPts = pts.slice(0, pointIndex + 1);
   const bPts = pts.slice(pointIndex);
 
-  const aId = `${run.id}-a`;
-  const bId = `${run.id}-b`;
+  // Allocate two fresh numeric ids. We compute both at once so the
+  // second id doesn't collide with the first.
+  const aId = nextRunId(doc);
+  const bId = nextRunId({ ...doc, runs: [...doc.runs, { ...run, id: aId }] });
 
   // Partition electrodes by their polyline anchor.
   const aElectrodes: Electrode[] = [];
@@ -633,7 +664,11 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
 
   // Partition blockouts: live_index is treated as polyline index for the
   // common open-run no-electrode case (which is what splitRun is for).
-  // Straddling blockouts are dropped with a warning.
+  // Straddling blockouts are split into two pieces (Tier 3 #25) — one
+  // on each new run — so the user's blockout intent survives the split.
+  // The duplicated vertex at the split is excluded from both pieces:
+  // run-a's piece ends at `pointIndex - 1` and run-b's piece starts at 0,
+  // so the seam vertex isn't double-counted as blocked-out.
   const aBlockouts: Blockout[] = [];
   const bBlockouts: Blockout[] = [];
   for (const b of run.blockouts ?? []) {
@@ -649,10 +684,19 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
         end_live_index: e - pointIndex,
       });
     } else {
-      // Straddles the split.
-      console.warn(
-        `splitRun: blockout [${s}, ${e}] on run ${run.id} straddles split point ${pointIndex} — dropped`,
-      );
+      // Straddles the split. Cut at the split point: run-a keeps
+      // [lo, pointIndex - 1] and run-b gets [0, hi - pointIndex].
+      // Either piece may collapse to a single index (length 1) which
+      // is still a valid blockout; only an inverted pair is empty,
+      // which can't happen given lo < pointIndex < hi.
+      const aEnd = pointIndex - 1;
+      const bEnd = hi - pointIndex;
+      if (aEnd >= lo) {
+        aBlockouts.push({ start_live_index: lo, end_live_index: aEnd });
+      }
+      if (bEnd >= 0) {
+        bBlockouts.push({ start_live_index: 0, end_live_index: bEnd });
+      }
     }
   }
 
