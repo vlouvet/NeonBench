@@ -10,8 +10,18 @@ type TubeSpec struct {
 	MinBendRadiusMM    float64 `json:"min_bend_radius_mm"`
 	MaxSegmentLengthMM float64 `json:"max_segment_length_mm"`
 	MinSpacingMM       float64 `json:"min_spacing_mm"`
-	IsDefault          bool    `json:"is_default"`
-	CreatedAt          string  `json:"created_at"`
+	// Optional per-spec lead-in rule (Tier 3 #29). Pointer so nil means
+	// "no override; validator falls back to 2 × DiameterMM, the
+	// rule-of-thumb minimum from Miller App I §126 and Saving Neon".
+	MinLeadInMM *float64 `json:"min_lead_in_mm,omitempty"`
+	// Optional per-spec sharp-bend angle threshold in degrees (Tier 3
+	// #29). Vertices whose interior angle is at or below this value get
+	// flagged as bender-unfriendly stress concentrators. Pointer so nil
+	// means "no override; validator falls back to 85°". Hairpin
+	// double-backs are exempted regardless of this threshold.
+	SharpBendAngleDeg *float64 `json:"sharp_bend_angle_deg,omitempty"`
+	IsDefault         bool     `json:"is_default"`
+	CreatedAt         string   `json:"created_at"`
 }
 
 type Project struct {
