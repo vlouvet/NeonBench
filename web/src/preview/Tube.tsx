@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import * as THREE from 'three';
 import type { DesignRun } from '../api';
+import { EmissiveTubeMaterial } from './materials/EmissiveTubeMaterial';
 import {
   DEFAULT_TUBE_DIAMETER_MM,
   TUBE_RADIAL_SEGMENTS,
@@ -20,9 +21,14 @@ import {
  * fallback is a defensive last resort — a valid design always supplies
  * one of the two.
  *
- * The material is intentionally placeholder `<meshBasicMaterial>` —
- * Phase 3 #3 swaps this for the emissive glass shader plus per-gas
- * color, at which point this component will grow a `material` prop.
+ * The material is `<EmissiveTubeMaterial>` — Phase 3 #3's gas-keyed
+ * emissive glass material. It reads `run.color` (a free-form
+ * gas-and-phosphor string) and resolves it to an emissive hex via
+ * the `materials/gasColors.ts` lookup table. Bloom for a more
+ * dramatic glow comes in Phase 3 #4. Per-segment blockouts (a tube
+ * partially painted over) come in Phase 3 #6 — V1 only honors a
+ * whole-run "blockout" color string, demoting the entire tube to
+ * dark grey.
  *
  * Open vs closed runs: a closed polyline ring (e.g. an "O") draws a
  * closed tube with no end caps; an open polyline (e.g. a stroke)
@@ -71,7 +77,7 @@ export default function Tube({
 
   return (
     <mesh geometry={geometry}>
-      <meshBasicMaterial color="#dddddd" />
+      <EmissiveTubeMaterial color={run.color} />
     </mesh>
   );
 }
