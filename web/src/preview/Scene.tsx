@@ -101,12 +101,15 @@ export const WALL_SIZE_FACTOR = 1.5;
 export const WALL_MIN_SIZE_MM = 100;
 
 // Bloom tuning constants (Phase 3 #4). Exported so test corpora /
-// future per-project tuning sliders have a single place to land.
+// the scenePrefs persistence helper / future per-project tuning have a
+// single source of truth for the baked-in defaults. Tier 3 #55 turned
+// `intensity` / `threshold` / `radius` into props (with these as
+// fallbacks) so a slider in SceneControls can override them per
+// session — the constants stay exported with the same names so
+// downstream readers (scenePrefs, screenshots, manual smoke) don't
+// have to hunt for the new shape.
 //
-// Rationale (carried from the spec; values left at the spec defaults
-// because manual smoke is deferred to post-merge per the round
-// coordination policy — adjusting these speculatively would ship a
-// look that nobody has actually eyeballed):
+// Rationale for the defaults (unchanged from #4):
 //
 //   - `BLOOM_INTENSITY = 1.2` — strong enough to read as glow without
 //     washing out fine line work. Bloom's contribution is additive;
@@ -121,7 +124,10 @@ export const WALL_MIN_SIZE_MM = 100;
 //     threshold so dim/desaturated tubes (e.g. powder blue ~0.5) get
 //     a softer halo than bright tubes (ruby red ~1.0). 0 produces a
 //     hard cutoff that looks artificial; >0.4 starts pulling the
-//     wall into the bloom.
+//     wall into the bloom. Not surfaced as a slider (Tier 3 #55) —
+//     the three exposed knobs (intensity / threshold / radius) cover
+//     the practical tuning range; smoothing is a "shape of the
+//     transition" detail that doesn't need per-project override.
 //   - `BLOOM_RADIUS = 0.7` — mid-large halo. With `mipmapBlur` on,
 //     this is a multi-step downsample radius, not a kernel size; 0.7
 //     is roughly "neon shop window seen from across the street",
@@ -317,6 +323,9 @@ export default function Scene({
   ambientIntensity = 0.3,
   wallEnabled = false,
   wallColor = '#f0f0f0',
+  bloomIntensity = BLOOM_INTENSITY,
+  bloomThreshold = BLOOM_LUMINANCE_THRESHOLD,
+  bloomRadius = BLOOM_RADIUS,
   onCaptureReady,
 }: {
   doc: DesignDoc | null;
@@ -331,6 +340,24 @@ export default function Scene({
   wallEnabled?: boolean;
   /** Wall surface color (`<meshStandardMaterial color>`). */
   wallColor?: string;
+  /**
+   * Bloom strength (0..3). Defaults to `BLOOM_INTENSITY`. Tier 3 #55
+   * surfaces this as a slider; everything above ~2 starts to clip on
+   * the brightest emissives so the slider clamps there.
+   */
+  bloomIntensity?: number;
+  /**
+   * Bloom luminance threshold (0..1). Defaults to
+   * `BLOOM_LUMINANCE_THRESHOLD`. Below the threshold, surfaces don't
+   * bloom — lower values pull more of the scene chrome into the
+   * glow, higher values restrict it to only the brightest emissives.
+   */
+  bloomThreshold?: number;
+  /**
+   * Bloom mipmap-blur radius (0..2). Defaults to `BLOOM_RADIUS`.
+   * Larger = softer / wider halo; smaller = tighter/crisper.
+   */
+  bloomRadius?: number;
   /** Callback invoked once the live `gl/scene/camera` are available. */
   onCaptureReady?: OnCaptureReady;
 }) {
@@ -510,11 +537,11 @@ export default function Scene({
       {!noBloom && (
         <EffectComposer multisampling={0}>
           <Bloom
-            intensity={BLOOM_INTENSITY}
-            luminanceThreshold={BLOOM_LUMINANCE_THRESHOLD}
+            intensity={bloomIntensity}
+            luminanceThreshold={bloomThreshold}
             luminanceSmoothing={BLOOM_LUMINANCE_SMOOTHING}
             mipmapBlur={BLOOM_MIPMAP_BLUR}
-            radius={BLOOM_RADIUS}
+            radius={bloomRadius}
           />
           {/*
             Capture the live composer instance so the screenshot path
