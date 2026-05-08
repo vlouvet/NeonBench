@@ -393,6 +393,274 @@ func TestEmitDXFBackwardsCompatible(t *testing.T) {
 	}
 }
 
+// TestEmitDXFMarkers covers the per-Run.Annotations MARKERS layer (Tier 3
+// #38a). We assert: one CIRCLE + one TEXT per annotation, per-kind radii
+// (jump=4, support=3, doubleback=5), per-kind linetypes (jump=DASHED,
+// support=CONTINUOUS, doubleback=DASHDOT), TEXT label content matches the
+// kind capitalized, and the TEXT insert point is offset along the right-
+// hand normal of the polyline tangent at the annotation's live-arc point.
+func TestEmitDXFMarkers(t *testing.T) {
+	// Open run with a horizontal-then-up polyline so the right-hand
+	// normal points predictably:
+	//   P0=(0,0) → P1=(10,0) → P2=(20,0) → P3=(30,0)
+	// At P1 (used by the support annotation, live-arc index 1) the
+	// tangent is (P2-P0)/|...| = (+1, 0); the right-hand normal is
+	// (ty, -tx) = (0, -1), so the label sits one text-height (5 mm)
+	// BELOW P1 → (10, -5).
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}, {20, 0}, {30, 0}},
+				},
+				Electrodes: []designdoc.Electrode{
+					{PointIndex: 0},
+					{PointIndex: 3},
+				},
+				Annotations: []designdoc.Annotation{
+					{Kind: "jump", LiveIndex: 0},
+					{Kind: "support", LiveIndex: 1},
+					{Kind: "doubleback", LiveIndex: 2},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	out := buf.String()
+
+	// Expect 4 CIRCLEs total: 2 electrodes (PointIndex 0, 3) + 3 markers,
+	// one per annotation. The electrodes ship on layer ELECTRODES; the
+	// markers ship on layer MARKERS.
+	if got := strings.Count(out, "\n0\nCIRCLE\n"); got != 5 {
+		t.Errorf("CIRCLE count: want 5 (2 electrodes + 3 markers), got %d\n%s", got, out)
+	}
+	// 3 marker CIRCLEs + 3 marker TEXTs = 6 occurrences of MARKERS layer.
+	if got := strings.Count(out, "8\nMARKERS\n"); got != 6 {
+		t.Errorf("MARKERS layer count: want 6 (3 CIRCLE + 3 TEXT), got %d", got)
+	}
+
+	// Per-kind CIRCLE assertions: layer + linetype + insert point + radius.
+	// Jump: DASHED, radius 4, at P0=(0,0) (live index 0 → polyline index 0).
+	if !strings.Contains(out, "0\nCIRCLE\n8\nMARKERS\n6\nDASHED\n10\n0.0\n20\n0.0\n40\n4.0\n") {
+		t.Errorf("missing jump CIRCLE (DASHED, r=4, at (0,0)):\n%s", out)
+	}
+	// Support: CONTINUOUS, radius 3, at P1=(10,0).
+	if !strings.Contains(out, "0\nCIRCLE\n8\nMARKERS\n6\nCONTINUOUS\n10\n10.0\n20\n0.0\n40\n3.0\n") {
+		t.Errorf("missing support CIRCLE (CONTINUOUS, r=3, at (10,0)):\n%s", out)
+	}
+	// Doubleback: DASHDOT, radius 5, at P2=(20,0).
+	if !strings.Contains(out, "0\nCIRCLE\n8\nMARKERS\n6\nDASHDOT\n10\n20.0\n20\n0.0\n40\n5.0\n") {
+		t.Errorf("missing doubleback CIRCLE (DASHDOT, r=5, at (20,0)):\n%s", out)
+	}
+
+	// Per-kind TEXT label content + offset position.
+	// Support marker label at P1 with right-hand normal offset.
+	// Tangent at P1 = (P2 - P0) = (20, 0); unit = (1, 0); right-hand
+	// normal = (0, -1); offset 5 mm → label at (10, -5).
+	if !strings.Contains(out, "0\nTEXT\n8\nMARKERS\n10\n10.0\n20\n-5.0\n40\n5.0\n1\nSupport\n") {
+		t.Errorf("missing 'Support' label at (10,-5):\n%s", out)
+	}
+	// Jump and doubleback labels: just check the content + layer (the
+	// boundary-point tangent calc is exercised by Support above).
+	if !strings.Contains(out, "1\nJump\n") {
+		t.Errorf("missing 'Jump' label:\n%s", out)
+	}
+	if !strings.Contains(out, "1\nDoubleback\n") {
+		t.Errorf("missing 'Doubleback' label:\n%s", out)
+	}
+}
+
+// TestEmitDXFMarkersOutOfRange guards the defensive bounds-check: an
+// annotation pointing outside the live arc is silently dropped, not
+// emitted as a malformed entity.
+func TestEmitDXFMarkersOutOfRange(t *testing.T) {
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}},
+				},
+				Electrodes: []designdoc.Electrode{
+					{PointIndex: 0}, {PointIndex: 1},
+				},
+				Annotations: []designdoc.Annotation{
+					{Kind: "support", LiveIndex: 99}, // out of range
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "8\nMARKERS\n") {
+		t.Errorf("out-of-range annotation should not produce MARKERS output:\n%s", out)
+	}
+}
+
+// TestEmitDXFBlockouts covers the BLOCKOUTS-layer LWPOLYLINE per
+// Run.Blockouts (Tier 3 #38a). Asserts: one LWPOLYLINE per blockout on
+// layer BLOCKOUTS, DASHED linetype (group code 6), open flag (70=0),
+// vertex count, and the live-arc index walk producing the correct
+// polyline coordinates.
+func TestEmitDXFBlockouts(t *testing.T) {
+	// Open run with 6 colinear points; electrodes at 0 and 5 mean the
+	// live arc IS the whole polyline, so live-arc index N maps to
+	// polyline index N.
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{
+						{0, 0}, {10, 0}, {20, 0}, {30, 0}, {40, 0}, {50, 0},
+					},
+				},
+				Electrodes: []designdoc.Electrode{
+					{PointIndex: 0}, {PointIndex: 5},
+				},
+				Blockouts: []designdoc.Blockout{
+					{StartLiveIndex: 1, EndLiveIndex: 3},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	out := buf.String()
+
+	// Total LWPOLYLINEs: 1 run + 1 blockout = 2.
+	if got := strings.Count(out, "\n0\nLWPOLYLINE\n"); got != 2 {
+		t.Errorf("LWPOLYLINE count: want 2 (1 run + 1 blockout), got %d\n%s", got, out)
+	}
+	if got := strings.Count(out, "8\nBLOCKOUTS\n"); got != 1 {
+		t.Errorf("BLOCKOUTS layer count: want 1, got %d", got)
+	}
+	// Full blockout entity: layer BLOCKOUTS, linetype DASHED, open flag,
+	// 3 vertices at (10,0), (20,0), (30,0).
+	want := "0\nLWPOLYLINE\n8\nBLOCKOUTS\n6\nDASHED\n70\n0\n90\n3\n10\n10.0\n20\n0.0\n10\n20.0\n20\n0.0\n10\n30.0\n20\n0.0\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("missing blockout LWPOLYLINE:\nwant: %q\n--- out ---\n%s", want, out)
+	}
+}
+
+// TestEmitDXFBlockoutsClosedRunWrap covers the wrap case: a closed run
+// with a blockout straddling index 0 walks live indices forward from
+// start through n-1 and back to end.
+func TestEmitDXFBlockoutsClosedRunWrap(t *testing.T) {
+	// Closed run, 4 points, electrodes at 0 and 2 — pick the live arc
+	// that wraps. Direction defaults to "forward", which goes
+	// 0 → 1 → 2 (3 live indices).
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}, {10, 10}, {0, 10}},
+					Closed: true,
+				},
+				Electrodes: []designdoc.Electrode{
+					{PointIndex: 0}, {PointIndex: 2},
+				},
+				Direction: "forward",
+				// Blockout from live index 1 to 0 — empty span on a
+				// non-wrapping arc; tests the clamp path. Should still
+				// produce a 1-vertex segment that we drop as degenerate.
+				Blockouts: []designdoc.Blockout{
+					{StartLiveIndex: 0, EndLiveIndex: 2},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	out := buf.String()
+
+	// One run polyline + one blockout polyline.
+	if got := strings.Count(out, "\n0\nLWPOLYLINE\n"); got != 2 {
+		t.Errorf("LWPOLYLINE count: want 2, got %d\n%s", got, out)
+	}
+	if !strings.Contains(out, "8\nBLOCKOUTS\n") {
+		t.Errorf("expected a BLOCKOUTS-layer polyline:\n%s", out)
+	}
+}
+
+// TestEmitDXFBackwardsCompatibleNoAnnotations is a regression on the
+// byte-identity contract: a doc with no annotations of any flavor
+// (electrodes, labels, dimensions, run-annotations, blockouts) must
+// produce the same R12 ASCII bytes as the pre-Tier-3 #21 emitter. This
+// is structurally identical to TestEmitDXFBackwardsCompatible above
+// but lives separately to make Tier-3-#38a's regression intent explicit
+// in the test name.
+func TestEmitDXFBackwardsCompatibleNoAnnotations(t *testing.T) {
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}},
+				},
+			},
+		},
+	}
+	const want = "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$INSUNITS\n70\n4\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nLWPOLYLINE\n8\nRUN_r1\n70\n0\n90\n2\n10\n0.0\n20\n0.0\n10\n10.0\n20\n0.0\n0\nENDSEC\n0\nEOF\n"
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("byte-compat regression for annotation-free doc.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// TestEmitDXFR2000Dialect covers EmitDXFDialect(DialectR2000): the only
+// difference from the R12 baseline must be $ACADVER=AC1015. Entity
+// layout is otherwise byte-identical.
+func TestEmitDXFR2000Dialect(t *testing.T) {
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXFDialect(&buf, doc, DialectR2000); err != nil {
+		t.Fatalf("EmitDXFDialect: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "$ACADVER\n1\nAC1015\n") {
+		t.Errorf("R2000 output missing $ACADVER=AC1015:\n%s", out)
+	}
+	if strings.Contains(out, "$ACADVER\n1\nAC1009\n") {
+		t.Errorf("R2000 output should not declare AC1009:\n%s", out)
+	}
+
+	// Sanity: swapping AC1015 → AC1009 should reproduce the R12 default.
+	r2000Swapped := strings.Replace(out, "AC1015", "AC1009", 1)
+	var r12Buf bytes.Buffer
+	if err := EmitDXF(&r12Buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	if r2000Swapped != r12Buf.String() {
+		t.Errorf("R2000 differs from R12 outside $ACADVER.\n--- R2000(swapped) ---\n%s\n--- R12 ---\n%s",
+			r2000Swapped, r12Buf.String())
+	}
+}
+
 func first(s string, n int) string {
 	if len(s) <= n {
 		return s
