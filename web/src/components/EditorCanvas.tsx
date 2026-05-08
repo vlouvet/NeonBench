@@ -51,6 +51,7 @@ export default function EditorCanvas({
   onSelectRun,
   onPlaceElectrode,
   onDeleteElectrode,
+  onElectrodeContextMenu,
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
@@ -111,6 +112,12 @@ export default function EditorCanvas({
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
+  // Right-click on an electrode pin opens the housing picker modal
+  // (Tier 3 #62). The canvas just routes the event up; EditorPage
+  // owns the modal mount + setElectrodeHousing dispatch. Hovering an
+  // electrode also reveals a gear-icon overlay so the right-click
+  // affordance is discoverable.
+  onElectrodeContextMenu?: (runId: string, electrodeIndex: number) => void;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
@@ -192,6 +199,15 @@ export default function EditorCanvas({
   const [hoveredVertex, setHoveredVertex] = useState<{
     runId: string;
     pointIndex: number;
+  } | null>(null);
+  // Tier 3 #62 — hovered-electrode tracking. When non-null and the
+  // operator has a contextmenu handler wired in, we render a small ⚙
+  // icon next to the marker so the right-click affordance is
+  // discoverable (otherwise the only cue is "right-click on the pin",
+  // which is unobvious). Cleared when the mouse leaves the marker.
+  const [hoveredElectrode, setHoveredElectrode] = useState<{
+    runId: string;
+    electrodeIndex: number;
   } | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
@@ -1324,13 +1340,37 @@ export default function EditorCanvas({
             (run.electrodes ?? []).map((e, ei) => {
               const p = run.polyline.points[e.point_index];
               if (!p) return null;
+              const isHovered =
+                hoveredElectrode !== null &&
+                hoveredElectrode.runId === run.id &&
+                hoveredElectrode.electrodeIndex === ei;
               return (
                 <ElectrodeMarker
                   key={`${run.id}-${ei}`}
                   x={p[0]}
                   y={p[1]}
                   sizeMM={markerSizeMM}
+                  showGear={isHovered && !!onElectrodeContextMenu}
                   onClick={(ev) => onElectrodeClick(ev, run.id, ei)}
+                  onContextMenu={
+                    onElectrodeContextMenu
+                      ? (ev) => {
+                          ev.preventDefault();
+                          ev.stopPropagation();
+                          onElectrodeContextMenu(run.id, ei);
+                        }
+                      : undefined
+                  }
+                  onPointerEnter={() =>
+                    setHoveredElectrode({ runId: run.id, electrodeIndex: ei })
+                  }
+                  onPointerLeave={() => {
+                    setHoveredElectrode((prev) =>
+                      prev && prev.runId === run.id && prev.electrodeIndex === ei
+                        ? null
+                        : prev,
+                    );
+                  }}
                 />
               );
             }),
@@ -1596,23 +1636,67 @@ function ElectrodeMarker({
   y,
   sizeMM,
   onClick,
+  onContextMenu,
+  onPointerEnter,
+  onPointerLeave,
+  showGear,
 }: {
   x: number;
   y: number;
   sizeMM: number;
   onClick: (e: React.MouseEvent) => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  onPointerEnter?: () => void;
+  onPointerLeave?: () => void;
+  showGear?: boolean;
 }) {
   const r = sizeMM / 2;
   const points = `${x},${y - r} ${x + r},${y} ${x},${y + r} ${x - r},${y}`;
+  // The gear icon sits to the upper-right of the marker so it doesn't
+  // overlap the diamond (or its hit-area). Sized at ~70% of the marker
+  // so it reads as a "secondary affordance" rather than competing for
+  // attention. Pointer events ride through so the right-click on the
+  // gear surfaces the same context menu as the marker.
+  const gearOffset = r * 1.2;
+  const gearSize = sizeMM * 0.7;
   return (
-    <polygon
-      points={points}
-      fill="#ff3b6b"
-      stroke="#fff"
-      strokeWidth={r * 0.15}
-      onClick={onClick}
-      style={{ cursor: 'pointer' }}
-    />
+    <g>
+      <polygon
+        points={points}
+        fill="#ff3b6b"
+        stroke="#fff"
+        strokeWidth={r * 0.15}
+        onClick={onClick}
+        onContextMenu={onContextMenu}
+        onPointerEnter={onPointerEnter}
+        onPointerLeave={onPointerLeave}
+        style={{ cursor: 'pointer' }}
+      >
+        <title>
+          {onContextMenu
+            ? 'Click to select; shift/alt-click to delete; right-click for housing'
+            : 'Click to select; shift/alt-click to delete'}
+        </title>
+      </polygon>
+      {showGear && (
+        <g
+          transform={`translate(${x + gearOffset}, ${y - gearOffset})`}
+          pointerEvents="none"
+        >
+          <circle r={gearSize / 2} fill="#fff" stroke="#666" strokeWidth={r * 0.1} />
+          <text
+            x={0}
+            y={gearSize / 4}
+            textAnchor="middle"
+            fontSize={gearSize * 0.85}
+            fill="#444"
+            style={{ userSelect: 'none' }}
+          >
+            ⚙
+          </text>
+        </g>
+      )}
+    </g>
   );
 }
 
