@@ -71,6 +71,19 @@ const EMPTY_DOC_HALF_EXTENT_MM = 100;
 const Z_PADDING_MM = 0.5;
 
 /**
+ * Optional filter: when present, `bboxOfDoc` restricts the bbox
+ * computation to runs whose `group_id` matches the selected id (or
+ * pass `null` to mean "no filter"). Tier 3 #63 — group-focus preview
+ * needs the camera-fit and wall-plane sizing to reframe to just the
+ * selected group's runs, not the whole design.
+ *
+ * The filter is keyed off the run's `group_id`. Runs without a
+ * `group_id` are excluded when a filter is active (a non-grouped run
+ * is by definition not part of any group).
+ */
+export type GroupFilter = string | null | undefined;
+
+/**
  * Compute the axis-aligned bounding box of every tube path in the
  * design, in three.js world space (Y-flipped to match the renderer).
  *
@@ -79,13 +92,31 @@ const Z_PADDING_MM = 0.5;
  * centered at the origin — small enough that the initial camera
  * lands close to where a user would expect, large enough that the
  * `minDistance` clamp on OrbitControls doesn't immediately fight us.
+ *
+ * Tier 3 #63 — accepts an optional `selectedGroupId` filter. When
+ * supplied (non-empty string), only runs whose `group_id` matches
+ * contribute to the bbox; the camera-fit and wall-plane sizing then
+ * reframe to just that subset. `null` / `undefined` / empty string
+ * all mean "no filter, use every run".
  */
-export function bboxOfDoc(doc: DesignDoc | null | undefined): Bbox {
+export function bboxOfDoc(
+  doc: DesignDoc | null | undefined,
+  selectedGroupId?: GroupFilter,
+): Bbox {
   const min = new THREE.Vector3(Infinity, Infinity, Infinity);
   const max = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
 
+  // Empty string is treated the same as "no filter" so callers can
+  // forward URL-derived state (`?groupId=` → "") without thinking
+  // about it.
+  const filterId =
+    typeof selectedGroupId === 'string' && selectedGroupId.length > 0
+      ? selectedGroupId
+      : null;
+
   if (doc) {
     for (const run of doc.runs) {
+      if (filterId !== null && run.group_id !== filterId) continue;
       for (const [x, y] of run.polyline.points) {
         // Y-flip: doc +Y down → three +Y up. This must match
         // `polylineToCurve` in tube-geom.ts or the bbox sits in a

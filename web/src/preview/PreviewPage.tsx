@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { Canvas } from '@react-three/fiber';
 import { api, parseDoc, type DesignDoc, type DesignVersion, type Project } from '../api';
 import Scene, { type CaptureContext, type PresetRequest } from './Scene';
@@ -118,6 +118,20 @@ export default function PreviewPage() {
   const { id, vid } = useParams();
   const projectId = Number(id);
   const versionId = Number(vid);
+
+  // Tier 3 #63 — read the focused group id from the URL (`?groupId=`).
+  // URL is the canonical source of truth for the selection: a refresh
+  // round-trips cleanly, and the link is shareable/bookmarkable. The
+  // sidebar `<select>` writes back via `useNavigate` (see
+  // SceneControls). An empty string is normalized to `null` so Scene
+  // and SceneControls can both treat "no filter" uniformly.
+  const location = useLocation();
+  const selectedGroupId = useMemo<string | null>(() => {
+    const v = new URLSearchParams(location.search).get('groupId');
+    if (!v) return null;
+    return v;
+  }, [location.search]);
+
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
@@ -324,6 +338,8 @@ export default function PreviewPage() {
             onChange={handleSceneStateChange}
             onScreenshot={handleScreenshot}
             onResetDefaults={handleResetDefaults}
+            doc={doc}
+            selectedGroupId={selectedGroupId}
           />
           <Canvas
             dpr={[1, 2]}
@@ -337,6 +353,7 @@ export default function PreviewPage() {
               doc={doc}
               defaultDiameterMM={defaultDiameterMM ?? undefined}
               presetRequest={presetRequest ?? undefined}
+              selectedGroupId={selectedGroupId}
               backgroundColor={sceneState.backgroundColor}
               ambientIntensity={sceneState.ambientIntensity}
               wallEnabled={sceneState.wallEnabled}
