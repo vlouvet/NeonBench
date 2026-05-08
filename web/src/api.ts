@@ -212,6 +212,17 @@ export type DesignRun = {
   // raceway construction (e.g. all letters in "OPEN" share one
   // continuous back-channel). Empty / missing = ungrouped.
   raceway_id?: string;
+  // Tier 3 #60 / NW #125 — classifies the run for downstream
+  // rendering. "" (default / missing) is a primary tube run;
+  // "jumper" is a short splice tube between two primary runs
+  // (Strattman Fig.11.3 10–11 mm OD glass with a flared end, or
+  // Miller p.204–205 16 mm OD glass-sleeved twisted lead-wire).
+  // Jumpers render dashed on the 2D pattern, thinner / dimmer in
+  // the 3D preview, and are skipped by the bend-list summary
+  // page (a 2-vertex polyline has no bends). Old design blobs
+  // without this field deserialize cleanly to "" — flows through
+  // the existing design_doc JSON blob (no migration needed).
+  kind?: '' | 'jumper';
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

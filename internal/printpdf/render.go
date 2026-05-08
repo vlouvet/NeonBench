@@ -280,8 +280,16 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 
 	// Pre-compute bends per run so the apex numbers we draw on the tiles
 	// match the bend list page at the back.
+	// Tier 3 #60 — jumpers are 2-vertex splice tubes with no bends
+	// to enumerate; we skip them at compute time so the bend-apex
+	// pass and the summary page agree (and so a doc that's purely
+	// "primary run + jumper" doesn't emit a bend-list page with one
+	// "(no bends)" row).
 	bendsByRun := make(map[string][]designdoc.BendPoint, len(doc.Runs))
 	for _, run := range doc.Runs {
+		if run.Kind == "jumper" {
+			continue
+		}
 		bendsByRun[run.ID] = designdoc.EffectiveBends(run, projectDiameterMM)
 	}
 
@@ -302,14 +310,22 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 				pdf.SetDrawColor(0, 0, 0)
 				pdf.SetLineWidth(opts.StrokeMM)
 
-				// Draw the tube geometry: alive segments solid, blockouts dashed.
+				// Draw the tube geometry: alive segments solid,
+				// blockouts dashed, jumpers dashed + labeled.
+				// Tier 3 #60 (NW #125) — jumpers are short splice
+				// tubes between two primary runs; rendering them
+				// dashed (≤2 mm dash, 1 mm gap per spec) keeps them
+				// visually distinct from primary runs on the print
+				// pattern, and a centered "JUMPER" label at the
+				// midpoint tells the bender what they are at a glance.
 				for _, run := range doc.Runs {
+					isJumper := run.Kind == "jumper"
 					for _, seg := range designdoc.RenderableSegments(run) {
 						if len(seg.Indices) < 2 {
 							continue
 						}
-						if seg.IsBlockout {
-							pdf.SetDashPattern([]float64{2, 1.2}, 0)
+						if seg.IsBlockout || isJumper {
+							pdf.SetDashPattern([]float64{2, 1}, 0)
 						}
 						start := run.Polyline.Points[seg.Indices[0]]
 						sx, sy := toPage(start[0], start[1])
@@ -323,9 +339,26 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 							pdf.LineTo(sx, sy)
 						}
 						pdf.DrawPath("D")
-						if seg.IsBlockout {
+						if seg.IsBlockout || isJumper {
 							pdf.SetDashPattern([]float64{}, 0)
 						}
+					}
+					if isJumper && len(run.Polyline.Points) >= 2 {
+						// Midpoint label "JUMPER" — 6 pt Helvetica,
+						// stroke-free, world-mm midpoint of the
+						// 2-vertex polyline. Per spec we don't bother
+						// orienting along the jumper axis (jumpers are
+						// short — the axis-aligned label reads fine).
+						p1 := run.Polyline.Points[0]
+						p2 := run.Polyline.Points[len(run.Polyline.Points)-1]
+						mx, my := toPage((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)
+						pdf.SetFont("Helvetica", "", 6)
+						label := "JUMPER"
+						lw := pdf.GetStringWidth(label)
+						// 1 mm vertical offset from the midpoint so
+						// the label doesn't sit directly on the dashed
+						// line — readable at 1:1.
+						pdf.Text(mx-lw/2, my-1, label)
 					}
 				}
 
@@ -524,6 +557,13 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 	y := mx + 22
 	pdf.SetFont("Helvetica", "B", 10)
 	for _, run := range doc.Runs {
+		// Tier 3 #60 — jumpers are 2-vertex splice tubes; the bend
+		// list is about primary runs and would emit "(no bends auto-
+		// detected)" rows that just clutter the summary. Skip them
+		// entirely.
+		if run.Kind == "jumper" {
+			continue
+		}
 		bends := bendsByRun[run.ID]
 		title := fmt.Sprintf("%s · %d pts · %d electrode%s · %d bend%s",
 			run.ID,

@@ -73,6 +73,19 @@ type Run struct {
 	// unfolded strip page in declaration order. Empty = ungrouped
 	// (one strip per face run, the original behavior).
 	RacewayID string `json:"raceway_id,omitempty"`
+	// Kind classifies the run for downstream rendering / validation.
+	// Allowed values: "" (default — primary tube run) and "jumper" (a
+	// short splice tube — Strattman Fig.11.3 10–11 mm OD with a flared
+	// end, or Miller p.204–205 16 mm OD glass-sleeved twisted lead-
+	// wire — that bridges the live electrical path between two adjacent
+	// primary runs whose physical ends sit close together). Jumpers
+	// render dashed on the 2D pattern, thinner / dimmer in the 3D
+	// preview, and are skipped by the bend-list summary page (a 2-
+	// vertex polyline has no bends). Empty / missing for old design
+	// blobs deserializes cleanly to "" (primary tube), so this field
+	// requires no schema migration — it flows through the existing
+	// design_doc JSON blob (Tier 3 #60 / NW #125).
+	Kind string `json:"kind,omitempty"`
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.

@@ -44,6 +44,13 @@ export type DrawingTool =
   // still flows through `switchTool` so leaving e.g. an in-progress
   // pen polyline for break-open clears the pen anchor.
   | 'break-open'
+  // Tier 3 #60 (NW #125) — click-tool that connects two electrodes on
+  // different runs with a jumper run. Two-click semantics (stage source
+  // electrode, then target electrode); the staged source lives in
+  // EditorCanvas state since the reducer here isn't shape-anchored.
+  // Listed in the union so `switchTool` resets sibling tools when the
+  // operator activates 'connect'.
+  | 'connect'
   | 'pen'
   | 'rect'
   | 'circle'
@@ -74,7 +81,8 @@ export type DrawingState =
         | 'label'
         | 'dimension'
         | 'node'
-        | 'break-open';
+        | 'break-open'
+        | 'connect';
     }
   | { tool: 'pen'; vertices: Point[] }
   | { tool: 'rect'; firstCorner: Point | null }

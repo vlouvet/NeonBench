@@ -1445,3 +1445,157 @@ describe('moveOpening', () => {
     expect(() => ops.moveOpening(oneElectrode, 'half', 1)).toThrow(/electrode/);
   });
 });
+
+describe('connectTubes', () => {
+  // Two short open polylines, each with electrodes at both ends. The
+  // first electrode of run-a sits at (0,0); the second electrode of
+  // run-b sits at (50,5). Jumper from a.E1 → b.E1 should land at
+  // (10,0)→(40,5) (the tail of run-a, the head of run-b).
+  function twoOpenRuns(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          id: 'run-a',
+          polyline: { points: [[0, 0], [5, 0], [10, 0]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+          tube_diameter_mm: 12,
+        },
+        {
+          id: 'run-b',
+          polyline: { points: [[40, 5], [45, 5], [50, 5]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+          tube_diameter_mm: 8,
+        },
+      ],
+    };
+  }
+
+  it('emits a 2-vertex jumper whose endpoints exactly match the clicked electrode world coords', () => {
+    const next = ops.connectTubes(twoOpenRuns(), 'run-a', 1, 'run-b', 0);
+    expect(next.runs).toHaveLength(3);
+    const jumper = next.runs[next.runs.length - 1];
+    expect(jumper.id).toBe('j1');
+    expect(jumper.kind).toBe('jumper');
+    expect(jumper.polyline.closed).toBe(false);
+    expect(jumper.polyline.points).toEqual([
+      [10, 0], // run-a electrode index 1 (point_index 2) → (10, 0)
+      [40, 5], // run-b electrode index 0 (point_index 0) → (40, 5)
+    ]);
+    // No electrodes on the jumper itself — wired, not glass-open.
+    expect(jumper.electrodes ?? []).toEqual([]);
+    // Diameter is intentionally NOT inherited from either source run;
+    // the project tube spec applies (per V1 spec).
+    expect(jumper.tube_diameter_mm).toBeUndefined();
+  });
+
+  it('handles a closed run with electrode at point_index 0', () => {
+    const closed: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          id: 'loop',
+          polyline: {
+            points: [
+              [20, 20],
+              [25, 20],
+              [25, 25],
+              [20, 25],
+            ],
+            closed: true,
+          },
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+          direction: 'forward',
+        },
+        {
+          id: 'open',
+          polyline: { points: [[0, 0], [5, 0], [10, 0]], closed: false },
+          electrodes: [{ point_index: 0 }],
+        },
+      ],
+    };
+    const next = ops.connectTubes(closed, 'loop', 0, 'open', 0);
+    const jumper = next.runs[next.runs.length - 1];
+    // Closed-run electrode at index 0 (point_index 0) → world (20, 20).
+    // Open-run electrode at index 0 (point_index 0) → world (0, 0).
+    expect(jumper.polyline.points).toEqual([
+      [20, 20],
+      [0, 0],
+    ]);
+    expect(jumper.kind).toBe('jumper');
+  });
+
+  it('does not inherit a diameter when source runs disagree (project default applies)', () => {
+    // Source runs declare different per-run diameter overrides; the
+    // jumper does NOT pick either one — V1 jumpers fall back to the
+    // project tube spec (per spec: "inherits a sensible diameter
+    // default; project tube spec, with a per-jumper override slot
+    // reserved").
+    const next = ops.connectTubes(twoOpenRuns(), 'run-a', 0, 'run-b', 1);
+    const jumper = next.runs[next.runs.length - 1];
+    expect(jumper.tube_diameter_mm).toBeUndefined();
+  });
+
+  it('inherits raceway_id when both source runs share one', () => {
+    const grouped: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          id: 'run-a',
+          polyline: { points: [[0, 0], [10, 0]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 1 }],
+          raceway_id: 'A',
+        },
+        {
+          id: 'run-b',
+          polyline: { points: [[40, 0], [50, 0]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 1 }],
+          raceway_id: 'A',
+        },
+        {
+          id: 'run-c',
+          polyline: { points: [[40, 20], [50, 20]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 1 }],
+          raceway_id: 'B',
+        },
+      ],
+    };
+    const sameGroup = ops.connectTubes(grouped, 'run-a', 1, 'run-b', 0);
+    expect(sameGroup.runs[sameGroup.runs.length - 1].raceway_id).toBe('A');
+
+    // Mismatched groups → jumper carries no raceway_id.
+    const crossGroup = ops.connectTubes(grouped, 'run-a', 1, 'run-c', 0);
+    expect(crossGroup.runs[crossGroup.runs.length - 1].raceway_id).toBeUndefined();
+  });
+
+  it('throws OperationError when fromRunId === toRunId (no self-jumpers)', () => {
+    const doc = twoOpenRuns();
+    expect(() => ops.connectTubes(doc, 'run-a', 0, 'run-a', 1)).toThrow(
+      /run to itself/,
+    );
+  });
+
+  it('allocates fresh j1, j2, j3 ids on repeated calls', () => {
+    let doc = twoOpenRuns();
+    doc = ops.connectTubes(doc, 'run-a', 0, 'run-b', 0);
+    doc = ops.connectTubes(doc, 'run-a', 1, 'run-b', 1);
+    doc = ops.connectTubes(doc, 'run-a', 0, 'run-b', 1);
+    const ids = doc.runs.filter((r) => r.kind === 'jumper').map((r) => r.id);
+    expect(ids).toEqual(['j1', 'j2', 'j3']);
+  });
+
+  it('honors an explicit diameter_mm_override when supplied', () => {
+    const next = ops.connectTubes(
+      twoOpenRuns(),
+      'run-a',
+      1,
+      'run-b',
+      0,
+      { diameter_mm_override: 16 },
+    );
+    expect(next.runs[next.runs.length - 1].tube_diameter_mm).toBe(16);
+  });
+});
