@@ -47,6 +47,13 @@ import './preview.css';
  * that way through every Phase 3 spec. The "Back to project" link
  * is the only navigation chrome besides the preset bar + the new
  * scene-controls sidebar.
+ *
+ * Tier 3 #53 wires the project's tube-spec diameter through to
+ * `<Scene defaultDiameterMM>` so runs without a per-run
+ * `diameter_mm_override` render at the project's actual diameter.
+ * The fetch is best-effort: while it's in flight (or if it fails)
+ * Scene falls back to its 12 mm defensive constant, and the route
+ * isn't blocked on the network call.
  */
 
 const PRESETS: { preset: CameraPreset; label: string; hint: string }[] = [
@@ -64,6 +71,15 @@ export default function PreviewPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Project's tube-spec diameter. Held separately from `project` so
+  // Scene re-renders the moment the diameter resolves, without
+  // waiting on the doc parse. Stays `null` while in flight; Scene
+  // falls back to its defensive 12 mm constant in that window. Wires
+  // the project's actual diameter into runs that don't carry a
+  // `diameter_mm_override` (Tier 3 #53).
+  const [defaultDiameterMM, setDefaultDiameterMM] = useState<number | null>(
+    null,
+  );
 
   // Preset request envelope — `nonce` is bumped per click so a
   // double-tap on the same preset re-fires the animation (useful
@@ -108,11 +124,22 @@ export default function PreviewPage() {
     // Project name is best-effort — used only to seed the screenshot
     // filename. A 404 here just means we fall back to "preview" in
     // the filename; not worth surfacing as an error to the user.
+    //
+    // The project carries a `tube_spec_id`; once we have the project
+    // we list tube specs and look up the matching diameter so Scene
+    // can render runs at the project's actual tube size (Tier 3 #53).
+    // Failing that lookup is also non-fatal — Scene's 12 mm fallback
+    // covers it, same as before.
     api
       .getProject(projectId)
       .then((p) => {
         if (cancelled) return;
         setProject(p);
+        return api.listTubeSpecs().then((specs) => {
+          if (cancelled) return;
+          const spec = specs.find((s) => s.id === p.tube_spec_id);
+          if (spec) setDefaultDiameterMM(spec.diameter_mm);
+        });
       })
       .catch(() => {});
     return () => {
@@ -206,6 +233,7 @@ export default function PreviewPage() {
           >
             <Scene
               doc={doc}
+              defaultDiameterMM={defaultDiameterMM ?? undefined}
               presetRequest={presetRequest ?? undefined}
               backgroundColor={sceneState.backgroundColor}
               ambientIntensity={sceneState.ambientIntensity}
