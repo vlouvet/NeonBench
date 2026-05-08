@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -52,6 +53,16 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("landscape") == "1" {
 		opts.Landscape = true
 	}
+	// strips_only=1 (Tier 3 #50) suppresses the main pattern + bend-list
+	// pages; only the per-run channel-letter return-strip pages and any
+	// raceway-grouped strip pages are emitted. Operators flip this on
+	// post-fabrication when the front face is already bent and they
+	// just need to bend the metal strip. A request with strips_only=1
+	// against a doc with zero face-flagged runs returns 422 — see
+	// printpdf.ErrNoStripsToRender for the rationale.
+	if r.URL.Query().Get("strips_only") == "1" {
+		opts.StripsOnly = true
+	}
 	opts.ProjectName = project.Name
 	if v.Label != nil {
 		opts.DesignVersionLabel = fmt.Sprintf("v%d — %s", v.VersionNo, *v.Label)
@@ -87,17 +98,35 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var data []byte
+	// Render dispatch: if the saved version has a structured design_doc,
+	// the doc-bearing renderer wins (it knows about runs, electrodes,
+	// strip pages, bend list). Otherwise fall back to the SVG-only path.
+	// Pre-Tier-3-#50 this block shadowed `err` inside the `if-init` and
+	// silently swallowed render errors — see the explicit local `dataErr`
+	// below for the fix. Without it, RenderFromDoc's ErrNoStripsToRender
+	// (or any other error) never reaches the outer `if err != nil`,
+	// producing a 200 with zero bytes — a stale PDF spool to the iframe.
+	var dataErr error
 	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {
 		var doc designdoc.Doc
-		if err := json.Unmarshal([]byte(*v.DesignDocJSON), &doc); err == nil && len(doc.Runs) > 0 {
-			data, err = printpdf.RenderFromDoc(&doc, opts, tubeSpec.DiameterMM)
+		if jsonErr := json.Unmarshal([]byte(*v.DesignDocJSON), &doc); jsonErr == nil && len(doc.Runs) > 0 {
+			data, dataErr = printpdf.RenderFromDoc(&doc, opts, tubeSpec.DiameterMM)
 		} else {
-			data, err = printpdf.Render([]byte(v.SVGData), opts)
+			data, dataErr = printpdf.Render([]byte(v.SVGData), opts)
 		}
 	} else {
-		data, err = printpdf.Render([]byte(v.SVGData), opts)
+		data, dataErr = printpdf.Render([]byte(v.SVGData), opts)
 	}
-	if err != nil {
+	if err := dataErr; err != nil {
+		// Map the strips-only "no faces" sentinel to a clear 422 so the
+		// hidden print iframe shows an error page rather than spooling
+		// an empty PDF. All other render errors fall through with the
+		// same message format we shipped pre-Tier-3-#50.
+		if errors.Is(err, printpdf.ErrNoStripsToRender) {
+			writeError(w, http.StatusUnprocessableEntity,
+				"no return strips in this design — uncheck \"Strip pages only\" or flag a run as a channel-letter face")
+			return
+		}
 		writeError(w, http.StatusUnprocessableEntity, "render pdf: "+err.Error())
 		return
 	}
