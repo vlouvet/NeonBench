@@ -1757,3 +1757,348 @@ describe('group ops', () => {
     expect(doc.runs[0].group_id).toBe('g1');
   });
 });
+
+// Tier 3 #48 — multi-vertex select + drag follow-up. moveVertices
+// applies a batch of (pointIndex → XY) writes in one op so a node-edit
+// drag of N selected vertices stays one undo-stack entry. Out-of-range
+// or no-op writes are silently dropped; if everything was a no-op, the
+// run is returned unchanged so editDoc's structural compare can short-
+// circuit the dirty bump.
+describe('moveVertices', () => {
+  function makePolyDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0], [30, 0], [40, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+  }
+
+  it('translates two vertices by the same delta in a single op', () => {
+    const next = ops.moveVertices(makePolyDoc(), 'run-1', [
+      { pointIndex: 1, x: 12, y: 5 },
+      { pointIndex: 2, x: 22, y: 5 },
+    ]);
+    expect(next.runs[0].polyline.points).toEqual([
+      [0, 0], [12, 5], [22, 5], [30, 0], [40, 0],
+    ]);
+  });
+
+  it('returns the same doc when every write is a no-op', () => {
+    const doc = makePolyDoc();
+    const next = ops.moveVertices(doc, 'run-1', [
+      { pointIndex: 1, x: 10, y: 0 },
+      { pointIndex: 99, x: 0, y: 0 }, // out of range
+    ]);
+    expect(next).toBe(doc);
+  });
+
+  it('drops out-of-range writes silently while applying the rest', () => {
+    const next = ops.moveVertices(makePolyDoc(), 'run-1', [
+      { pointIndex: 0, x: 1, y: 1 },
+      { pointIndex: 99, x: 9, y: 9 },
+    ]);
+    expect(next.runs[0].polyline.points[0]).toEqual([1, 1]);
+    expect(next.runs[0].polyline.points.length).toBe(5);
+  });
+
+  it('empty writes list is a no-op (returns same doc reference)', () => {
+    const doc = makePolyDoc();
+    expect(ops.moveVertices(doc, 'run-1', [])).toBe(doc);
+  });
+
+  it('non-existent run is a no-op (returns same doc reference)', () => {
+    const doc = makePolyDoc();
+    expect(ops.moveVertices(doc, 'nope', [{ pointIndex: 0, x: 1, y: 1 }])).toBe(doc);
+  });
+});
+
+// Tier 3 #48 — vertex-merge on drop. mergeVertices folds two vertices
+// on the same run into one. Used by the canvas when a node-edit drag
+// drops a vertex within the snap-to-vertex radius of another vertex on
+// the same run. The kept vertex's XY survives; the dropped vertex's
+// references are remapped onto it.
+describe('mergeVertices', () => {
+  it('drops one vertex and keeps the other (5-point line, merge 1 into 2)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [10.1, 0], [20, 0], [30, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    // Keep index 1 ([10, 0]); drop index 2 ([10.1, 0]).
+    const next = ops.mergeVertices(doc, 'run-1', 1, 2);
+    expect(next.runs[0].polyline.points).toEqual([
+      [0, 0], [10, 0], [20, 0], [30, 0],
+    ]);
+  });
+
+  it('rewrites electrode references onto the kept vertex and shifts higher refs down', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [10.1, 0], [20, 0], [30, 0]],
+            closed: false,
+          },
+          electrodes: [{ point_index: 2 }, { point_index: 4 }],
+        },
+      ],
+    };
+    // Merge 1 ← 2: electrode at 2 maps to 1; electrode at 4 shifts to 3.
+    const next = ops.mergeVertices(doc, 'run-1', 1, 2);
+    expect(next.runs[0].electrodes).toEqual([
+      { point_index: 1 },
+      { point_index: 3 },
+    ]);
+  });
+
+  it('preserves blockouts whose ends straddle or coincide with the merged vertex', () => {
+    // Blockout [2, 4] with a merge of indices 2 and 3 (drop 3).
+    // Both endpoints remap: 2 stays at 2 (kept), 4 shifts to 3.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0], [25, 0], [30, 0]],
+            closed: false,
+          },
+          blockouts: [{ start_live_index: 2, end_live_index: 4 }],
+        },
+      ],
+    };
+    const next = ops.mergeVertices(doc, 'run-1', 2, 3);
+    expect(next.runs[0].blockouts).toEqual([
+      { start_live_index: 2, end_live_index: 3 },
+    ]);
+  });
+
+  it('preserves annotations and bends through the merge', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0], [30, 0], [40, 0]],
+            closed: false,
+          },
+          annotations: [
+            { kind: 'jump', live_index: 0 },
+            { kind: 'support', live_index: 4 },
+          ],
+          bends: [{ live_index: 2 }, { live_index: 3 }],
+        },
+      ],
+    };
+    // Merge 2 ← 3: bend at 3 collapses onto 2; bend at 2 stays.
+    // Annotations: 0 stays; 4 shifts to 3.
+    const next = ops.mergeVertices(doc, 'run-1', 2, 3);
+    expect(next.runs[0].annotations).toEqual([
+      { kind: 'jump', live_index: 0 },
+      { kind: 'support', live_index: 3 },
+    ]);
+    expect(next.runs[0].bends).toEqual([
+      { live_index: 2 },
+      { live_index: 2 },
+    ]);
+  });
+
+  it('refuses to drop a closed polyline below 3 points', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 1, 1],
+      runs: [
+        {
+          id: 'tri',
+          polyline: { points: [[0, 0], [1, 0], [0, 1]], closed: true },
+        },
+      ],
+    };
+    const next = ops.mergeVertices(doc, 'tri', 0, 1);
+    // Triangle would collapse to a 2-vertex closed polyline — skip.
+    expect(next.runs[0].polyline.points.length).toBe(3);
+  });
+
+  it('refuses to drop an open polyline below 2 points', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 1, 1],
+      runs: [
+        {
+          id: 'seg',
+          polyline: { points: [[0, 0], [1, 0]], closed: false },
+        },
+      ],
+    };
+    const next = ops.mergeVertices(doc, 'seg', 0, 1);
+    expect(next.runs[0].polyline.points.length).toBe(2);
+  });
+
+  it('indexA === indexB is a no-op (returns same doc)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0]],
+            closed: false,
+          },
+        },
+      ],
+    };
+    expect(ops.mergeVertices(doc, 'run-1', 1, 1)).toBe(doc);
+  });
+
+  it('dedups electrodes that collapse onto the same vertex post-merge', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [10.1, 0], [20, 0], [30, 0]],
+            closed: false,
+          },
+          electrodes: [{ point_index: 1 }, { point_index: 2 }],
+        },
+      ],
+    };
+    // Merge 1 ← 2: both electrodes remap to point_index 1; the dup is
+    // dropped so we don't end up with two electrodes on one vertex.
+    const next = ops.mergeVertices(doc, 'run-1', 1, 2);
+    expect(next.runs[0].electrodes).toEqual([{ point_index: 1 }]);
+  });
+});
+
+// Tier 3 #48 — opt-in legacy-id rename. Older docs that pre-date the
+// flat numeric splitRun ids carry `<base>-a` / `<base>-b` (and nested
+// `<base>-a-a`) suffixes. renameLegacyRunIds rewrites every match to
+// the next free `r<n>` slot; non-matching ids are untouched. The op is
+// idempotent — a second call on a migrated doc returns the same
+// reference.
+describe('renameLegacyRunIds', () => {
+  it('returns the same doc when no run id matches the legacy pattern', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'r2', polyline: { points: [[0, 5], [10, 5]], closed: false } },
+        { id: 'text-1', polyline: { points: [[0, 9], [10, 9]], closed: false } },
+      ],
+    };
+    expect(ops.renameLegacyRunIds(doc)).toBe(doc);
+  });
+
+  it('renames `<base>-a` / `<base>-b` to the next free numeric slot', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'old-a', polyline: { points: [[0, 1], [10, 1]], closed: false } },
+        { id: 'old-b', polyline: { points: [[0, 2], [10, 2]], closed: false } },
+      ],
+    };
+    const next = ops.renameLegacyRunIds(doc);
+    // r1 is taken so the rename starts at r2 / r3.
+    expect(next.runs.map((r) => r.id)).toEqual(['r1', 'r2', 'r3']);
+  });
+
+  it('skips reserved numeric slots when renaming', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'r2', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'old-a', polyline: { points: [[0, 1], [10, 1]], closed: false } },
+        { id: 'r5', polyline: { points: [[0, 2], [10, 2]], closed: false } },
+        { id: 'old-b', polyline: { points: [[0, 3], [10, 3]], closed: false } },
+      ],
+    };
+    const next = ops.renameLegacyRunIds(doc);
+    // r2 and r5 are taken; legacy ids get r1 then r3 (next free
+    // integers in order).
+    expect(next.runs.map((r) => r.id)).toEqual(['r2', 'r1', 'r5', 'r3']);
+  });
+
+  it('handles nested legacy suffixes (`-a-a`, `-a-b`, etc.)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'old-a-a', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'old-a-b', polyline: { points: [[0, 1], [10, 1]], closed: false } },
+      ],
+    };
+    const next = ops.renameLegacyRunIds(doc);
+    expect(next.runs.map((r) => r.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('is idempotent — re-running on the migrated doc returns the same reference', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'old-a', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'old-b', polyline: { points: [[0, 1], [10, 1]], closed: false } },
+      ],
+    };
+    const once = ops.renameLegacyRunIds(doc);
+    const twice = ops.renameLegacyRunIds(once);
+    expect(twice).toBe(once);
+  });
+
+  it('preserves run metadata through the rename', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'old-a',
+          polyline: { points: [[0, 0], [10, 0]], closed: false },
+          color: 'classic-red',
+          tube_diameter_mm: 12,
+          electrodes: [{ point_index: 0 }, { point_index: 1 }],
+          notes: '15kV',
+        },
+      ],
+    };
+    const next = ops.renameLegacyRunIds(doc);
+    expect(next.runs[0].id).toBe('r1');
+    expect(next.runs[0].color).toBe('classic-red');
+    expect(next.runs[0].tube_diameter_mm).toBe(12);
+    expect(next.runs[0].electrodes).toEqual([
+      { point_index: 0 },
+      { point_index: 1 },
+    ]);
+    expect(next.runs[0].notes).toBe('15kV');
+  });
+});
