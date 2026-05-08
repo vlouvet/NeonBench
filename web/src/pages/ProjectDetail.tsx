@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
+  BEND_TECHNIQUES,
   DEFAULT_CHANNEL_LETTER_DEPTH_MM,
   DEFAULT_STRIP_OVERLAP_MM,
   DEFAULT_TUBE_END_GAP_MM,
@@ -935,6 +936,12 @@ function TubeSpecEditor({
   const [bend, setBend] = useState('');
   const [segment, setSegment] = useState('');
   const [spacing, setSpacing] = useState('');
+  // Wall thickness + technique drafts (Tier 3 #43). Wall is a string for
+  // the same controlled-input reason as the four primary fields; an empty
+  // string maps to "clear" on save. Technique is the union of BendTechnique
+  // | '' (the "(unset)" option clears the column).
+  const [wall, setWall] = useState('');
+  const [technique, setTechnique] = useState<BendTechnique | ''>('');
   const [localError, setLocalError] = useState<string | null>(null);
 
   if (!spec) {
@@ -951,6 +958,8 @@ function TubeSpecEditor({
           setBend(String(spec.min_bend_radius_mm));
           setSegment(String(spec.max_segment_length_mm));
           setSpacing(String(spec.min_spacing_mm));
+          setWall(spec.wall_thickness_mm === undefined ? '' : String(spec.wall_thickness_mm));
+          setTechnique(spec.bend_technique ?? '');
           setLocalError(null);
           setOpen(true);
         }}
@@ -997,6 +1006,31 @@ function TubeSpecEditor({
         // field on UpdateTubeSpecBody.
         (body as Record<string, number>)[c.key] = parsed;
       }
+    }
+    // Wall thickness: empty string ⇒ clear (null), otherwise parse to
+    // a number in [0.1, 10.0]. Skip the field entirely when the draft
+    // matches the persisted value to keep the PATCH minimal.
+    const currentWall = spec.wall_thickness_mm;
+    const wallTrimmed = wall.trim();
+    if (wallTrimmed === '') {
+      if (currentWall !== undefined) {
+        body.wall_thickness_mm = null;
+      }
+    } else {
+      const parsedWall = Number(wallTrimmed);
+      if (!Number.isFinite(parsedWall)) {
+        errors.push('Wall thickness must be a number.');
+      } else if (parsedWall < 0.1 || parsedWall > 10.0) {
+        errors.push('Wall thickness must be between 0.1 and 10.0 mm.');
+      } else if (parsedWall !== currentWall) {
+        body.wall_thickness_mm = parsedWall;
+      }
+    }
+    // Technique: '' is the "(unset)" option which maps to a server-side
+    // clear. Skip the field when unchanged.
+    const currentTech = spec.bend_technique ?? '';
+    if (technique !== currentTech) {
+      body.bend_technique = technique === '' ? null : technique;
     }
     if (errors.length > 0) {
       setLocalError(errors.join(' '));
@@ -1063,8 +1097,11 @@ function TubeSpecEditor({
         mm
       </label>
       <BendDerivationFields
-        spec={spec}
         diameterDraft={diameter}
+        wallDraft={wall}
+        onWallChange={setWall}
+        techniqueDraft={technique}
+        onTechniqueChange={setTechnique}
         onUseDerived={(r) => setBend(r.toFixed(1))}
         busy={busy}
       />
@@ -1117,50 +1154,83 @@ function TubeSpecEditor({
   );
 }
 
-// BendDerivationFields surfaces the spec's wall_thickness_mm and
-// bend_technique metadata alongside a live "Derived: NN.N mm" indicator
-// computed from the diameter the user is currently editing. The "Use
-// derived" button populates the manual `bend` input so the operator can
-// review the value before saving — this preserves the existing PATCH
-// semantics (the manual override is what gets persisted) while making
-// the wall-thinning derivation visible in the UI.
+// BendDerivationFields renders the editable wall_thickness_mm number
+// input + bend_technique dropdown alongside a live "Derived: NN.N mm"
+// indicator computed from the diameter, wall, and technique drafts the
+// user is currently editing. The "Use derived" button copies that radius
+// into the manual `bend` input so the operator can review it before
+// saving — the persisted min_bend_radius_mm is still the manual override.
 //
-// Tier 3 #31. The wall-thickness and technique fields are display-only
-// in this PR — they're seeded by migration 0010 and will become
-// editable in a follow-up that extends the PATCH /api/tube_specs/{id}
-// route. See follow-ups in the PR body for tracking.
+// Tier 3 #31 added the columns + derivation; Tier 3 #43 promoted these
+// fields from read-only display to editable. Drafts live in the parent
+// TubeSpecEditor so the existing dirty-tracking + auto-save pattern
+// applies uniformly across all six dimensional fields.
 function BendDerivationFields({
-  spec,
   diameterDraft,
+  wallDraft,
+  onWallChange,
+  techniqueDraft,
+  onTechniqueChange,
   onUseDerived,
   busy,
 }: {
-  spec: TubeSpec;
   diameterDraft: string;
+  wallDraft: string;
+  onWallChange: (next: string) => void;
+  techniqueDraft: BendTechnique | '';
+  onTechniqueChange: (next: BendTechnique | '') => void;
   onUseDerived: (radiusMM: number) => void;
   busy: boolean;
 }) {
   const liveDiameter = Number(diameterDraft);
-  const D = Number.isFinite(liveDiameter) && liveDiameter > 0 ? liveDiameter : spec.diameter_mm;
-  const wall = spec.wall_thickness_mm;
-  const technique = spec.bend_technique as BendTechnique | undefined;
-  const derived = derivedMinBendRadiusMM(D, wall, technique);
-  const wallLabel = wall === undefined ? '(unset)' : `${wall.toFixed(2)} mm`;
-  const techLabel = technique ?? '(unset)';
+  const D = Number.isFinite(liveDiameter) && liveDiameter > 0 ? liveDiameter : 0;
+  const wallNum = Number(wallDraft);
+  const wallForCalc = wallDraft.trim() !== '' && Number.isFinite(wallNum) ? wallNum : undefined;
+  const techForCalc = techniqueDraft === '' ? undefined : techniqueDraft;
+  const derived = derivedMinBendRadiusMM(D, wallForCalc, techForCalc);
   const derivedSourceTitle =
-    wall !== undefined && technique
+    wallForCalc !== undefined && techForCalc
       ? `K * D² / t = ${
-          technique === 'ribbon' ? '0.20' : technique === 'crossfire' ? '0.225' : '0.275'
-        } * ${D}² / ${wall.toFixed(2)} = ${derived.toFixed(2)} mm`
-      : `Diameter-only fall-back: 2.25 * D = ${derived.toFixed(2)} mm. Add wall thickness + technique to the spec for a tighter derivation.`;
+          techForCalc === 'ribbon' ? '0.20' : techForCalc === 'crossfire' ? '0.225' : '0.275'
+        } * ${D}² / ${wallForCalc.toFixed(2)} = ${derived.toFixed(2)} mm`
+      : `Diameter-only fall-back: 2.25 * D = ${derived.toFixed(2)} mm. Set wall thickness and technique for a tighter derivation.`;
   return (
     <span
       style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}
-      title="Inputs to the wall-thinning bend-radius derivation (Tier 3 #31). Saved by migration; PATCH support coming in a follow-up."
+      title="Wall-thinning bend-radius derivation inputs (Tier 3 #31, editable per Tier 3 #43)."
     >
-      <span style={{ opacity: 0.75 }}>
-        wall <strong>{wallLabel}</strong>, technique <strong>{techLabel}</strong>
-      </span>
+      <label>
+        wall{' '}
+        <input
+          type="number"
+          step={0.05}
+          min={0.1}
+          max={10.0}
+          value={wallDraft}
+          disabled={busy}
+          onChange={(e) => onWallChange(e.target.value)}
+          placeholder="(unset)"
+          style={{ width: '5rem' }}
+          aria-label="wall thickness mm"
+        />
+        mm
+      </label>
+      <label>
+        technique{' '}
+        <select
+          value={techniqueDraft}
+          disabled={busy}
+          onChange={(e) => onTechniqueChange(e.target.value as BendTechnique | '')}
+          aria-label="bend technique"
+        >
+          <option value="">(unset)</option>
+          {BEND_TECHNIQUES.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <span style={{ opacity: 0.75 }} title={derivedSourceTitle}>
         derived <strong>{derived > 0 ? `${derived.toFixed(1)} mm` : '—'}</strong>
       </span>

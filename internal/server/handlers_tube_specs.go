@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +12,27 @@ import (
 	"strings"
 
 	"github.com/vlouvet/neonbench/internal/storage"
+)
+
+// validBendTechniques is the whitelist for the bend_technique column. Kept
+// in lock-step with derivedMinBendRadius's K-constant table (see
+// internal/validate/rules.go) and the frontend's BEND_TECHNIQUES tuple in
+// web/src/api.ts. Adding a new technique requires updating all three sites.
+var validBendTechniques = map[string]struct{}{
+	"ribbon":     {},
+	"crossfire":  {},
+	"hand_torch": {},
+}
+
+// Wall-thickness range bounds for the PATCH validator. The lower bound
+// (0.1 mm) covers the very thinnest novelty / display-art tubing; the
+// upper bound (10.0 mm) covers oversized borosilicate without forbidding
+// experimentation. Realistic neon production tubing sits between 0.9 and
+// 1.5 mm (NT Table 3.10, Miller p.115); the wide bounds let operators
+// model unusual stock without bumping into a 422.
+const (
+	minWallThicknessMM = 0.1
+	maxWallThicknessMM = 10.0
 )
 
 func (s *apiServer) handleListTubeSpecs(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +61,13 @@ type updateTubeSpecReq struct {
 	MinBendRadiusMM    *float64 `json:"min_bend_radius_mm,omitempty"`
 	MaxSegmentLengthMM *float64 `json:"max_segment_length_mm,omitempty"`
 	MinSpacingMM       *float64 `json:"min_spacing_mm,omitempty"`
+	// WallThicknessMM and BendTechnique use json.RawMessage so the
+	// handler can distinguish three PATCH states: omitted (preserve
+	// current value), explicit `null` (clear → DB NULL), or a value
+	// (write through). A bare *float64 / *string would collapse
+	// "absent" and "null" into the same nil. Tier 3 #43.
+	WallThicknessMM json.RawMessage `json:"wall_thickness_mm,omitempty"`
+	BendTechnique   json.RawMessage `json:"bend_technique,omitempty"`
 }
 
 // updateTubeSpecResponse wraps the updated row plus a fan-out summary so
@@ -84,6 +114,20 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	wall, wallSet, msg := parseWallThicknessPatch(req.WallThicknessMM)
+	if msg != "" {
+		// Range/format failures on the optional fields surface as 422
+		// per the spec (the request was syntactically valid JSON; the
+		// values were semantically out of bounds), distinguishing them
+		// from the 400s the four primary fields emit.
+		writeError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	tech, techSet, msg := parseBendTechniquePatch(req.BendTechnique)
+	if msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
 
 	cur, err := storage.GetTubeSpec(r.Context(), s.db, id)
 	if err != nil {
@@ -91,6 +135,12 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	merged := mergeTubeSpecPatch(cur, req)
+	if wallSet {
+		merged.WallThicknessMM = wall
+	}
+	if techSet {
+		merged.BendTechnique = tech
+	}
 	if msg := validateMergedTubeSpec(merged); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -196,18 +246,23 @@ func validateMergedTubeSpec(t storage.TubeSpec) string {
 // PR's scope stays inside the handler layer; handlers_export.go already
 // follows the same pattern for tube_specs INSERTs. min_lead_in_mm and
 // sharp_bend_angle_deg (Tier 3 #29) are intentionally untouched — the
-// PATCH surface in this PR only exposes the four primary dimensional
-// fields, so leave the optional-rule columns as-is.
+// PATCH surface in this handler only exposes the four primary dimensional
+// fields plus wall_thickness_mm + bend_technique (Tier 3 #43).
 func updateTubeSpecRow(ctx context.Context, db *sql.DB, id int64, t storage.TubeSpec) error {
+	wall := nullableFloat(t.WallThicknessMM)
+	tech := nullableString(t.BendTechnique)
 	res, err := db.ExecContext(ctx, `
 		UPDATE tube_specs
 		   SET name                  = ?,
 		       diameter_mm           = ?,
 		       min_bend_radius_mm    = ?,
 		       max_segment_length_mm = ?,
-		       min_spacing_mm        = ?
+		       min_spacing_mm        = ?,
+		       wall_thickness_mm     = ?,
+		       bend_technique        = ?
 		 WHERE id = ?`,
-		t.Name, t.DiameterMM, t.MinBendRadiusMM, t.MaxSegmentLengthMM, t.MinSpacingMM, id)
+		t.Name, t.DiameterMM, t.MinBendRadiusMM, t.MaxSegmentLengthMM, t.MinSpacingMM,
+		wall, tech, id)
 	if err != nil {
 		// Surface UNIQUE name collisions as a 400-friendly error so the
 		// frontend can show the trimmed message instead of a 500.
@@ -276,6 +331,89 @@ func (s *apiServer) revalidateAllForTubeSpec(r *http.Request, tubeSpecID int64) 
 		}
 	}
 	return projectCount, versionCount, failedCount
+}
+
+// parseWallThicknessPatch interprets the raw JSON for wall_thickness_mm
+// in a PATCH body. Three-state semantics matching parseTubeEndGapPatch:
+//   - (nil, false, "") when the field was omitted entirely;
+//   - (nil, true,  "") when the field was explicitly `null` (clear it);
+//   - (&v,  true,  "") when the field was a valid number in range;
+//   - (nil, false, "<msg>") on any parse / validation failure.
+func parseWallThicknessPatch(raw json.RawMessage) (*float64, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var v float64
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return nil, false, "wall_thickness_mm must be a number or null"
+	}
+	if v < minWallThicknessMM || v > maxWallThicknessMM {
+		return nil, false, fmt.Sprintf("wall_thickness_mm must be between %g and %g (got %g)",
+			minWallThicknessMM, maxWallThicknessMM, v)
+	}
+	return &v, true, ""
+}
+
+// parseBendTechniquePatch interprets the raw JSON for bend_technique in
+// a PATCH body. Three-state plus an explicit empty-string clear, since
+// the column is TEXT not REAL:
+//   - (nil, false, "") when the field was omitted entirely;
+//   - (nil, true,  "") when the field was explicit `null` or "" (clear);
+//   - (&s,  true,  "") when the field was one of the whitelisted values;
+//   - (nil, false, "<msg>") on any parse / whitelist failure.
+//
+// Whitelist (rather than free-form-with-warning) is the right call here
+// because the technique selects a K constant in the validator's bend-
+// radius derivation — an unknown string would silently fall back to the
+// 2.25·D bound and the operator would never see why their derived radius
+// stopped tightening. The frontend already constrains the input to the
+// three values via a <select>; the server enforces the same envelope so
+// curl / scripted callers can't drift.
+func parseBendTechniquePatch(raw json.RawMessage) (*string, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var s string
+	if err := json.Unmarshal(trimmed, &s); err != nil {
+		return nil, false, "bend_technique must be a string or null"
+	}
+	if s == "" {
+		// An explicit empty string is the frontend's "(none)" option —
+		// same intent as null. Clear the column.
+		return nil, true, ""
+	}
+	if _, ok := validBendTechniques[s]; !ok {
+		return nil, false, fmt.Sprintf(
+			"bend_technique must be one of \"ribbon\", \"crossfire\", \"hand_torch\" (got %q)", s)
+	}
+	return &s, true, ""
+}
+
+// nullableFloat converts an optional pointer to a value suitable for
+// database/sql interpolation: nil → SQL NULL, otherwise the underlying
+// float. modernc.org/sqlite's driver accepts both nil and concrete values
+// in the same arg slot via the empty-interface boundary.
+func nullableFloat(v *float64) any {
+	if v == nil {
+		return nil
+	}
+	return *v
+}
+
+// nullableString mirrors nullableFloat for TEXT columns.
+func nullableString(v *string) any {
+	if v == nil {
+		return nil
+	}
+	return *v
 }
 
 // projectsForTubeSpec returns the IDs of every project that references
