@@ -12,10 +12,17 @@ web UI.
 > double-back hairpins, channel-letter return strips with raceway
 > grouping, Hershey single-stroke text in three faces, polygon-offset
 > Neonize with stitched single-tube output, undo/redo, validation
-> marker overlay) ship today. NeonWizard parity is **31 ✅ / 12 🟡** of
-> 148 advertised features; Tier 4 of 25 are deliberately out of scope
-> (graphic-design-suite features that don't help neon production).
-> Phase 3 (extruded 3D tube rendering) is not yet started.
+> marker overlay with severity-filter + j/k keyboard nav +
+> sidebar↔canvas hover linking, full-spec-driven validation including
+> derived bend radius from wall thickness + technique, click-to-edit
+> tube-spec fields with fan-out re-validation, OS print dialog with
+> strips-only filter) ship today. **20 of ~35 Tier 3 polish items
+> shipped** across 28 PRs in the most recent active development push.
+> NeonWizard parity is **31 ✅ / 12 🟡** of 148 advertised features
+> (15 deliberately out of scope as Tier 4 graphic-design-suite features
+> that don't help neon production). Phase 3 (extruded 3D tube rendering
+> via three.js + react-three-fiber) has 7 dispatchable specs queued in
+> `specs/active/phase3-*.md` but no implementation has started.
 
 ## Why
 
@@ -109,7 +116,11 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    severity in the sidebar **and rendered as colored circles directly
    on the canvas** — click a marker to select the run it belongs to,
    hover for the issue text. Markers are red for errors, amber for
-   warnings; print output suppresses them.
+   warnings; print output suppresses them. Sidebar severity checkboxes
+   filter both the list and the canvas markers; press `j` / `k` (or
+   `]` / `[`) to pan-zoom the canvas to the next/previous issue;
+   hovering an issue row pulses the matching canvas marker (and vice
+   versa) so dense-error designs stay scannable.
 
 5. **Edit.** Open the editor for a version. Every editor mutation flows
    through `editDoc()` which records to an in-session undo stack with
@@ -200,11 +211,15 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    notes. The editor also has a **Print** button in the toolbar that
    opens the OS print dialog directly against this same PDF (via a
    hidden iframe) — saves the download-then-open round-trip when you
-   want a quick proof print. The project page panel also offers a
-   **Download DXF** button — an AutoCAD R12 ASCII file with one
-   polyline per run (millimeters, layered per run id) for feeding to
-   CNC tube benders; the export includes electrode `CIRCLE` markers,
-   run + free-form `TEXT` labels, and dimension `LINE+TEXT` pairs on
+   want a quick proof print. Append `?strips_only=1` to the print
+   URL to suppress the main pattern + bend-list pages and emit only
+   the channel-letter return-strip pages — useful post-fabrication
+   when the front face is bent and the operator just needs to bend
+   the metal strip. The project page panel also offers a **Download
+   DXF** button — an AutoCAD R12 ASCII file with one polyline per
+   run (millimeters, layered per run id) for feeding to CNC tube
+   benders; the export includes electrode `CIRCLE` markers, run +
+   free-form `TEXT` labels, and dimension `LINE+TEXT` pairs on
    dedicated `ELECTRODES` / `LABELS` / `DIMENSIONS` layers.
 
    **Channel-letter workflow.** For 3D channel letters (a flat metal
@@ -247,6 +262,21 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
    job number) are click-to-edit on the project detail page; tube-spec
    edits there fan out to re-validate every saved design version on
    that spec, with a toast confirming the count.
+
+10. **Tube-spec management.** The project detail page exposes an
+    inline `<TubeSpecEditor>` for the active spec — every field is
+    click-to-edit and auto-saves: name, dimensions string, diameter,
+    manual `min_bend_radius_mm` override, plus the new
+    `wall_thickness_mm` (range 0.1–10.0 mm) and `bend_technique`
+    (`ribbon` / `crossfire` / `hand_torch`) inputs. The wall + technique
+    pair drives the `K·D²/t` bend-radius derivation; a live "Derived:
+    NN.N mm" indicator updates as you type, and a "Use derived" button
+    copies that value into the manual-override field. Saving any field
+    fans out the new validation across every dependent design version
+    (toast: "Re-validated N versions across M projects"). Server-side
+    whitelist-validates the `bend_technique` value with HTTP 422 on
+    typos so an unknown technique doesn't silently fall back to the
+    `2.25·D` diameter-only safety bound.
 
 ## Architecture
 
@@ -293,7 +323,7 @@ See [`todo.md`](todo.md) for the granular checklist (148-row NeonWizard
 parity matrix in Appendix A; tier-ranked task backlog in Appendix B).
 Current scoreboard is **31 ✅ / 12 🟡 / 90 ❌ / 15 🚫** against NW.
 Tier 1 (shop-readiness blockers) and Tier 2 (largest parity gaps)
-have shipped in full. Tier 3 polish has shipped 14 of ~35 items;
+have shipped in full. Tier 3 polish has shipped 20 of ~35 items;
 remaining big chunks:
 
 - **Editor productivity:** multi-select with batch ops, Bezier-aware
