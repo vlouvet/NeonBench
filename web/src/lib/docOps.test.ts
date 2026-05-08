@@ -1599,3 +1599,161 @@ describe('connectTubes', () => {
     expect(next.runs[next.runs.length - 1].tube_diameter_mm).toBe(16);
   });
 });
+
+// Tier 3 #33b — group binding ops (groupRuns / dissolveGroup /
+// renameGroup). Build a minimal three-run doc so we can exercise
+// every membership branch (group/dissolve/replace) without hauling
+// in the full geometry from `makeDoc`.
+describe('group ops', () => {
+  function threeRunDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 50],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [10, 0]], closed: false } },
+        { id: 'r2', polyline: { points: [[0, 5], [10, 5]], closed: false } },
+        { id: 'r3', polyline: { points: [[0, 10], [10, 10]], closed: false } },
+      ],
+    };
+  }
+
+  it('nextGroupId allocates the lowest unused id', () => {
+    expect(ops.nextGroupId(threeRunDoc())).toBe('g1');
+    const doc: DesignDoc = {
+      ...threeRunDoc(),
+      groups: [
+        { id: 'g1', name: 'A' },
+        { id: 'g3', name: 'C' },
+      ],
+    };
+    // Should fill the gap at g2, not skip to g4.
+    expect(ops.nextGroupId(doc)).toBe('g2');
+  });
+
+  it('groupRuns appends a Group entry and stamps group_id on members', () => {
+    const { doc, groupId } = ops.groupRuns(threeRunDoc(), ['r1', 'r2'], 'Trim');
+    expect(groupId).toBe('g1');
+    expect(doc.groups).toEqual([{ id: 'g1', name: 'Trim' }]);
+    expect(doc.runs[0].group_id).toBe('g1');
+    expect(doc.runs[1].group_id).toBe('g1');
+    expect(doc.runs[2].group_id).toBeUndefined();
+  });
+
+  it('groupRuns ignores run ids that are not in the doc', () => {
+    // A stale selection from a deleted run shouldn't throw — the
+    // group still gets created (the UI layer guards the empty case)
+    // but only existing runs get the FK.
+    const { doc, groupId } = ops.groupRuns(threeRunDoc(), ['r1', 'ghost'], 'Half');
+    expect(groupId).toBe('g1');
+    expect(doc.runs[0].group_id).toBe('g1');
+    expect(doc.runs.find((r) => r.id === 'ghost')).toBeUndefined();
+  });
+
+  it('groupRuns is immutable — input doc is not mutated', () => {
+    const before = threeRunDoc();
+    const beforeRuns = before.runs;
+    ops.groupRuns(before, ['r1', 'r2'], 'Trim');
+    expect(before.runs).toBe(beforeRuns); // same reference
+    expect(before.runs[0].group_id).toBeUndefined();
+    expect(before.groups).toBeUndefined();
+  });
+
+  it('dissolveGroup clears member FKs and drops the entry', () => {
+    let doc = threeRunDoc();
+    doc = ops.groupRuns(doc, ['r1', 'r2', 'r3'], 'All').doc;
+    doc = ops.dissolveGroup(doc, 'g1');
+    expect(doc.groups).toEqual([]);
+    for (const r of doc.runs) {
+      expect(r.group_id).toBeUndefined();
+    }
+  });
+
+  it('dissolveGroup is a no-op for a missing groupId', () => {
+    const before = threeRunDoc();
+    const after = ops.dissolveGroup(before, 'g99');
+    expect(after).toBe(before); // exact same reference
+  });
+
+  it('dissolveGroup drops the entry even when no runs reference it', () => {
+    // Synthetic state: a group entry with no member runs (could
+    // happen if every member was re-grouped elsewhere). Dissolving
+    // that empty group should still remove the entry.
+    const doc: DesignDoc = {
+      ...threeRunDoc(),
+      groups: [{ id: 'g1', name: 'Empty' }],
+    };
+    const after = ops.dissolveGroup(doc, 'g1');
+    expect(after.groups).toEqual([]);
+  });
+
+  it('renameGroup updates the display name only', () => {
+    let doc = threeRunDoc();
+    doc = ops.groupRuns(doc, ['r1', 'r2'], 'Trim').doc;
+    doc = ops.renameGroup(doc, 'g1', 'Front face');
+    expect(doc.groups).toEqual([{ id: 'g1', name: 'Front face' }]);
+    // Member FKs unchanged.
+    expect(doc.runs[0].group_id).toBe('g1');
+    expect(doc.runs[1].group_id).toBe('g1');
+  });
+
+  it('renameGroup is a no-op for a missing groupId or unchanged name', () => {
+    let doc = threeRunDoc();
+    doc = ops.groupRuns(doc, ['r1'], 'Trim').doc;
+    expect(ops.renameGroup(doc, 'g99', 'X')).toBe(doc);
+    expect(ops.renameGroup(doc, 'g1', 'Trim')).toBe(doc);
+  });
+
+  it('re-grouping already-grouped runs replaces the prior group_id', () => {
+    // Spec test case: group [r1, r2] as A, then group [r2, r3] as B
+    // → r2 belongs to B; A is unchanged but only owns r1.
+    let doc = threeRunDoc();
+    const a = ops.groupRuns(doc, ['r1', 'r2'], 'A');
+    doc = a.doc;
+    const b = ops.groupRuns(doc, ['r2', 'r3'], 'B');
+    doc = b.doc;
+    // Both group entries persist; the second got a fresh id.
+    expect(a.groupId).toBe('g1');
+    expect(b.groupId).toBe('g2');
+    expect(doc.groups).toEqual([
+      { id: 'g1', name: 'A' },
+      { id: 'g2', name: 'B' },
+    ]);
+    // r1 still in A; r2 moved to B; r3 in B.
+    expect(doc.runs[0].group_id).toBe('g1');
+    expect(doc.runs[1].group_id).toBe('g2');
+    expect(doc.runs[2].group_id).toBe('g2');
+  });
+
+  it('JSON round-trip preserves group_id and Doc.groups', () => {
+    let doc = threeRunDoc();
+    doc = ops.groupRuns(doc, ['r1', 'r2'], 'Trim').doc;
+    const round = JSON.parse(JSON.stringify(doc)) as DesignDoc;
+    expect(round.groups).toEqual([{ id: 'g1', name: 'Trim' }]);
+    expect(round.runs[0].group_id).toBe('g1');
+    expect(round.runs[1].group_id).toBe('g1');
+    expect(round.runs[2].group_id).toBeUndefined();
+  });
+
+  it('loads a pre-33b doc literal with no groups field', () => {
+    // Hand-written pre-33b JSON shape — the deserializer should fill
+    // group_id with undefined and leave Doc.groups undefined. This
+    // pins the back-compat promise for any row persisted before
+    // this PR.
+    const old = JSON.parse(`{
+      "version": 1,
+      "view_box_mm": [0, 0, 100, 50],
+      "runs": [
+        {"id": "r1", "polyline": {"points": [[0,0],[10,0]], "closed": false}},
+        {"id": "r2", "polyline": {"points": [[0,5],[10,5]], "closed": false}}
+      ]
+    }`) as DesignDoc;
+    expect(old.groups).toBeUndefined();
+    expect(old.runs[0].group_id).toBeUndefined();
+    // groupRuns on a pre-33b doc should still work — the spec
+    // mandates loading these unchanged.
+    const { doc, groupId } = ops.groupRuns(old, ['r1', 'r2'], 'New');
+    expect(groupId).toBe('g1');
+    expect(doc.groups).toEqual([{ id: 'g1', name: 'New' }]);
+    expect(doc.runs[0].group_id).toBe('g1');
+  });
+});
