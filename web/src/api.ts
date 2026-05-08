@@ -16,6 +16,14 @@ export type TubeSpec = {
   // derivedMinBendRadius helper for provenance and the K table.
   wall_thickness_mm?: number;
   bend_technique?: 'ribbon' | 'crossfire' | 'hand_torch';
+  // Optional per-spec lead-in / sharp-bend overrides (Tier 3 #29 added
+  // the columns; Tier 3 #41 wires them into the editor). Both are
+  // nullable on the server — the JSON omits the field entirely when
+  // the column is NULL. Consumers should treat undefined as "no
+  // override; the validator falls back to a derived default" (2 ×
+  // diameter for lead-in, 85° for the sharp-bend threshold).
+  min_lead_in_mm?: number;
+  sharp_bend_angle_deg?: number;
   is_default: boolean;
   created_at: string;
 };
@@ -286,6 +294,14 @@ export type UpdateTubeSpecBody = {
   // out-of-range / unknown values surface as 422.
   wall_thickness_mm?: number | null;
   bend_technique?: BendTechnique | '' | null;
+  // Three-state PATCH fields for the lead-in and sharp-bend overrides
+  // (Tier 3 #41). Same semantics as wall_thickness_mm: omit to
+  // preserve, null to clear (revert to derived default), number to
+  // write through. Server validates min_lead_in_mm in [0, 50] mm and
+  // sharp_bend_angle_deg in [0, 90] degrees; out-of-range surfaces as
+  // 422.
+  min_lead_in_mm?: number | null;
+  sharp_bend_angle_deg?: number | null;
 };
 
 export type VectorizeCrop = { x: number; y: number; w: number; h: number };

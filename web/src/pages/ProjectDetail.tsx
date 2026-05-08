@@ -1021,6 +1021,13 @@ function TubeSpecEditor({
   // | '' (the "(unset)" option clears the column).
   const [wall, setWall] = useState('');
   const [technique, setTechnique] = useState<BendTechnique | ''>('');
+  // Lead-in / sharp-bend drafts (Tier 3 #41). Both stored as strings;
+  // empty maps to "clear" on save (revert to derived default). The
+  // validator's effective defaults are 2 × diameter for lead-in and
+  // 85° for sharp-bend; the inputs surface those as inline hints when
+  // the field is blank so the operator sees what the rule will use.
+  const [leadIn, setLeadIn] = useState('');
+  const [sharpBend, setSharpBend] = useState('');
   const [localError, setLocalError] = useState<string | null>(null);
 
   if (!spec) {
@@ -1039,6 +1046,10 @@ function TubeSpecEditor({
           setSpacing(String(spec.min_spacing_mm));
           setWall(spec.wall_thickness_mm === undefined ? '' : String(spec.wall_thickness_mm));
           setTechnique(spec.bend_technique ?? '');
+          setLeadIn(spec.min_lead_in_mm === undefined ? '' : String(spec.min_lead_in_mm));
+          setSharpBend(
+            spec.sharp_bend_angle_deg === undefined ? '' : String(spec.sharp_bend_angle_deg),
+          );
           setLocalError(null);
           setOpen(true);
         }}
@@ -1111,6 +1122,41 @@ function TubeSpecEditor({
     if (technique !== currentTech) {
       body.bend_technique = technique === '' ? null : technique;
     }
+    // Lead-in / sharp-bend: same three-state shape as wall_thickness_mm.
+    // Empty string ⇒ clear (null) only when there's a persisted value to
+    // clear; otherwise skip the field (avoids a no-op PATCH).
+    const currentLeadIn = spec.min_lead_in_mm;
+    const leadInTrimmed = leadIn.trim();
+    if (leadInTrimmed === '') {
+      if (currentLeadIn !== undefined) {
+        body.min_lead_in_mm = null;
+      }
+    } else {
+      const parsedLeadIn = Number(leadInTrimmed);
+      if (!Number.isFinite(parsedLeadIn)) {
+        errors.push('Min lead-in must be a number.');
+      } else if (parsedLeadIn < 0 || parsedLeadIn > 50) {
+        errors.push('Min lead-in must be between 0 and 50 mm.');
+      } else if (parsedLeadIn !== currentLeadIn) {
+        body.min_lead_in_mm = parsedLeadIn;
+      }
+    }
+    const currentSharpBend = spec.sharp_bend_angle_deg;
+    const sharpBendTrimmed = sharpBend.trim();
+    if (sharpBendTrimmed === '') {
+      if (currentSharpBend !== undefined) {
+        body.sharp_bend_angle_deg = null;
+      }
+    } else {
+      const parsedSharpBend = Number(sharpBendTrimmed);
+      if (!Number.isFinite(parsedSharpBend)) {
+        errors.push('Sharp bend angle must be a number.');
+      } else if (parsedSharpBend < 0 || parsedSharpBend > 90) {
+        errors.push('Sharp bend angle must be between 0 and 90 degrees.');
+      } else if (parsedSharpBend !== currentSharpBend) {
+        body.sharp_bend_angle_deg = parsedSharpBend;
+      }
+    }
     if (errors.length > 0) {
       setLocalError(errors.join(' '));
       return;
@@ -1182,6 +1228,14 @@ function TubeSpecEditor({
         techniqueDraft={technique}
         onTechniqueChange={setTechnique}
         onUseDerived={(r) => setBend(r.toFixed(1))}
+        busy={busy}
+      />
+      <LeadInSharpBendFields
+        diameterDraft={diameter}
+        leadInDraft={leadIn}
+        onLeadInChange={setLeadIn}
+        sharpBendDraft={sharpBend}
+        onSharpBendChange={setSharpBend}
         busy={busy}
       />
 
@@ -1323,6 +1377,106 @@ function BendDerivationFields({
         title="Copy the derived radius into the bend field above. Review and click Save spec to persist."
       >
         Use derived
+      </button>
+    </span>
+  );
+}
+
+// LeadInSharpBendFields renders the editable min_lead_in_mm + sharp-
+// bend angle inputs alongside an inline "(default: NN)" hint when the
+// field is empty so the operator can see what the validator will fall
+// back to. The lead-in default tracks the diameter draft (2 × D, per
+// internal/validate/rules.go's effectiveMinLeadInMM) so the hint stays
+// accurate as the user retypes the diameter; the sharp-bend default is
+// the trade-standard 85° threshold (effectiveSharpBendAngleDeg).
+//
+// Drafts live in the parent TubeSpecEditor so the existing dirty-
+// tracking + commit / auto-save pattern applies uniformly. Tier 3 #41
+// added the editor inputs; the columns themselves were added in
+// migration 0009 and the validator already consults them.
+function LeadInSharpBendFields({
+  diameterDraft,
+  leadInDraft,
+  onLeadInChange,
+  sharpBendDraft,
+  onSharpBendChange,
+  busy,
+}: {
+  diameterDraft: string;
+  leadInDraft: string;
+  onLeadInChange: (next: string) => void;
+  sharpBendDraft: string;
+  onSharpBendChange: (next: string) => void;
+  busy: boolean;
+}) {
+  const liveDiameter = Number(diameterDraft);
+  const D = Number.isFinite(liveDiameter) && liveDiameter > 0 ? liveDiameter : 0;
+  const leadInDefaultMM = D > 0 ? 2 * D : 0;
+  const leadInHint =
+    leadInDraft.trim() === '' && leadInDefaultMM > 0
+      ? `(default: ${leadInDefaultMM.toFixed(1)} mm)`
+      : '';
+  const sharpBendHint = sharpBendDraft.trim() === '' ? '(default: 85°)' : '';
+  return (
+    <span
+      style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'baseline', flexWrap: 'wrap' }}
+      title="Per-spec lead-in / sharp-bend overrides (Tier 3 #41). Leave blank to fall back to the validator's derived defaults (2 × diameter for lead-in, 85° for sharp-bend)."
+    >
+      <label>
+        lead-in{' '}
+        <input
+          type="number"
+          step={0.5}
+          min={0}
+          max={50}
+          value={leadInDraft}
+          disabled={busy}
+          onChange={(e) => onLeadInChange(e.target.value)}
+          placeholder="(unset)"
+          style={{ width: '5rem' }}
+          aria-label="min lead-in mm"
+        />
+        mm
+        {leadInHint && (
+          <span style={{ opacity: 0.6, marginLeft: '0.25rem' }}>{leadInHint}</span>
+        )}
+      </label>
+      <button
+        type="button"
+        className="btn-secondary"
+        disabled={busy || leadInDraft.trim() === ''}
+        onClick={() => onLeadInChange('')}
+        title="Clear the per-spec lead-in override (revert to derived 2 × diameter default)."
+      >
+        Clear
+      </button>
+      <label>
+        sharp bend{' '}
+        <input
+          type="number"
+          step={1}
+          min={0}
+          max={90}
+          value={sharpBendDraft}
+          disabled={busy}
+          onChange={(e) => onSharpBendChange(e.target.value)}
+          placeholder="(unset)"
+          style={{ width: '5rem' }}
+          aria-label="sharp bend angle deg"
+        />
+        °
+        {sharpBendHint && (
+          <span style={{ opacity: 0.6, marginLeft: '0.25rem' }}>{sharpBendHint}</span>
+        )}
+      </label>
+      <button
+        type="button"
+        className="btn-secondary"
+        disabled={busy || sharpBendDraft.trim() === ''}
+        onClick={() => onSharpBendChange('')}
+        title="Clear the per-spec sharp-bend override (revert to 85° default)."
+      >
+        Clear
       </button>
     </span>
   );
