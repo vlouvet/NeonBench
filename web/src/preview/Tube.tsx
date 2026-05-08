@@ -60,7 +60,16 @@ export default function Tube({
     run.tube_diameter_mm ??
     defaultDiameterMM ??
     DEFAULT_TUBE_DIAMETER_MM;
-  const radius = diameterMM / 2;
+  // Tier 3 #60 (NW #125) — jumper runs render at half the computed
+  // tube radius and with halved emissive intensity so they read as
+  // "thin glass-sleeved splice" rather than primary tubes (trade
+  // convention: jumpers are 16 mm OD clear glass-sleeved twisted
+  // lead-wire — Miller p.204–205 — or short flared-end splice tubes
+  // — Strattman Fig.11.3 — that are usually unlit). The flag flows
+  // through to TubeSegment as `isJumper` so the material picker can
+  // honor it without forking the render shape.
+  const isJumper = run.kind === 'jumper';
+  const radius = (isJumper ? diameterMM * 0.5 : diameterMM) / 2;
 
   const segments = useMemo(() => splitRunBySegments(run), [run]);
 
@@ -74,6 +83,7 @@ export default function Tube({
           segment={segment}
           radius={radius}
           color={run.color}
+          isJumper={isJumper}
         />
       ))}
       {run.electrodes?.map((_, electrodeIdx) => (
@@ -103,10 +113,12 @@ function TubeSegment({
   segment,
   radius,
   color,
+  isJumper,
 }: {
   segment: RunSegment;
   radius: number;
   color: string | undefined;
+  isJumper?: boolean;
 }) {
   const geometry = useMemo(() => {
     if (segment.points.length < 2) return null;
@@ -137,6 +149,20 @@ function TubeSegment({
           color="#1a1a1a"
           roughness={0.7}
           metalness={0.0}
+          emissive="#000000"
+        />
+      ) : isJumper ? (
+        // Tier 3 #60 — jumpers render as desaturated glass: a slightly
+        // lighter base color than blockout (so they don't fade into
+        // the dark scene), no emissive contribution, slight metallic
+        // sheen suggesting the lead-wire underneath the glass sleeve.
+        // No emission keeps them dim against bloom-lit primary tubes,
+        // which matches trade convention (jumpers are usually unlit
+        // splice tubes carrying current to the next primary run).
+        <meshStandardMaterial
+          color="#3a3a3a"
+          roughness={0.4}
+          metalness={0.3}
           emissive="#000000"
         />
       ) : (

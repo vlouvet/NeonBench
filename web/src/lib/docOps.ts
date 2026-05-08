@@ -793,6 +793,114 @@ export function moveOpening(
   }));
 }
 
+// connectTubes creates a new "jumper" run that splices two existing
+// primary runs together at chosen electrode positions (Tier 3 #60 /
+// NW #125). In neon trade language a jumper is a short glass tube
+// — Strattman Fig.11.3 (10–11 mm OD with a flared end) or Miller
+// p.204–205 (16 mm OD glass-sleeved twisted lead-wire) — that
+// carries the electrical path between two adjacent primary tubes
+// whose physical ends sit close together.
+//
+// The new run is a 2-vertex polyline whose endpoints copy the world
+// position of the source-run electrode anchors at the moment of
+// connection. We deliberately copy world coords (rather than store
+// "from-run electrode 0 → to-run electrode 1") so future shape edits
+// to the source runs (reverseRun, simplifyRun, splitRun, electrode
+// re-indexing) can't silently dangle the jumper endpoints. The price
+// is that moving an electrode after the fact does NOT drag the
+// jumper along — the operator deletes the jumper and re-issues
+// connectTubes, same as on a paper drawing.
+//
+// V1 simplifications:
+//   - 2-vertex jumpers only (multi-vertex routed jumpers deferred).
+//   - No new electrodes on the jumper itself — it's wired, not open
+//     glass between two electrodes of its own.
+//   - kind = "jumper" so 2D / 3D / print pipelines branch on it.
+//   - Inherits raceway_id when both source runs share one (Strattman
+//     raceway grouping); otherwise empty (no spurious cross-grouping).
+//   - Inherits no diameter override — the project tube spec applies.
+//     `opts.diameter_mm_override` exists for future per-jumper UI;
+//     when set, it lands on the new run's tube_diameter_mm.
+//
+// Throws OperationError when:
+//   - fromRunId === toRunId (would self-jumper one run).
+//   - either run id is unknown.
+//   - the electrode index is out of bounds on its run.
+export function connectTubes(
+  doc: DesignDoc,
+  fromRunId: string,
+  fromElectrodeIdx: number,
+  toRunId: string,
+  toElectrodeIdx: number,
+  opts?: { diameter_mm_override?: number },
+): DesignDoc {
+  if (fromRunId === toRunId) {
+    throw new OperationError(
+      'connectTubes: cannot create a jumper from a run to itself',
+    );
+  }
+  const fromRun = doc.runs.find((r) => r.id === fromRunId);
+  if (!fromRun) {
+    throw new OperationError(`connectTubes: unknown fromRunId "${fromRunId}"`);
+  }
+  const toRun = doc.runs.find((r) => r.id === toRunId);
+  if (!toRun) {
+    throw new OperationError(`connectTubes: unknown toRunId "${toRunId}"`);
+  }
+  const fromElectrodes = fromRun.electrodes ?? [];
+  if (fromElectrodeIdx < 0 || fromElectrodeIdx >= fromElectrodes.length) {
+    throw new OperationError(
+      `connectTubes: fromElectrodeIdx ${fromElectrodeIdx} out of range on run ${fromRunId}`,
+    );
+  }
+  const toElectrodes = toRun.electrodes ?? [];
+  if (toElectrodeIdx < 0 || toElectrodeIdx >= toElectrodes.length) {
+    throw new OperationError(
+      `connectTubes: toElectrodeIdx ${toElectrodeIdx} out of range on run ${toRunId}`,
+    );
+  }
+  const fromAnchor = fromElectrodes[fromElectrodeIdx].point_index;
+  const toAnchor = toElectrodes[toElectrodeIdx].point_index;
+  const fromPts = fromRun.polyline.points;
+  const toPts = toRun.polyline.points;
+  if (fromAnchor < 0 || fromAnchor >= fromPts.length) {
+    throw new OperationError(
+      `connectTubes: from-electrode point_index ${fromAnchor} out of range on run ${fromRunId}`,
+    );
+  }
+  if (toAnchor < 0 || toAnchor >= toPts.length) {
+    throw new OperationError(
+      `connectTubes: to-electrode point_index ${toAnchor} out of range on run ${toRunId}`,
+    );
+  }
+  const fromPoint = fromPts[fromAnchor];
+  const toPoint = toPts[toAnchor];
+  const inheritsRaceway =
+    !!fromRun.raceway_id &&
+    fromRun.raceway_id !== '' &&
+    fromRun.raceway_id === toRun.raceway_id;
+  const newRun: DesignRun = {
+    id: nextRunId(doc, 'j'),
+    polyline: {
+      points: [
+        [fromPoint[0], fromPoint[1]],
+        [toPoint[0], toPoint[1]],
+      ],
+      closed: false,
+    },
+    kind: 'jumper',
+  };
+  if (inheritsRaceway) newRun.raceway_id = fromRun.raceway_id;
+  if (
+    opts?.diameter_mm_override != null &&
+    Number.isFinite(opts.diameter_mm_override) &&
+    opts.diameter_mm_override > 0
+  ) {
+    newRun.tube_diameter_mm = opts.diameter_mm_override;
+  }
+  return { ...doc, runs: [...doc.runs, newRun] };
+}
+
 // insertVertex splices ONE new vertex into a polyline at the parametric
 // position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
 // index segmentIndex + 1; everything after shifts up by 1.

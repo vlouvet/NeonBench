@@ -127,3 +127,84 @@ func TestElectrodeBackwardsCompat(t *testing.T) {
 		}
 	}
 }
+
+// TestRunKindRoundTrip verifies the new Run.Kind field (Tier 3 #60 /
+// NW #125) survives a JSON round-trip and that omitempty keeps old
+// design-doc blobs deserializing cleanly to "" (primary tube). The
+// new field rides on the existing design_doc JSON blob — there is no
+// schema migration, so the round-trip in this test IS the contract
+// the persistence layer provides.
+func TestRunKindRoundTrip(t *testing.T) {
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []Run{
+			{
+				ID:       "r1",
+				Polyline: Polyline{Points: [][2]float64{{0, 0}, {100, 0}}},
+				// Kind left empty: primary tube. omitempty should keep
+				// the key out of the encoded form.
+			},
+			{
+				ID:       "j1",
+				Kind:     "jumper",
+				Polyline: Polyline{Points: [][2]float64{{100, 0}, {120, 5}}},
+			},
+		},
+	}
+
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Primary run should not leak `"kind"` into the JSON; jumper run
+	// should serialize the field. We slice the encoded blob into the
+	// per-run sub-strings to keep this assertion robust against
+	// reordering of unrelated fields.
+	if strings.Count(string(raw), `"kind":"jumper"`) != 1 {
+		t.Errorf("expected exactly one kind=jumper key in marshaled doc, got: %s", raw)
+	}
+	if strings.Contains(string(raw), `"kind":""`) {
+		t.Errorf("primary run leaked a kind:\"\" key into the marshaled doc: %s", raw)
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Runs) != 2 {
+		t.Fatalf("unexpected run count: %d", len(got.Runs))
+	}
+	if got.Runs[0].Kind != "" {
+		t.Errorf("primary run picked up a kind: %q", got.Runs[0].Kind)
+	}
+	if got.Runs[1].Kind != "jumper" {
+		t.Errorf("jumper run lost its kind: %q", got.Runs[1].Kind)
+	}
+}
+
+// TestRunKindBackwardsCompat verifies an old design-doc blob (one
+// without the kind field) deserializes into a Run whose Kind is "".
+// Confirms the new field requires no data migration — the persistence
+// layer keeps storing JSON blobs and the deserializer fills in zero
+// for any field the blob omitted.
+func TestRunKindBackwardsCompat(t *testing.T) {
+	old := []byte(`{
+        "version": 1,
+        "view_box_mm": [0, 0, 100, 50],
+        "runs": [{
+          "id": "r1",
+          "polyline": {"points": [[0,0],[10,0]], "closed": false}
+        }]
+      }`)
+	var doc Doc
+	if err := json.Unmarshal(old, &doc); err != nil {
+		t.Fatalf("unmarshal pre-kind doc: %v", err)
+	}
+	if len(doc.Runs) != 1 {
+		t.Fatalf("unexpected shape: %+v", doc)
+	}
+	if doc.Runs[0].Kind != "" {
+		t.Errorf("run picked up a Kind from old JSON: %q", doc.Runs[0].Kind)
+	}
+}

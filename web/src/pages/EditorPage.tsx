@@ -224,6 +224,12 @@ export default function EditorPage() {
           e.preventDefault();
           setTool(tool === 'break-open' ? 'select' : 'break-open');
         }
+        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'c') {
+          // Tier 3 #60 — toggle Connect Tubes tool. Same toggle-back-
+          // to-select-on-second-press convention 'O' uses for break/move.
+          e.preventDefault();
+          setTool(tool === 'connect' ? 'select' : 'connect');
+        }
         return;
       }
       if (e.key.toLowerCase() === 'z') {
@@ -596,6 +602,39 @@ export default function EditorPage() {
     }
   }
 
+  // Tier 3 #60 (NW #125) — Connect Tubes committer. Wraps docOps's
+  // connectTubes with the same OperationError → setError pattern as
+  // breakOpenOnRun / moveOpeningOnRun. The new jumper run's id is the
+  // next free `j{N}` slot; we select it post-commit so the operator's
+  // sidebar reflects what just landed.
+  function connectTubesOnRuns(
+    fromRunId: string,
+    fromElectrodeIdx: number,
+    toRunId: string,
+    toElectrodeIdx: number,
+  ) {
+    try {
+      let nextRunId: string | null = null;
+      editDoc((prev) => {
+        const next = ops.connectTubes(
+          prev,
+          fromRunId,
+          fromElectrodeIdx,
+          toRunId,
+          toElectrodeIdx,
+        );
+        // The new run is appended; pick it up by id off the new doc
+        // so the post-edit selection lands on the jumper.
+        const created = next.runs[next.runs.length - 1];
+        nextRunId = created?.id ?? null;
+        return next;
+      });
+      if (nextRunId) setSelected(nextRunId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function setRunNotes(runId: string, notes: string) {
     editDoc((prev) => ops.setRunNotes(prev, runId, notes));
   }
@@ -851,6 +890,12 @@ export default function EditorPage() {
             >Insert DB</button>
             <button
               type="button"
+              className={tool === 'connect' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('connect')}
+              title="Connect tubes (C): click two electrode pins on different runs to commit a jumper run between them. Esc / right-click cancels a staged source."
+            >Connect</button>
+            <button
+              type="button"
               className={tool === 'bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('bend')}
               title="Add a manual bend point (overrides auto-detect for that run)"
@@ -1000,6 +1045,7 @@ export default function EditorPage() {
           onInsertDoubleback={insertDoubleback}
           onBreakOpen={breakOpenOnRun}
           onMoveOpening={moveOpeningOnRun}
+          onConnectTubes={connectTubesOnRuns}
           onCommitShape={commitShape}
           snapEnabled={snapEnabled}
           snapMM={snapMM}

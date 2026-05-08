@@ -38,7 +38,12 @@ export type EditorTool =
   // an open run with two electrodes to a different vertex. The tool
   // dispatches based on the clicked run's `closed` flag; the same
   // hover/click affordance covers both modes.
-  | 'break-open';
+  | 'break-open'
+  // Tier 3 #60 (NW #125) — Connect Tubes. Two-click tool: click an
+  // electrode pin on one run (source pulses green), then click an
+  // electrode on a DIFFERENT run to commit a jumper run between
+  // them. Esc / right-click cancels the staged source.
+  | 'connect';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -75,6 +80,7 @@ export default function EditorCanvas({
   onInsertDoubleback,
   onBreakOpen,
   onMoveOpening,
+  onConnectTubes,
   onCommitShape,
   validationIssues,
   issueSeverityFilter,
@@ -163,6 +169,17 @@ export default function EditorCanvas({
   // when the click lands within the snap-to-vertex radius.
   onBreakOpen: (runId: string, vertexIndex: number) => void;
   onMoveOpening: (runId: string, newStartVertexIndex: number) => void;
+  // Tier 3 #60 (NW #125) — Connect Tubes click-tool committer. Fires
+  // on the second click of the connect-tubes flow once the user has
+  // staged a source electrode and clicked a target electrode on a
+  // different run. EditorPage owns the docOps.connectTubes dispatch
+  // and the OperationError → setError plumbing.
+  onConnectTubes: (
+    fromRunId: string,
+    fromElectrodeIdx: number,
+    toRunId: string,
+    toElectrodeIdx: number,
+  ) => void;
   // Commit a freshly drawn shape as a new run. EditorPage owns the
   // appendRuns / id-prefix logic; the canvas just hands up the geometry
   // and the kind so the parent can pick the right id prefix and decide on
@@ -225,6 +242,16 @@ export default function EditorCanvas({
     runId: string;
     electrodeIndex: number;
   } | null>(null);
+  // Tier 3 #60 — Connect Tubes staged source. After the first click
+  // on an electrode in 'connect' mode, we remember which electrode
+  // was picked so the second click can commit a jumper. Cursor world-
+  // space position is tracked separately in `connectHover` so the
+  // dashed live preview line follows the pointer between clicks.
+  const [connectStaged, setConnectStaged] = useState<{
+    runId: string;
+    electrodeIndex: number;
+  } | null>(null);
+  const [connectHover, setConnectHover] = useState<[number, number] | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
   // Tool-change cleanup, render-phase per the "previous prop" React
@@ -248,6 +275,13 @@ export default function EditorCanvas({
     // toggling between them doesn't blink the highlight.
     if (tool !== 'node' && tool !== 'break-open' && hoveredVertex !== null) setHoveredVertex(null);
     if (geometryHover !== null) setGeometryHover(null);
+    // Tier 3 #60 — leaving the connect tool drops any staged source
+    // and the live-preview hover so they don't ambush the operator
+    // when they come back.
+    if (tool !== 'connect') {
+      if (connectStaged !== null) setConnectStaged(null);
+      if (connectHover !== null) setConnectHover(null);
+    }
   }
 
   // Pen / arc tools: Enter commits the in-progress pen polyline (if it has
@@ -261,6 +295,15 @@ export default function EditorCanvas({
         return;
       }
       if (e.key === 'Escape') {
+        // Tier 3 #60 — Esc cancels a staged Connect-Tubes source.
+        // Listed first so it wins when the operator pressed Esc while
+        // any in-progress drawing tool was idle.
+        if (tool === 'connect' && connectStaged !== null) {
+          e.preventDefault();
+          setConnectStaged(null);
+          setConnectHover(null);
+          return;
+        }
         if (drawing.tool === 'pen' && drawing.vertices.length > 0) {
           e.preventDefault();
           dispatch({ type: 'penCancel' });
@@ -297,7 +340,7 @@ export default function EditorCanvas({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drawing, onCommitShape]);
+  }, [drawing, onCommitShape, tool, connectStaged]);
 
   // Tier 3 #34 — track Shift independently of any focused element so
   // the angle-snap engages whenever the user holds Shift over the
@@ -641,6 +684,15 @@ export default function EditorCanvas({
         }
       }
     }
+    // Tier 3 #60 — connect-tubes pointer tracking. Only meaningful
+    // when a source is staged; the rendered live-preview line draws
+    // from the source electrode position to the cursor.
+    if (tool === 'connect' && connectStaged !== null) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      if (w) setConnectHover(w);
+    } else if (connectHover !== null && tool !== 'connect') {
+      setConnectHover(null);
+    }
     if (drawing.tool === 'rect' && drawing.firstCorner !== null) {
       // Rect second corner: geometry snap probes existing vertices/
       // midpoints first; if shift is held, the working corner is
@@ -938,6 +990,39 @@ export default function EditorCanvas({
   function onElectrodeClick(e: React.MouseEvent, runId: string, electrodeIndex: number) {
     e.stopPropagation();
     if (dragRef.current?.moved) return;
+    // Tier 3 #60 — connect-tubes two-click flow. First click on any
+    // electrode stages it as the source; second click on an electrode
+    // belonging to a DIFFERENT run commits a jumper. Same-run second
+    // clicks no-op (would self-jumper); same-electrode clicks no-op
+    // too. The committer is responsible for clearing the staged source
+    // (we do that here so a thrown OperationError on the parent's side
+    // doesn't strand a stale source — it'll be cleared regardless).
+    if (tool === 'connect') {
+      if (connectStaged === null) {
+        setConnectStaged({ runId, electrodeIndex });
+        onSelectRun(runId);
+        return;
+      }
+      if (connectStaged.runId === runId) {
+        // Re-click the source electrode → cancel; re-click a different
+        // electrode on the same run → also a no-op (V1 forbids self-
+        // jumpers, and the operator probably mis-clicked).
+        if (connectStaged.electrodeIndex === electrodeIndex) {
+          setConnectStaged(null);
+          setConnectHover(null);
+        }
+        return;
+      }
+      onConnectTubes(
+        connectStaged.runId,
+        connectStaged.electrodeIndex,
+        runId,
+        electrodeIndex,
+      );
+      setConnectStaged(null);
+      setConnectHover(null);
+      return;
+    }
     onSelectRun(runId);
     if (tool === 'select' && (e.shiftKey || e.altKey)) {
       onDeleteElectrode(runId, electrodeIndex);
@@ -1037,6 +1122,18 @@ export default function EditorCanvas({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
+        onContextMenu={(e) => {
+          // Tier 3 #60 — right-click anywhere cancels a staged
+          // connect-tubes source (matches Esc). Suppressing the
+          // browser context menu only inside the connect flow keeps
+          // the existing right-click-on-electrode → housing-picker
+          // affordance working when the operator isn't connecting.
+          if (tool === 'connect' && connectStaged !== null) {
+            e.preventDefault();
+            setConnectStaged(null);
+            setConnectHover(null);
+          }
+        }}
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
@@ -1121,12 +1218,21 @@ export default function EditorCanvas({
                       />
                     );
                   }
+                  // Tier 3 #60 — jumper runs render with a dashed
+                  // stroke on the 2D pattern (matches print PDF and
+                  // distinguishes them visually from primary tubes).
+                  const isJumper = run.kind === 'jumper';
                   return (
                     <path
                       key={`alive-${si}`}
                       d={d}
                       stroke={liveStroke}
                       strokeWidth={liveWidth}
+                      strokeDasharray={
+                        isJumper
+                          ? `${2 / transform.k} ${1 / transform.k}`
+                          : undefined
+                      }
                       fill="none"
                       pointerEvents="none"
                     />
@@ -1419,6 +1525,75 @@ export default function EditorCanvas({
               />
             );
           })()}
+          {/* Tier 3 #60 — Connect Tubes overlays.
+              1) When the connect tool is active, every electrode pin
+                 gets a teal ring underneath signaling "this is a valid
+                 click target".
+              2) The currently-hovered electrode (any run) lights up
+                 brighter so the operator can see which one will be
+                 picked.
+              3) A staged source electrode pulses green, and a dashed
+                 line draws from it to the cursor so the operator can
+                 see the candidate jumper before committing. */}
+          {tool === 'connect' && (
+            <g pointerEvents="none">
+              {doc.runs.flatMap((run) =>
+                (run.electrodes ?? []).map((e, ei) => {
+                  const p = run.polyline.points[e.point_index];
+                  if (!p) return null;
+                  const isStaged =
+                    connectStaged !== null &&
+                    connectStaged.runId === run.id &&
+                    connectStaged.electrodeIndex === ei;
+                  const isHov =
+                    hoveredElectrode !== null &&
+                    hoveredElectrode.runId === run.id &&
+                    hoveredElectrode.electrodeIndex === ei;
+                  // Staged source: solid green pulse-style ring (uses
+                  // the same #1aa37a color the join-arming flow picked
+                  // for "active click target", just sized larger so
+                  // the source reads distinct from the candidates).
+                  // Hovered candidate: same teal but slightly heavier.
+                  // Idle candidate: thin teal so it doesn't visually
+                  // dominate the underlying pink electrode marker.
+                  const stroke = isStaged ? '#22c55e' : '#1aa37a';
+                  const baseR = (isStaged ? 9 : isHov ? 8 : 6) / transform.k;
+                  const sw = (isStaged ? 3 : isHov ? 2.5 : 1.5) / transform.k;
+                  return (
+                    <circle
+                      key={`connect-ring-${run.id}-${ei}`}
+                      cx={p[0]}
+                      cy={p[1]}
+                      r={baseR}
+                      fill="none"
+                      stroke={stroke}
+                      strokeWidth={sw}
+                      strokeOpacity={isStaged ? 0.95 : isHov ? 0.85 : 0.55}
+                    />
+                  );
+                }),
+              )}
+              {connectStaged !== null && connectHover !== null && (() => {
+                const run = doc.runs.find((r) => r.id === connectStaged.runId);
+                const electrode = run?.electrodes?.[connectStaged.electrodeIndex];
+                if (!run || !electrode) return null;
+                const p = run.polyline.points[electrode.point_index];
+                if (!p) return null;
+                return (
+                  <line
+                    x1={p[0]}
+                    y1={p[1]}
+                    x2={connectHover[0]}
+                    y2={connectHover[1]}
+                    stroke="#22c55e"
+                    strokeWidth={1.2 / transform.k}
+                    strokeDasharray={`${2 / transform.k} ${1.5 / transform.k}`}
+                    strokeOpacity={0.85}
+                  />
+                );
+              })()}
+            </g>
+          )}
           {doc.runs.flatMap((run) =>
             (run.electrodes ?? []).map((e, ei) => {
               const p = run.polyline.points[e.point_index];
@@ -1709,6 +1884,13 @@ export default function EditorCanvas({
               : drawing.tool === 'arc' && drawing.secondClick === null
                 ? 'Click a point on the arc · hold Shift for 15° angle snap'
                 : 'Click the end of the arc · hold Shift for 15° angle snap · Esc to cancel'}
+          </span>
+        )}
+        {tool === 'connect' && (
+          <span className="meta hint">
+            {connectStaged
+              ? 'Click an electrode on a different run to commit the jumper · Esc / right-click to cancel'
+              : 'Click an electrode pin on the source run, then on a different run to commit a jumper'}
           </span>
         )}
       </div>
