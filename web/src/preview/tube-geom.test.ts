@@ -188,9 +188,11 @@ describe('liftPointsAtJumps', () => {
   });
 
   it('produces independent peaks for two jumps far apart', () => {
-    // Place jumps far enough apart that their half-spans don't touch.
+    // Place jumps far enough apart that they DON'T cluster (gap >
+    // JUMP_LIFT_CLUSTER_GAP_MULT × diameter) AND their half-spans
+    // don't reach each other.
     const span = JUMP_LIFT_SPAN_MULT * D;
-    const between = Math.ceil(span * 1.5);
+    const between = Math.ceil(span * 1.5); // > clusterGap, > 2× halfSpan
     const pts = linePoints(between * 2 + 1);
     const j1 = Math.floor(between / 2);
     const j2 = j1 + between;
@@ -202,21 +204,23 @@ describe('liftPointsAtJumps', () => {
     expect(lifted[midIdx][2]).toBe(0);
   });
 
-  it('takes max (not sum) when two jumps overlap', () => {
-    // Jumps just two indices apart — both half-spans cover the
-    // midpoint. With max semantics, peak ≤ HEIGHT; with sum it would
-    // be ~2× HEIGHT. The point at j1 exactly should still equal
-    // HEIGHT (its own peak), not HEIGHT plus contribution from j2.
-    const pts = linePoints(40);
-    const j1 = 18;
-    const j2 = 20;
+  it('clusters two close jumps into one tabletop plateau (no M-shape)', () => {
+    // Jumps within JUMP_LIFT_CLUSTER_GAP_MULT × diameter — should
+    // merge into one plateau at HEIGHT, not produce two peaks with a
+    // valley between. This is the user-facing case from project 21232:
+    // marking both ends of a crossing (entry + exit) must produce
+    // one continuous bridge.
+    const pts = linePoints(60);
+    const j1 = 20;
+    const j2 = 30; // 10 mm apart, well below clusterGap (= 48 mm)
     const lifted = liftPointsAtJumps(pts, [j1, j2], D);
-    expect(lifted[j1][2]).toBeLessThanOrEqual(HEIGHT + 1e-6);
-    expect(lifted[j2][2]).toBeLessThanOrEqual(HEIGHT + 1e-6);
-    // The midpoint between the two should be ≤ HEIGHT (max), not
-    // approaching 2 × HEIGHT (sum).
-    const mid = 19;
-    expect(lifted[mid][2]).toBeLessThanOrEqual(HEIGHT + 1e-6);
+    expect(lifted[j1][2]).toBeCloseTo(HEIGHT, 6);
+    expect(lifted[j2][2]).toBeCloseTo(HEIGHT, 6);
+    // Every point BETWEEN the two jumps lifts to full HEIGHT (plateau),
+    // not a dipped valley.
+    for (let i = j1; i <= j2; i++) {
+      expect(lifted[i][2]).toBeCloseTo(HEIGHT, 6);
+    }
   });
 
   it('silently skips out-of-range jump indices', () => {

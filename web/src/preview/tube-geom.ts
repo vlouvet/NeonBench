@@ -46,30 +46,49 @@ export const DEFAULT_TUBE_DIAMETER_MM = 12;
 // relative to the run's tube diameter so a 12 mm tube and a 22 mm
 // tube each get a proportional horseshoe.
 //
-//   HEIGHT = 1.0 × diameter (≈ 12 mm of lift on a 12 mm spec). One
-//     diameter is the trade-typical "small u-bend over" on a hand-
-//     drawn pattern — enough clearance to read as 'over' without
-//     turning every jump into a billboard.
+//   HEIGHT = 2.5 × diameter (≈ 30 mm of lift on a 12 mm spec). The
+//     surface-to-surface gap above the obstacle tube is
+//     HEIGHT − 2·radius = 1.5 × diameter, which reads as clearly
+//     "over" at typical preview zoom. 1.0 × diameter (the spec's
+//     original value) puts the surfaces exactly touching, which
+//     reads as "still crossing".
 //   SPAN   = 4.0 × diameter (≈ 48 mm of lifted polyline on a 12 mm
-//     spec). Wide enough that two crossing tubes read as one passing
-//     over the other; narrow enough that a multi-letter sign with
-//     several jumps doesn't end up looking like a wave.
+//     spec). Wide enough that the lift reads as a smooth bridge.
+//
+// Multi-jump cluster threshold (`CLUSTER_GAP_MULT`): two jumps whose
+// arc-length separation is less than `CLUSTER_GAP_MULT × diameter`
+// are treated as one tabletop lift instead of two separate peaks.
+// Without this, a user who marks both ends of a crossing (entry and
+// exit) gets an "M-shaped" lift with a valley between the two peaks
+// where the obstacle tube can sneak back through. The default
+// matches SPAN so any two jumps that would visibly overlap merge
+// into a plateau at full height.
 //
 // Tunable per-project is a follow-up.
-export const JUMP_LIFT_HEIGHT_MULT = 1.0;
+export const JUMP_LIFT_HEIGHT_MULT = 2.5;
 export const JUMP_LIFT_SPAN_MULT = 4.0;
+export const JUMP_LIFT_CLUSTER_GAP_MULT = 4.0;
 
 /**
  * Pure helper for the Tier 3 #68 jump-lift feature. Returns 3D points
- * with Z lifted by a raised-cosine kernel centered on each jump in
- * the segment.
+ * with Z lifted by a tabletop kernel centered on each cluster of
+ * jumps in the segment.
  *
  * Distance is **arc length** along the polyline (sum of segment
- * lengths from the point to the jump's polyline point), NOT
- * Euclidean — so the lift follows the tube's path even around tight
- * corners. Points outside any jump's span keep Z = 0; points inside
- * multiple overlapping spans take the max (not sum) so two close
- * jumps don't double up.
+ * lengths from the point to the cluster's bounds), NOT Euclidean —
+ * so the lift follows the tube's path even around tight corners.
+ *
+ * Clustering: any two jumps whose arc-distance is less than
+ * `JUMP_LIFT_CLUSTER_GAP_MULT × diameter` collapse into a single
+ * cluster. The cluster's plateau region runs from the leftmost to
+ * the rightmost jump; points inside the plateau lift to full HEIGHT,
+ * points within `halfSpan` outside the plateau cosine-fall toward 0,
+ * and points beyond stay at Z=0. This matches user mental model
+ * (mark entry + exit of a crossing → one continuous bridge over
+ * the obstacle, not two peaks with a valley between).
+ *
+ * A single-jump cluster has start === end, so the plateau is a
+ * single point and the kernel reduces to the classic raised-cosine.
  *
  * Empty `jumpIndicesInSegment`, zero diameter, or single-point
  * polylines all short-circuit to the unlifted (Z=0) form.
@@ -89,6 +108,7 @@ export function liftPointsAtJumps(
   const span = JUMP_LIFT_SPAN_MULT * diameterMM;
   const halfSpan = span / 2;
   const height = JUMP_LIFT_HEIGHT_MULT * diameterMM;
+  const clusterGap = JUMP_LIFT_CLUSTER_GAP_MULT * diameterMM;
 
   // Cumulative arc length from index 0 to index i.
   const arcAt: number[] = [0];
@@ -98,7 +118,7 @@ export function liftPointsAtJumps(
     arcAt.push(arcAt[i - 1] + Math.hypot(x2 - x1, y2 - y1));
   }
 
-  // Filter jumps to in-range and pre-resolve their arc positions.
+  // Filter jumps to in-range, resolve arc positions, sort ascending.
   const jumpArcs: number[] = [];
   for (const j of jumpIndicesInSegment) {
     if (j >= 0 && j < points.length) jumpArcs.push(arcAt[j]);
@@ -106,15 +126,36 @@ export function liftPointsAtJumps(
   if (jumpArcs.length === 0) {
     return points.map(([x, y]) => [x, y, 0]);
   }
+  jumpArcs.sort((a, b) => a - b);
+
+  // Cluster jumps whose gap is below the threshold into one tabletop.
+  const clusters: { start: number; end: number }[] = [];
+  for (const ja of jumpArcs) {
+    const last = clusters[clusters.length - 1];
+    if (last && ja - last.end <= clusterGap) {
+      last.end = ja;
+    } else {
+      clusters.push({ start: ja, end: ja });
+    }
+  }
 
   return points.map(([x, y], i) => {
+    const arc = arcAt[i];
     let z = 0;
-    for (const ja of jumpArcs) {
-      const d = Math.abs(arcAt[i] - ja);
+    for (const c of clusters) {
+      let d: number;
+      if (arc < c.start) d = c.start - arc;
+      else if (arc > c.end) d = arc - c.end;
+      else d = 0; // inside the plateau between two clustered jumps
       if (d >= halfSpan) continue;
-      const k = (d / halfSpan) * (Math.PI / 2);
-      const c = Math.cos(k);
-      const lift = height * c * c;
+      let lift: number;
+      if (d === 0) {
+        lift = height;
+      } else {
+        const k = (d / halfSpan) * (Math.PI / 2);
+        const cosine = Math.cos(k);
+        lift = height * cosine * cosine;
+      }
       if (lift > z) z = lift;
     }
     return [x, y, z];
