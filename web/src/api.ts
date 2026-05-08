@@ -262,6 +262,14 @@ export type UpdateTubeSpecBody = {
   min_bend_radius_mm?: number;
   max_segment_length_mm?: number;
   min_spacing_mm?: number;
+  // Three-state PATCH fields (Tier 3 #43). Omit the key entirely to
+  // preserve the current value. Send `null` (or, for the technique, an
+  // empty string) to clear the column. Send a number / one of the
+  // BEND_TECHNIQUES values to write through. The server validates the
+  // wall-thickness range [0.1, 10.0] mm and the technique whitelist;
+  // out-of-range / unknown values surface as 422.
+  wall_thickness_mm?: number | null;
+  bend_technique?: BendTechnique | '' | null;
 };
 
 export type VectorizeCrop = { x: number; y: number; w: number; h: number };
