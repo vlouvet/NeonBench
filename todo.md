@@ -127,16 +127,18 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 ## Phase 3 — 3D glow rendering
 
-- [ ] **Decision needed:** Three.js vs Babylon.js (Three is more common, larger ecosystem; react-three-fiber if staying in React)
-- [ ] Extrude vector paths into 3D tube geometry along path with correct diameter
-- [ ] Material: emissive glass shader with bloom/glow post-processing
-- [ ] Per-run color (matches gas/phosphor: ruby red, neon orange, argon blue, etc.) — color library mapping gas → realistic glow color
-- [ ] Blockout sections render as opaque black tubing
-- [ ] Electrodes rendered as little metal caps
-- [ ] Camera controls: orbit, pan, zoom; preset views (front, iso)
-- [ ] Adjustable scene: background color, "wall" backing, ambient light
-- [ ] Screenshot / video export of the rendered preview (for client mockups)
-- [ ] Optional: animated "warm-up" or flicker effect
+**Phase 3 implementation complete** — 7 specs shipped across PRs #57, #58, #59, #60, #61, #62, #63. Read-only `/projects/:projectId/versions/:versionId/preview` route renders extruded 3D tubes with emissive gas materials, bloom, electrode caps, per-segment blockouts, orbit camera with preset views, scene chrome controls, and PNG screenshot export.
+
+- [x] **Decision resolved:** Three.js + react-three-fiber + drei + postprocessing.
+- [x] Extrude vector paths into 3D tube geometry along path with correct diameter (PR #58 — `Run.Polyline → THREE.TubeGeometry` via `CatmullRomCurve3`, segment-count heuristic 1-per-5mm clamped `[16, 256]`, Y-flip on conversion).
+- [x] Material: emissive glass shader with bloom/glow post-processing (PR #59 emissive `MeshStandardMaterial`; PR #63 `EffectComposer` + `<Bloom>` with `intensity=1.2`, `luminanceThreshold=0.4`, `mipmapBlur=true`, `radius=0.7`).
+- [x] Per-run color matches gas/phosphor (PR #59 — ~20-entry `gasColors.ts` library covering NSI/Voltarc fills + pure gases, substring fallback ordered longest-first, warm-white fallback for unknown/empty).
+- [x] Blockout sections render as opaque dark grey sleeves (PR #61 — per-segment split via shared `lib/runArcs.blockoutSegments`; live segments get emissive material, blockouts get `meshStandardMaterial color=#1a1a1a roughness=0.7`).
+- [x] Electrodes rendered as small metallic cylinders + hemisphere caps (PR #61 — tangent computed from previous polyline neighbor, falls back to `+Y` for zero-length tangent).
+- [x] Camera controls: orbit, pan, zoom; preset views Front / Iso / Top / Side; auto-fit-on-mount (PR #60 — drei `<OrbitControls>` + `cameraPositionForPreset` bbox math + `useFrame` cubic-ease over 600ms).
+- [x] Adjustable scene: background color (4 options), wall backing toggle + color, ambient light slider (PR #62 — floating top-right sidebar; wall plane 1.5× bbox at -50mm Z; min wall size 100mm floor for empty docs).
+- [x] Screenshot export (PR #62 — render-on-demand bridge calls `gl.render(scene, camera)` synchronously then `gl.domElement.toDataURL`; filename `<projectName>-preview-<ISO>.png`).
+- [ ] Optional: animated "warm-up" or flicker effect (deferred — see Tier 3 Phase 3 follow-ups below).
 
 ---
 
@@ -155,7 +157,7 @@ A modern, cross-platform replacement for NeonWizard. Web-browser based neon desi
 
 These are flagged inline above; collected here so they don't get lost:
 
-1. **3D engine** — Three.js (+ react-three-fiber) vs Babylon (Phase 3)
+*(none open — `3D engine` resolved in favour of Three.js + react-three-fiber, see below)*
 
 ## Resolved decisions
 
@@ -164,6 +166,7 @@ These are flagged inline above; collected here so they don't get lost:
 - **PDF library** → `github.com/phpdave11/gofpdf` (mm-native, path-friendly, mature).
 - **2D editor canvas** → raw SVG with custom pointer/wheel pan-zoom. Lighter than Konva/Fabric and adequate for the run-level interactions Phase 2 needs.
 - **App data directory** → OS-conventional paths via `internal/appdata` with `--data-dir` override.
+- **3D engine** → Three.js + `@react-three/fiber` + `@react-three/drei` + `@react-three/postprocessing`. Boring-stack canonical react+three combo; alternatives don't meet the bar (Babylon has no React renderer; raw three.js requires reinventing fiber). Bundle delta from Phase 3 #1 + #4: +1009 KB raw / +310 KB gzipped — acceptable for the entire 3D surface; React.lazy code-splitting tracked as a follow-up.
 
 ---
 
@@ -177,7 +180,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
-| Neon Design Tools | 10 | 0 | 13 | 0 |
+| Neon Design Tools | 11 | 1 | 11 | 0 |
 | Fonts & Text | 0 | 3 | 15 | 0 |
 | Design Tools | 5 | 4 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
@@ -186,9 +189,9 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Cutting/Plotting/Printing | 5 | 1 | 3 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **31** | **12** | **90** | **15** |
+| **Totals** | **32** | **13** | **88** | **15** |
 
-Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement is **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. Earlier rounds (D + E) also included a Hershey kerning move (#15 ❌ → 🟡); cumulative ✅ has gone **30 → 31** since the Tier 2 close-out.
+Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡 (whole-design preview ships; per-group scoping waits on the multi-select/groups model in Tier 3 #33). Cumulative ✅ has gone **30 → 31 → 32** since the Tier 2 close-out; 🟡 nudged to 13.
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -214,8 +217,8 @@ Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41
 | 136 | Tube Support Holes | ❌ | |
 | 137 | Neon Auto Tube Count | ❌ | |
 | 138 | Neon Auto Spacing | ❌ | |
-| 139 | Neon Preview (glow) | ❌ | Phase 3 |
-| 140 | Neon Preview for Groups | ❌ | Phase 3 |
+| 139 | Neon Preview (glow) | ✅ | three.js + react-three-fiber preview route renders extruded tubes with emissive gas materials, bloom post-processing, electrode caps, blockout sleeves, orbit camera with preset views, scene chrome + screenshot export (PRs #57–63) |
+| 140 | Neon Preview for Groups | 🟡 | whole-design preview ships in PRs #57–63; per-group scoped preview waits on multi-select / groups model (Tier 3 #33) |
 | 141 | Parallel Tube Layout | ✅ | Same op as Neonize — emits inside + outside runs from a closed source (PR #26) |
 
 ### Fonts & Text (18 features)
@@ -339,6 +342,13 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 50. 🟡 **OS print polish** *(follow-up from #32)*. Backend half shipped in PR #51: `?strips_only=1` query param on `/print.pdf` + `RenderFromDoc` `StripsOnly` option that suppresses the main pattern + bend-list pages and emits only per-run channel-letter return-strip pages and any raceway-grouped strip pages. Zero-strip docs return 422 with a clear remediation message (chose fail-loud over empty-PDF). Bonus bug fix: removed an `if-init` shadowing of `err` in `handlePrintPDF` that was silently swallowing render errors. **Frontend popover deferred** (see #52 below) — agent stalled before that half landed.
 51. **Tube-spec CRUD** *(follow-up from #18)*. PR #40 only handles tube-spec edits; POST + DELETE are still missing — operators have to re-seed the database to add a new spec. Plus a `storage.UpdateTubeSpec` extraction to match the existing `UpdateProject` handler shape.
 52. **OS print frontend popover** *(follow-up from #50 partial)*. Backend's `?strips_only=1` shipped in PR #51 but the toolbar popover (paper-size + landscape + strips-only checkboxes next to the existing Print button on `EditorPage.tsx`) never landed — the agent stalled mid-test-run after committing only the backend. Need: extend `printPDFURL` in `api.ts` to accept `{paper, landscape, stripsOnly}`, wire `<PrintHost>` to pass them through, build the floating popover (~200 lines TSX + ~50 lines CSS), gate-by-dirty same as today's button. The existing `<PrintPanel>` on ProjectDetail.tsx already exposes paper/landscape selectors and can be the design reference.
+53. **Phase 3 follow-up — wire project tube spec into PreviewPage** *(follow-up from #2)*. `Scene.tsx` has a `defaultDiameterMM` prop with a defensive 12 mm fallback; `PreviewPage` doesn't pass it. One-line edit: load the project's tube spec via `api.listTubeSpecs()` and forward `tube_spec.diameter_mm`. Without this, runs without `diameter_mm_override` always render at 12 mm in the preview regardless of the project's actual tube spec.
+54. **Phase 3 follow-up — screenshot capture bypasses bloom** *(follow-up from #4)*. `screenshot.ts` calls `gl.render(scene, camera)` directly, which runs the bare WebGLRenderer pipeline and skips the `EffectComposer`. PNG output looks like `?nobloom`. Fix: route screenshot through `composer.render()` via a second bridge ref that captures the composer instance from inside `<EffectComposer>`. Until this lands, exported PNGs read as flat-emissive renders.
+55. **Phase 3 follow-up — bloom intensity slider in scene controls** *(follow-up from #4)*. `Scene.tsx` exports `BLOOM_INTENSITY` / `BLOOM_LUMINANCE_THRESHOLD` / `BLOOM_RADIUS` constants; surface them as sliders in the existing `<SceneControls>` panel so per-project tuning is possible without a code change. Persist to localStorage along with background / wall / ambient when #56 ships.
+56. **Phase 3 follow-up — scene-control persistence** *(follow-up from #7)*. The control sidebar (background, wall on/off + color, ambient slider) holds state in `useState`, so settings reset on every preview-route mount. Persist to localStorage keyed by `projectId` (or globally — TBD); reset button clears.
+57. **Phase 3 follow-up — code-splitting the preview route** *(follow-up from #1)*. The four three-stack packages weigh ~310 KB gzipped on the main bundle; users who never visit the preview pay that cost. Wrap `PreviewPage` in `React.lazy(() => import('./preview/PreviewPage'))` with a `<Suspense>` boundary. Recoups the ~217 KB gzipped delta from #57 and reduces initial paint cost meaningfully.
+58. **Phase 3 follow-up — animated warm-up flicker + per-gas intensity tuning** *(follow-up from #3 + #4)*. Optional cosmetic enhancements: 1.5–3 s warm-up flicker on initial load using a `useFrame` time-driven `emissiveIntensity` modulation; per-gas intensity tweaks now that bloom amplifies brightness inconsistently (warm whites overpower cool whites at the spec's uniform 1.5 intensity). Minor; ship as a single small PR after live tuning sessions surface specifics.
+59. **Phase 3 follow-up — closed-loop seam continuity at blockout boundaries** *(follow-up from #6)*. When a blockout straddles index 0 of a closed polyline, the segment-split helper opens the loop into two arcs; the visual seam at index 0 is correct but the geometric closure isn't restored. Edge case affects pure decorative loops with mid-loop blockouts; rare in production designs.
 
 ### Tier 4 — Deliberate "no for now"
 

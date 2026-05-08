@@ -6,8 +6,8 @@ bends in a structured doc, and print a 1:1 pattern with a per-run bend
 list — all from a single Go binary that opens your browser to a local
 web UI.
 
-> **Status:** Phase 2 of a 3-phase roadmap (vectorize → edit → 3D glow).
-> Phase 0 + 1 (vectorize, validate, print, DXF + PDF export) and Phase 2
+> **Status:** End-to-end across all three phases (vectorize → edit → 3D glow).
+> Phase 0 + 1 (vectorize, validate, print, DXF + PDF export), Phase 2
 > (editor, per-run color/diameter/notes, blockouts, bend planning,
 > double-back hairpins, channel-letter return strips with raceway
 > grouping, Hershey single-stroke text in three faces, polygon-offset
@@ -16,13 +16,20 @@ web UI.
 > sidebar↔canvas hover linking, full-spec-driven validation including
 > derived bend radius from wall thickness + technique, click-to-edit
 > tube-spec fields with fan-out re-validation, OS print dialog with
-> strips-only filter) ship today. **20 of ~35 Tier 3 polish items
-> shipped** across 28 PRs in the most recent active development push.
-> NeonWizard parity is **31 ✅ / 12 🟡** of 148 advertised features
-> (15 deliberately out of scope as Tier 4 graphic-design-suite features
-> that don't help neon production). Phase 3 (extruded 3D tube rendering
-> via three.js + react-three-fiber) has 7 dispatchable specs queued in
-> `specs/active/phase3-*.md` but no implementation has started.
+> strips-only filter), and **Phase 3** (read-only 3D preview via
+> three.js + react-three-fiber: extruded tubes from polylines, emissive
+> gas-color materials with bloom, electrode caps, per-segment blockout
+> sleeves, orbit camera with Front/Iso/Top/Side preset views,
+> auto-fit-on-mount, scene chrome controls + PNG screenshot export) all
+> ship today. **20 of ~35 Tier 3 polish items shipped** across 28 PRs,
+> plus the full **Phase 3 implementation across PRs #57–63**. NeonWizard
+> parity is **32 ✅ / 13 🟡** of 148 advertised features (15
+> deliberately out of scope as Tier 4 graphic-design-suite features
+> that don't help neon production). Remaining Tier 3 items focus on
+> editor productivity (multi-select / groups / Bezier handles /
+> snap-to-angle) and a small handful of Phase 3 follow-ups (project
+> tube-spec wired into preview, bloom-aware screenshot bridge, scene
+> control persistence, code-splitting the preview route).
 
 ## Why
 
@@ -278,6 +285,30 @@ Linux `$XDG_DATA_HOME/NeonBench`, Windows `%APPDATA%\NeonBench`).
     typos so an unknown technique doesn't silently fall back to the
     `2.25·D` diameter-only safety bound.
 
+11. **3D glow preview.** Each saved design version on the project page
+    has a "3D preview" link that opens a read-only WebGL scene at
+    `/projects/:id/versions/:vid/preview`. Every `Run.Polyline` is
+    extruded into a 3D glass tube along its 2D path with the correct
+    diameter; the `Color` string is mapped against a ~20-entry gas
+    library (`ruby red`, `neon orange`, `argon (blue)`, `cobalt blue`,
+    `warm white`, etc.) onto an emissive `MeshStandardMaterial`, and a
+    bloom post-process gives the canonical neon halo. **Per-segment
+    blockouts** render as opaque dark-grey sleeves on top of the live
+    tube; **electrodes** render as small metallic cylinders + hemisphere
+    caps at each `Run.Electrode` position. Mouse-drag orbits the
+    camera, scroll zooms, right-drag pans; the floating top-left bar
+    snaps to **Front / Iso / Top / Side** preset views with a 600 ms
+    cubic ease, and the camera auto-fits to the design bbox on initial
+    load so the first frame frames the whole sign. The top-right
+    sidebar exposes scene chrome controls — background color (Black /
+    Dark grey / Neutral grey / White), wall-backing toggle + color
+    (White / Steel grey / Black / Wood) for daytime client mockups, an
+    ambient-light slider — and a **Save PNG** button that downloads
+    `<project>-preview-<ISO>.png` at the canvas's display resolution.
+    Append `?nobloom` to the preview URL to bypass the bloom pass on
+    weak GPUs. (Phase 3 follow-ups in `todo.md` Appendix B Tier 3
+    rows 53–58 cover the remaining polish items.)
+
 ## Architecture
 
 ```
@@ -321,10 +352,10 @@ as a pure function.
 
 See [`todo.md`](todo.md) for the granular checklist (148-row NeonWizard
 parity matrix in Appendix A; tier-ranked task backlog in Appendix B).
-Current scoreboard is **31 ✅ / 12 🟡 / 90 ❌ / 15 🚫** against NW.
-Tier 1 (shop-readiness blockers) and Tier 2 (largest parity gaps)
-have shipped in full. Tier 3 polish has shipped 20 of ~35 items;
-remaining big chunks:
+Current scoreboard is **32 ✅ / 13 🟡 / 88 ❌ / 15 🚫** against NW.
+Tier 1 (shop-readiness blockers), Tier 2 (largest parity gaps), and
+**all of Phase 3 (3D glow rendering)** have shipped in full. Tier 3
+polish has shipped 20 of ~35 items; remaining big chunks:
 
 - **Editor productivity:** multi-select with batch ops, Bezier-aware
   path editing, snap-to-angle / snap-to-existing-geometry, group +
@@ -332,6 +363,10 @@ remaining big chunks:
 - **Glass-to-grounded-metal / HV-cable spacing rule:** blocked on
   introducing a cabinet outline + transformer placement + HV cable
   routing model in the design doc.
-- **Phase 3:** extrude vector paths to 3D glass tubes, emissive shader
-  with bloom, per-gas color, blockout opacity, electrode caps,
-  orbit-camera preview UI.
+- **Phase 3 follow-ups:** wire project tube-spec into preview (so
+  un-overridden runs render at the project diameter, not 12 mm
+  default); route screenshot capture through the bloom composer (PNG
+  export currently reads as a flat-emissive `?nobloom` render);
+  scene-control persistence to localStorage; `React.lazy`
+  code-splitting the preview route to recoup the ~310 KB gzipped
+  three-stack from the initial bundle.
