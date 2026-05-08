@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import PreviewPage from './PreviewPage';
+import { PREVIEW_CAMERA_CONFIG } from './cameraPresets';
 import * as PreviewBarrel from './index';
 
 // Minimal smoke tests for the Phase 3 #1 foundation. We can't render
@@ -20,5 +21,17 @@ describe('preview barrel', () => {
   it('re-exports PreviewPage and Scene', () => {
     expect(typeof PreviewBarrel.PreviewPage).toBe('function');
     expect(typeof PreviewBarrel.Scene).toBe('function');
+  });
+});
+
+// Pins the camera frustum widening from Tier 1 #66. Units are
+// millimeters; preset framing parks the camera at bbox.diagonal × 1.5
+// from the design, so anything tighter than ~50 m of `far` will
+// re-introduce the silent culling regression. `near=1` keeps the 24-
+// bit depth buffer healthy across the 10⁶ near/far ratio.
+describe('PREVIEW_CAMERA_CONFIG', () => {
+  it('uses mm-realistic near/far so signs aren’t culled by the frustum', () => {
+    expect(PREVIEW_CAMERA_CONFIG.near).toBe(1);
+    expect(PREVIEW_CAMERA_CONFIG.far).toBeGreaterThanOrEqual(1_000_000);
   });
 });
