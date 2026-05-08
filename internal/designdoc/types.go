@@ -9,6 +9,26 @@ type Doc struct {
 	Runs       []Run       `json:"runs"`
 	Labels     []Label     `json:"labels,omitempty"`
 	Dimensions []Dimension `json:"dimensions,omitempty"`
+	// Groups bind multiple runs into a logical unit (Tier 3 #33b /
+	// NW #139). The slice is the source-of-truth for group display
+	// names; runs only carry the foreign key Run.GroupID. omitempty
+	// keeps pre-33b doc JSON byte-identical when no groups are
+	// defined. Groups are editor-only metadata — the validator and
+	// renderer ignore membership; they exist purely so the editor
+	// can extend selection and apply ops to many runs at once.
+	Groups []Group `json:"groups,omitempty"`
+}
+
+// Group is a named binding of two-or-more runs. Membership is recorded
+// on the Run side (Run.GroupID), so dropping a group entry here without
+// also clearing the FKs leaves orphan IDs — see docOps.dissolveGroup
+// for the canonical "drop entry + clear FKs" mutation. A run can only
+// belong to one group at a time (Tier 3 #33b deliberately rejects M:N
+// — keeps the model simple; nested groups are explicitly out of scope
+// for this slice).
+type Group struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // Label is a free-form text marker placed in mm coordinates. Used for
@@ -86,6 +106,15 @@ type Run struct {
 	// requires no schema migration — it flows through the existing
 	// design_doc JSON blob (Tier 3 #60 / NW #125).
 	Kind string `json:"kind,omitempty"`
+	// GroupID is the foreign key into Doc.Groups (Tier 3 #33b /
+	// NW #139). Empty (zero-value) means "ungrouped"; non-empty
+	// means this run is bound to the group with that ID and the
+	// editor extends selection to every sibling sharing the same
+	// value. omitempty keeps pre-33b doc JSON byte-identical for
+	// runs that aren't grouped. A run can only belong to one
+	// group at a time — re-grouping replaces the prior value, it
+	// doesn't introduce M:N membership.
+	GroupID string `json:"group_id,omitempty"`
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.

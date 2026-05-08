@@ -13,6 +13,7 @@ import type {
   DesignDoc,
   DesignRun,
   Dimension,
+  Group,
   Label,
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
@@ -1661,4 +1662,107 @@ function buildHairpin(
     [ax, ay],
     [bx, by],
   ];
+}
+
+// nextGroupId returns the lowest unused id of the form `${prefix}${n}`
+// (n starting at 1) on the doc. Defaults to prefix "g" so the first
+// allocated id is "g1", the next "g2", and so on. Mirrors `nextRunId`
+// (Tier 3 #25): non-matching ids are ignored, so a future hand-edited
+// doc with custom group ids ("trim-front", "letters-1") doesn't eat
+// integer slots and stays addressable. Tier 3 #33b.
+export function nextGroupId(doc: DesignDoc, prefix: string = 'g'): string {
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
+  const taken = new Set<number>();
+  for (const g of doc.groups ?? []) {
+    const m = re.exec(g.id);
+    if (m) taken.add(parseInt(m[1], 10));
+  }
+  let n = 1;
+  while (taken.has(n)) n++;
+  return `${prefix}${n}`;
+}
+
+// groupRuns binds the named runs into a fresh group (Tier 3 #33b /
+// NW #139). Returns the new doc plus the freshly-allocated group id
+// so the caller can wire follow-up UI (rename inline, scroll a
+// sidebar entry into view) without re-deriving it from the doc.
+//
+// Semantic decisions baked in here:
+//   - Re-grouping already-grouped runs REPLACES the prior `group_id`
+//     (a run can only be in one group). The old group entry is left
+//     in place — its membership shrinks to whatever runs weren't
+//     reassigned. This matches the spec's `[r1,r2]→A, [r2,r3]→B` test
+//     case: after the second call, A still exists with just r1, and
+//     r2 belongs to B.
+//   - `runIds` not present in the doc are silently dropped (no
+//     throw), so a stale selection from a deleted run can't strand
+//     the editor. The freshly-allocated group still appears in
+//     `Doc.Groups` even if every requested id was bogus — the caller
+//     is responsible for guarding the empty-selection case at the UI
+//     layer (the sidebar's "Group selected" button is disabled when
+//     selectedRunIds.length < 2).
+//   - Allocation flows through nextGroupId so concurrent calls
+//     within one editDoc reducer never collide; ids stay legible
+//     ("g1", "g2", …) rather than UUIDs.
+export function groupRuns(
+  doc: DesignDoc,
+  runIds: string[],
+  name: string,
+): { doc: DesignDoc; groupId: string } {
+  const groupId = nextGroupId(doc);
+  const targetIds = new Set(runIds);
+  const groups: Group[] = [...(doc.groups ?? []), { id: groupId, name }];
+  const runs = doc.runs.map((r) =>
+    targetIds.has(r.id) ? { ...r, group_id: groupId } : r,
+  );
+  return { doc: { ...doc, runs, groups }, groupId };
+}
+
+// dissolveGroup clears every member's `group_id` and removes the
+// matching entry from `Doc.Groups` (Tier 3 #33b). No-op when the
+// groupId doesn't exist — keeps the editor's "Dissolve" button safe
+// to double-click without throwing.
+//
+// Implementation note: we strip the `group_id` field entirely (rather
+// than setting it to "") so the encoded JSON stays clean. omitempty
+// on the Go side already drops empty strings, but the frontend's
+// JSON.stringify doesn't, so we delete the property to match.
+export function dissolveGroup(doc: DesignDoc, groupId: string): DesignDoc {
+  if (!groupId) return doc;
+  const existing = doc.groups ?? [];
+  const hasEntry = existing.some((g) => g.id === groupId);
+  const hasMember = doc.runs.some((r) => r.group_id === groupId);
+  // No-op: nothing to dissolve. Returning the same reference keeps
+  // `editDoc`'s identity-equality short-circuit happy (no spurious
+  // undo entry) and lets the test suite assert exact-reference
+  // stability for the missing-groupId branch.
+  if (!hasEntry && !hasMember) return doc;
+  const groups = existing.filter((g) => g.id !== groupId);
+  const runs = doc.runs.map((r) => {
+    if (r.group_id !== groupId) return r;
+    const next: DesignRun = { ...r };
+    delete next.group_id;
+    return next;
+  });
+  return { ...doc, runs, groups };
+}
+
+// renameGroup updates one Group's display name. No-op when the
+// groupId doesn't exist — same defensive shape as dissolveGroup so
+// the sidebar's inline rename can safely fire even if the group was
+// dissolved on another tab. The runs slice is untouched (FKs are
+// IDs, not names).
+export function renameGroup(
+  doc: DesignDoc,
+  groupId: string,
+  newName: string,
+): DesignDoc {
+  if (!groupId) return doc;
+  const groups = doc.groups ?? [];
+  const idx = groups.findIndex((g) => g.id === groupId);
+  if (idx < 0) return doc;
+  if (groups[idx].name === newName) return doc;
+  const next = groups.slice();
+  next[idx] = { ...next[idx], name: newName };
+  return { ...doc, groups: next };
 }

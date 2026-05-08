@@ -206,6 +206,39 @@ export default function EditorCanvas({
     () => new Set(selectedRunIds),
     [selectedRunIds],
   );
+
+  // Tier 3 #33b — group outlines. For each group with 2+ members,
+  // compute the axis-aligned bbox enclosing every member's polyline
+  // points and emit a pale dashed rectangle so the operator can see
+  // group membership at a glance. Single-member groups are skipped:
+  // a "group of 1" is meaningless and the existing selection ring
+  // already covers it. Re-runs only when `doc.runs` or `doc.groups`
+  // changes (run polyline edits invalidate the bbox; group rename
+  // doesn't but is cheap to recompute).
+  const groupBBoxes = useMemo(() => {
+    const out: { id: string; minX: number; minY: number; maxX: number; maxY: number }[] = [];
+    for (const g of doc.groups ?? []) {
+      const members = doc.runs.filter((r) => r.group_id === g.id);
+      if (members.length < 2) continue;
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let any = false;
+      for (const m of members) {
+        for (const [x, y] of m.polyline.points) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+          any = true;
+        }
+      }
+      if (!any) continue;
+      out.push({ id: g.id, minX, minY, maxX, maxY });
+    }
+    return out;
+  }, [doc.runs, doc.groups]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
@@ -1167,6 +1200,30 @@ export default function EditorCanvas({
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
+          {/* Tier 3 #33b — pale dashed bbox outline around each group's
+              members. Painted UNDER the run strokes so a glowing tube
+              still reads as the dominant line. Padding is in
+              device-pixel space (so it stays readable at any zoom).
+              Color matches the multi-select pink at 50% opacity to
+              echo 33a's selection ring without competing with it. */}
+          {groupBBoxes.map((b) => {
+            const pad = 4 / transform.k;
+            return (
+              <rect
+                key={`group-outline-${b.id}`}
+                x={b.minX - pad}
+                y={b.minY - pad}
+                width={(b.maxX - b.minX) + 2 * pad}
+                height={(b.maxY - b.minY) + 2 * pad}
+                fill="none"
+                stroke="#ff3b6b"
+                strokeOpacity={0.5}
+                strokeWidth={1 / transform.k}
+                strokeDasharray={`${4 / transform.k} ${3 / transform.k}`}
+                pointerEvents="none"
+              />
+            );
+          })}
           {doc.runs.map((run) => {
             const selected = primarySelectedRunIdSet.has(run.id);
             const arcs = runArcs(run);
