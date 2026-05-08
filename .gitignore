@@ -9,6 +9,10 @@
 *.out
 coverage.*
 
+# Vectorize golden test failure artifacts (SVG dumps for reviewer triage,
+# regenerated on every failing run — see internal/vectorize/integration_test.go)
+internal/vectorize/testdata/goldens/_failures/
+
 # Stray test inputs left in the repo root (PNG/JPG/SVG/screen recordings)
 /*.png
 /*.jpg
