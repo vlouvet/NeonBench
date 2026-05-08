@@ -32,7 +32,13 @@ export type EditorTool =
   | 'pen'
   | 'rect'
   | 'circle'
-  | 'arc';
+  | 'arc'
+  // Tier 3 #61 (NW #130) — break a closed loop open at the clicked
+  // vertex (auto-places electrodes), or move an existing opening on
+  // an open run with two electrodes to a different vertex. The tool
+  // dispatches based on the clicked run's `closed` flag; the same
+  // hover/click affordance covers both modes.
+  | 'break-open';
 
 export type AnnotationKind = 'jump' | 'support' | 'doubleback';
 
@@ -67,6 +73,8 @@ export default function EditorCanvas({
   joinArm,
   onPickJoinEndpoint,
   onInsertDoubleback,
+  onBreakOpen,
+  onMoveOpening,
   onCommitShape,
   validationIssues,
   issueSeverityFilter,
@@ -147,6 +155,14 @@ export default function EditorCanvas({
   // `side` mirrors the U onto the opposite side of the segment when set
   // — surfaced as a shift-click in the canvas.
   onInsertDoubleback: (runId: string, segmentIndex: number, t: number, side: 'left' | 'right') => void;
+  // Tier 3 #61 (NW #130) — break-open / move-opening. The canvas's
+  // `'break-open'` tool routes a click on a closed run to onBreakOpen
+  // (auto-creating an opening at the nearest vertex) and a click on
+  // an open run to onMoveOpening (rotating the polyline so the
+  // electrode opening lands at the chosen vertex). Both fire only
+  // when the click lands within the snap-to-vertex radius.
+  onBreakOpen: (runId: string, vertexIndex: number) => void;
+  onMoveOpening: (runId: string, newStartVertexIndex: number) => void;
   // Commit a freshly drawn shape as a new run. EditorPage owns the
   // appendRuns / id-prefix logic; the canvas just hands up the geometry
   // and the kind so the parent can pick the right id prefix and decide on
@@ -227,7 +243,10 @@ export default function EditorCanvas({
     if (tool !== 'blockout' && staged !== null) setStaged(null);
     if (tool !== 'dimension' && stagedDim !== null) setStagedDim(null);
     if (tool !== 'insert-doubleback' && dbHover !== null) setDbHover(null);
-    if (tool !== 'node' && hoveredVertex !== null) setHoveredVertex(null);
+    // Tier 3 #25 (node) and #61 (break-open) share the hoveredVertex
+    // hover-ring state — only clear it when neither tool is active so
+    // toggling between them doesn't blink the highlight.
+    if (tool !== 'node' && tool !== 'break-open' && hoveredVertex !== null) setHoveredVertex(null);
     if (geometryHover !== null) setGeometryHover(null);
   }
 
@@ -587,6 +606,41 @@ export default function EditorCanvas({
         setHoveredVertex(null);
       }
     }
+    // Tier 3 #61 — break-open / move-opening tool hover. Probe every
+    // run (not just the selected one — the user may not have selected
+    // anything) for a vertex within the snap radius and reuse the
+    // node-edit hoveredVertex slot to render the teal ring. This is
+    // the same hit-test the click handler runs, so the visual cue
+    // and the action are guaranteed to agree.
+    if (tool === 'break-open') {
+      const w = clientToWorld(e.clientX, e.clientY);
+      if (w) {
+        const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
+        let bestRun: string | null = null;
+        let bestIdx: number | null = null;
+        let bestD = snap * snap;
+        for (const run of doc.runs) {
+          for (let i = 0; i < run.polyline.points.length; i++) {
+            const p = run.polyline.points[i];
+            const dx = p[0] - w[0];
+            const dy = p[1] - w[1];
+            const d = dx * dx + dy * dy;
+            if (d <= bestD) {
+              bestD = d;
+              bestRun = run.id;
+              bestIdx = i;
+            }
+          }
+        }
+        if (bestRun !== null && bestIdx !== null) {
+          if (!hoveredVertex || hoveredVertex.runId !== bestRun || hoveredVertex.pointIndex !== bestIdx) {
+            setHoveredVertex({ runId: bestRun, pointIndex: bestIdx });
+          }
+        } else if (hoveredVertex) {
+          setHoveredVertex(null);
+        }
+      }
+    }
     if (drawing.tool === 'rect' && drawing.firstCorner !== null) {
       // Rect second corner: geometry snap probes existing vertices/
       // midpoints first; if shift is held, the working corner is
@@ -796,6 +850,35 @@ export default function EditorCanvas({
       onInsertDoubleback(run.id, segmentIndex, t, side);
       onSelectRun(run.id);
       setDbHover(null);
+      return;
+    }
+    if (tool === 'break-open') {
+      // Tier 3 #61 — click within snap radius of a vertex commits the
+      // appropriate op based on the run's `closed` flag. Outside the
+      // snap radius is a no-op (the cursor wasn't pointing at a vertex
+      // yet). We re-test the hit here rather than trusting hoveredVertex
+      // alone so a click with no preceding mousemove (e.g. via keyboard)
+      // still routes correctly.
+      const world = clientToWorld(e.clientX, e.clientY);
+      if (!world) return;
+      const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
+      const hit = nearestVertexWithin(run.polyline.points, world, snap);
+      if (hit === null) {
+        onSelectRun(run.id);
+        return;
+      }
+      if (run.polyline.closed) {
+        onBreakOpen(run.id, hit);
+      } else if ((run.electrodes?.length ?? 0) === 2) {
+        onMoveOpening(run.id, hit);
+      } else {
+        // Open run without two electrodes — nothing meaningful to move.
+        // Just select so the operator can place electrodes first.
+        onSelectRun(run.id);
+        return;
+      }
+      onSelectRun(run.id);
+      setHoveredVertex(null);
       return;
     }
     if (tool === 'node') {
@@ -1398,8 +1481,10 @@ export default function EditorCanvas({
               Rendered before the NodeHandle layer so the white-filled
               vertex handle paints on top of the ring. Color (#1aa37a) and
               stroke width chosen to differ from both the white-fill +
-              blue-stroke node handle and the pink selection halo. */}
-          {tool === 'node' && hoveredVertex && (() => {
+              blue-stroke node handle and the pink selection halo.
+              Tier 3 #61 — the same ring doubles as the break-open /
+              move-opening hover affordance when that tool is active. */}
+          {(tool === 'node' || tool === 'break-open') && hoveredVertex && (() => {
             const run = doc.runs.find((r) => r.id === hoveredVertex.runId);
             if (!run) return null;
             const p = run.polyline.points[hoveredVertex.pointIndex];

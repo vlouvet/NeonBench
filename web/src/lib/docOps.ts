@@ -671,6 +671,128 @@ export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number):
   });
 }
 
+// breakOpen converts a closed polyline into an open one with the gap
+// (i.e. the opening between the two electrodes) at the chosen vertex
+// (Tier 3 #61 / NW #130 — Move Opening / Break Tube Open).
+//
+// Geometry: the closed loop is rewritten so that the polyline's vertex
+// list starts at `vertexIndex`, walks the full perimeter, and ends with
+// a duplicate of `vertexIndex` — that way the new OPEN polyline traces
+// the same physical shape as the closed loop did. The two electrodes
+// land on the duplicated vertices: index 0 (the original `vertexIndex`)
+// and index n (the duplicate at the end of the new list).
+//
+// Live-arc indices for blockouts / annotations / bends carry over
+// untouched. Live indices are walk-relative (a step count along the
+// active arc), and the new open polyline traces exactly the same arc
+// the original closed loop did from the chosen vertex — just walked
+// from a different starting point. So a blockout that was 3 steps
+// "into" the live walk before is still 3 steps in after the break.
+//
+// Throws if the run is already open (no closed loop to break) or if
+// the vertex index is out of range.
+export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  if (!run.polyline.closed) {
+    throw new OperationError('breakOpen: run is already open');
+  }
+  const pts = run.polyline.points;
+  const n = pts.length;
+  if (n < 3) {
+    throw new OperationError('breakOpen: closed polyline needs at least 3 vertices');
+  }
+  if (vertexIndex < 0 || vertexIndex >= n) {
+    throw new OperationError(`breakOpen: vertexIndex ${vertexIndex} out of range [0, ${n})`);
+  }
+  const newPts: [number, number][] = [
+    ...pts.slice(vertexIndex),
+    ...pts.slice(0, vertexIndex),
+    pts[vertexIndex],
+  ];
+  return mapRun(doc, runId, (r) => {
+    const next: DesignRun = {
+      ...r,
+      polyline: { ...r.polyline, points: newPts, closed: false },
+      electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+    };
+    // Direction is meaningless once the run is open (runArcs walks the
+    // full polyline) — drop it so a stale value can't surface later.
+    delete next.direction;
+    return next;
+  });
+}
+
+// moveOpening rotates an OPEN run's polyline so the live arc starts at
+// a chosen vertex while preserving the underlying physical shape
+// (Tier 3 #61 / NW #130). Used to re-position the electrode opening
+// when the as-drawn opening lands somewhere awkward (over a logo,
+// behind a column, in a corner the bender can't reach).
+//
+// The run must have exactly two electrodes; we walk the live arc from
+// `electrodes[0].point_index` to `electrodes[1].point_index` in the
+// current direction (defaultDirection picks the shorter arc when not
+// set), then rotate the walk so it starts at `newStartVertexIndex`.
+// The rotated walk becomes the new polyline; electrodes land at
+// `[0, walked.length - 1]`. Live-arc indices for blockouts /
+// annotations / bends carry over unchanged because they're already
+// walk-relative — rotating the start vertex doesn't change which
+// vertex is "k hops in".
+//
+// Throws if the run is closed, the run lacks exactly two electrodes,
+// or the chosen vertex isn't on the existing live walk.
+export function moveOpening(
+  doc: DesignDoc,
+  runId: string,
+  newStartVertexIndex: number,
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  if (run.polyline.closed) {
+    throw new OperationError('moveOpening: run is closed (use breakOpen first)');
+  }
+  const electrodes = run.electrodes ?? [];
+  if (electrodes.length !== 2) {
+    throw new OperationError(
+      `moveOpening: run has ${electrodes.length} electrode(s); need exactly 2`,
+    );
+  }
+  const pts = run.polyline.points;
+  const n = pts.length;
+  if (n < 2) {
+    throw new OperationError('moveOpening: open polyline needs at least 2 vertices');
+  }
+  // For an OPEN run, runArcs walks the full polyline regardless of
+  // electrode positions — direction is meaningful only for closed
+  // loops where the live arc is the shorter of the two ways around.
+  // The spec frames the walk as electrode[0] → electrode[1] but in
+  // the open-run-from-breakOpen common case those are exactly [0, n-1],
+  // making the walk identical to the full polyline. We mirror that
+  // behaviour here. (If the operator hand-placed electrodes mid-
+  // polyline on an open run before invoking moveOpening, they probably
+  // meant for the rotation to align the polyline endpoints with the
+  // new opening rather than the electrode pair — same end result.)
+  const walked: number[] = [];
+  for (let i = 0; i < n; i++) walked.push(i);
+  const targetWalkPos = walked.indexOf(newStartVertexIndex);
+  if (targetWalkPos < 0) {
+    throw new OperationError(
+      `moveOpening: vertex ${newStartVertexIndex} not on live walk`,
+    );
+  }
+  // Rotate the walk so it starts at the user-clicked vertex. The
+  // rotated walk becomes the new polyline order — last index is the
+  // walk's prior end (where the second electrode used to be), now
+  // bumped by one walk-step to the new opening's other side.
+  const rotated = walked.slice(targetWalkPos).concat(walked.slice(0, targetWalkPos));
+  const newPts: [number, number][] = rotated.map((i) => pts[i]);
+  return mapRun(doc, runId, (r) => ({
+    ...r,
+    polyline: { ...r.polyline, points: newPts },
+    electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+  }));
+}
+
 // insertVertex splices ONE new vertex into a polyline at the parametric
 // position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
 // index segmentIndex + 1; everything after shifts up by 1.
