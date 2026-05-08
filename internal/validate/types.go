@@ -55,15 +55,22 @@ type Report struct {
 // consults derivedMinBendRadius(DiameterMM, WallThicknessMM, BendTechnique)
 // — see internal/validate/rules.go for the K-table and provenance. Both
 // fields gracefully degrade to a diameter-only fallback when empty.
+//
+// FacePerimeterStrict (Tier 3 #46) escalates RuleFacePerimeterExceedsBlank
+// from severity "warning" to severity "error" when true. Default false
+// preserves the historical warning-level behaviour so existing reports
+// stay byte-identical post-migration. The flag is forwarded from the
+// per-project face_perimeter_strict_mode column at validation time.
 type Limits struct {
-	DiameterMM         float64
-	MinBendRadiusMM    float64
-	MaxSegmentLengthMM float64
-	MinSpacingMM       float64
-	MinLeadInMM        float64
-	SharpBendAngleDeg  float64
-	WallThicknessMM    float64
-	BendTechnique      string
+	DiameterMM          float64
+	MinBendRadiusMM     float64
+	MaxSegmentLengthMM  float64
+	MinSpacingMM        float64
+	MinLeadInMM         float64
+	SharpBendAngleDeg   float64
+	WallThicknessMM     float64
+	BendTechnique       string
+	FacePerimeterStrict bool
 }
 
 // HasErrors returns true if any issue has SeverityError.

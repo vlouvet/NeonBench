@@ -784,20 +784,27 @@ func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 // will be necessary so the user can plan the seam location. Tier 3 #26.
 const blankLengthMM = 1168.0
 
-// checkFacePerimeter walks the polylines and emits a warning for any
+// checkFacePerimeter walks the polylines and emits an issue for any
 // face-flagged polyline whose perimeter exceeds the standard blank
 // length. Non-face polylines are skipped entirely (live tube paths
 // don't go through a sheet-metal blank).
 //
-// Severity is intentionally warning, not error: shops with documented
-// seam practice accept faces over the blank length, so the firm
-// "error" behaviour would belong to a per-shop policy (escalation
-// toggle is a Tier 3 follow-up, not part of v1). The marker location
-// uses the run's centroid (average of polyline points) — close enough
-// for the canvas overlay; a perfectly accurate seam-suggestion point
-// would require knowing the operator's preferred seam axis.
-func checkFacePerimeter(polylines []Polyline) []Issue {
+// Severity is configurable per project (Tier 3 #46): when
+// limits.FacePerimeterStrict is true the issue is emitted as
+// SeverityError ("hard stop — face won't fit on a single coil");
+// otherwise it stays SeverityWarning so shops with documented seam
+// practice can splice through and accept the design. Default false
+// preserves the historical warning-level behaviour and keeps existing
+// reports byte-identical post-migration. The marker location uses the
+// run's centroid (average of polyline points) — close enough for the
+// canvas overlay; a perfectly accurate seam-suggestion point would
+// require knowing the operator's preferred seam axis.
+func checkFacePerimeter(polylines []Polyline, limits Limits) []Issue {
 	var issues []Issue
+	severity := SeverityWarning
+	if limits.FacePerimeterStrict {
+		severity = SeverityError
+	}
 	for _, pl := range polylines {
 		if !pl.IsChannelLetterFace {
 			continue
@@ -822,7 +829,7 @@ func checkFacePerimeter(polylines []Polyline) []Issue {
 		}
 		issues = append(issues, Issue{
 			Rule:     RuleFacePerimeterExceedsBlank,
-			Severity: SeverityWarning,
+			Severity: severity,
 			Message: fmt.Sprintf(
 				"face perimeter %.0fmm exceeds standard %dmm blank — needs documented seam",
 				perim, int(blankLengthMM)),

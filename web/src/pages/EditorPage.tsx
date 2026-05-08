@@ -560,6 +560,22 @@ export default function EditorPage() {
     editDoc((prev) => ops.setRunRacewayID(prev, runId, racewayID));
   }
 
+  // Tier 3 #46 — one-click auto-grouping for raceway IDs. Confirms with
+  // the user before overwriting any existing manual labels (the spec
+  // calls for destructive-by-default with the confirm dialog as the
+  // safety net). The op short-circuits to a no-op doc identity when no
+  // face-flagged runs exist, but we already gate the button at the JSX
+  // layer so this branch is only taken if the user hits a keyboard
+  // shortcut (none today; reserved for follow-up).
+  function autoAssignRaceways() {
+    if (!doc) return;
+    const ok = window.confirm(
+      'Replace all raceway IDs with auto-assigned values? Manually labelled runs will be overwritten — Cancel to keep them.',
+    );
+    if (!ok) return;
+    editDoc((prev) => ops.autoAssignRaceways(prev));
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (!selected) return;
     editDoc((prev) => ops.simplifyRun(prev, selected, epsilonMM));
@@ -947,7 +963,18 @@ export default function EditorPage() {
               onSeverityFilterChange={setSeverityFilter}
             />
           )}
-          <h3>Runs</h3>
+          <div className="runs-header">
+            <h3>Runs</h3>
+            <button
+              type="button"
+              className="btn-secondary auto-raceway-btn"
+              disabled={!doc.runs.some((r) => r.is_channel_letter_face)}
+              onClick={autoAssignRaceways}
+              title="Cluster every channel-letter face run by baseline + horizontal proximity and assign deterministic raceway IDs (raceway-1, raceway-2, …) left-to-right. Overwrites any manually labelled runs after a confirm prompt. Tier 3 #46."
+            >
+              Auto-group raceways
+            </button>
+          </div>
           <ul className="run-list">
             {doc.runs.map((run) => {
               const ne = run.electrodes?.length ?? 0;

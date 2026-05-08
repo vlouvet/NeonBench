@@ -328,6 +328,17 @@ export default function ProjectDetail() {
           }}
           onError={(msg) => setError(msg)}
         />
+        {' · '}
+        <FacePerimeterStrictModeField
+          value={project.face_perimeter_strict_mode}
+          onSave={async (next) => {
+            const updated = await api.updateProject(projectId, {
+              face_perimeter_strict_mode: next,
+            });
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
         {' · Units: '}
         {project.units}
         {' · Created '}
@@ -926,6 +937,57 @@ function StripOverlapField({
           }
         }}
       />
+    </span>
+  );
+}
+
+// FacePerimeterStrictModeField is the inline checkbox toggle for the
+// per-project face_perimeter_strict_mode boolean (Tier 3 #46). When
+// checked, the validator escalates RuleFacePerimeterExceedsBlank from
+// warning to error so the marker overlay shows red and acceptance
+// flows that key off Report.HasErrors() block the design.
+//
+// The control intentionally lives next to the channel-letter depth /
+// strip overlap fields because all three are knobs the operator twiddles
+// when planning a channel-letter face — depth + overlap shape the
+// return-strip emission, strict mode shapes the validation severity
+// for the same construction.
+function FacePerimeterStrictModeField({
+  value,
+  onSave,
+  onError,
+}: {
+  value: boolean;
+  onSave: (next: boolean) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  return (
+    <span
+      className="job-field face-strict-toggle"
+      title="When checked, a channel-letter face whose perimeter exceeds the standard 1168 mm blank length is flagged as an ERROR (red marker, blocks acceptance). Default: warning-level so the shop can splice through documented seams (Tier 3 #46)."
+    >
+      <label className="strict-mode-checkbox">
+        <input
+          type="checkbox"
+          checked={value}
+          disabled={busy}
+          onChange={async (e) => {
+            const next = e.target.checked;
+            setBusy(true);
+            try {
+              await onSave(next);
+            } catch (err) {
+              onError(`Strict mode: ${(err as Error).message}`);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+        {' '}
+        <strong>Strict mode</strong>
+        <span className="meta">{' '}(face perimeter &gt; blank → error)</span>
+      </label>
     </span>
   );
 }

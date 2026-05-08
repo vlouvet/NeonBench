@@ -49,17 +49,20 @@ func (s *apiServer) handleValidateDoc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svg := designdoc.ToSVG(&req.Doc)
-	// AUDIT CHECKLIST (Tier 3 #44): every field on validate.Limits MUST be
-	// forwarded from the tube spec here. See the parallel construction in
-	// handlers_vectorize.go runValidation for the canonical doc-comment;
-	// any new validate.Limits field must be wired in BOTH places. Pointer
-	// fields on storage.TubeSpec flow through as zero when nil, which the
-	// validator interprets as "use derived default".
+	// AUDIT CHECKLIST (Tier 3 #44 / #46): every field on validate.Limits
+	// MUST be forwarded from the tube spec OR the project here. See the
+	// parallel construction in handlers_vectorize.go runValidation for
+	// the canonical doc-comment; any new validate.Limits field must be
+	// wired in BOTH places. Pointer fields on storage.TubeSpec flow
+	// through as zero when nil, which the validator interprets as "use
+	// derived default". FacePerimeterStrict comes from the project, not
+	// the tube spec — strict mode is per-project policy.
 	limits := validate.Limits{
-		DiameterMM:         spec.DiameterMM,
-		MinBendRadiusMM:    spec.MinBendRadiusMM,
-		MaxSegmentLengthMM: spec.MaxSegmentLengthMM,
-		MinSpacingMM:       spec.MinSpacingMM,
+		DiameterMM:          spec.DiameterMM,
+		MinBendRadiusMM:     spec.MinBendRadiusMM,
+		MaxSegmentLengthMM:  spec.MaxSegmentLengthMM,
+		MinSpacingMM:        spec.MinSpacingMM,
+		FacePerimeterStrict: project.FacePerimeterStrictMode,
 	}
 	if spec.MinLeadInMM != nil {
 		limits.MinLeadInMM = *spec.MinLeadInMM

@@ -499,13 +499,13 @@ func TestFacePerimeterExceedsBlank(t *testing.T) {
 		Closed: true, // perimeter 1500 but NOT a face → ignored
 	}
 
-	issues := checkFacePerimeter([]Polyline{tooBig, short, notFace})
+	issues := checkFacePerimeter([]Polyline{tooBig, short, notFace}, Limits{})
 	if got, want := countByRule(issues, RuleFacePerimeterExceedsBlank), 1; got != want {
 		t.Fatalf("expected exactly %d face_perimeter_exceeds_blank issue, got %d (%+v)", want, got, issues)
 	}
 	iss, _ := firstByRule(issues, RuleFacePerimeterExceedsBlank)
 	if iss.Severity != SeverityWarning {
-		t.Errorf("severity: got %q, want %q (warning, not error — see rule doc)", iss.Severity, SeverityWarning)
+		t.Errorf("severity: got %q, want %q (default = warning unless strict mode is set)", iss.Severity, SeverityWarning)
 	}
 	// Centroid of (0,0)+(600,0)+(600,150)+(0,150) is (300, 75).
 	if math.Abs(iss.XMM-300) > 0.01 || math.Abs(iss.YMM-75) > 0.01 {
@@ -513,6 +513,50 @@ func TestFacePerimeterExceedsBlank(t *testing.T) {
 	}
 	if !contains(iss.Message, "1500") || !contains(iss.Message, "1168") {
 		t.Errorf("message missing perimeter / blank values: %q", iss.Message)
+	}
+}
+
+// TestFacePerimeterStrictModeEscalates verifies the Tier 3 #46 strict-mode
+// flag flips RuleFacePerimeterExceedsBlank from warning to error while
+// keeping every other field on the issue identical. The default (strict
+// false) path stays warning so existing reports remain byte-identical.
+func TestFacePerimeterStrictModeEscalates(t *testing.T) {
+	// 600×150 closed rect, perimeter 1500 mm — over the 1168 mm blank.
+	tooBig := Polyline{
+		Points: []Point{{0, 0}, {600, 0}, {600, 150}, {0, 150}},
+		Closed: true,
+	}
+	tooBig.IsChannelLetterFace = true
+	polylines := []Polyline{tooBig}
+
+	warn := checkFacePerimeter(polylines, Limits{FacePerimeterStrict: false})
+	strict := checkFacePerimeter(polylines, Limits{FacePerimeterStrict: true})
+
+	if got, want := countByRule(warn, RuleFacePerimeterExceedsBlank), 1; got != want {
+		t.Fatalf("warning pass: expected %d issues, got %d (%+v)", want, got, warn)
+	}
+	if got, want := countByRule(strict, RuleFacePerimeterExceedsBlank), 1; got != want {
+		t.Fatalf("strict pass: expected %d issues, got %d (%+v)", want, got, strict)
+	}
+	wIss, _ := firstByRule(warn, RuleFacePerimeterExceedsBlank)
+	sIss, _ := firstByRule(strict, RuleFacePerimeterExceedsBlank)
+	if wIss.Severity != SeverityWarning {
+		t.Errorf("default mode severity: got %q, want %q", wIss.Severity, SeverityWarning)
+	}
+	if sIss.Severity != SeverityError {
+		t.Errorf("strict mode severity: got %q, want %q", sIss.Severity, SeverityError)
+	}
+	// Everything else on the two issues should match — only severity
+	// changes when the toggle flips.
+	if wIss.Rule != sIss.Rule {
+		t.Errorf("rule code drifted between modes: warn=%q strict=%q", wIss.Rule, sIss.Rule)
+	}
+	if wIss.Message != sIss.Message {
+		t.Errorf("message drifted between modes:\n warn=%q\n strict=%q", wIss.Message, sIss.Message)
+	}
+	if math.Abs(wIss.XMM-sIss.XMM) > 0.01 || math.Abs(wIss.YMM-sIss.YMM) > 0.01 {
+		t.Errorf("marker location drifted between modes: warn=(%.2f, %.2f) strict=(%.2f, %.2f)",
+			wIss.XMM, wIss.YMM, sIss.XMM, sIss.YMM)
 	}
 }
 

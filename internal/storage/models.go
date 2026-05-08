@@ -68,8 +68,15 @@ type Project struct {
 	// override; the renderer falls back to the shop default of 12.7 mm
 	// (½ in, Strattman NT Ch.5 trade convention)".
 	StripOverlapMM *float64 `json:"strip_overlap_mm,omitempty"`
-	CreatedAt      string   `json:"created_at"`
-	UpdatedAt      string   `json:"updated_at"`
+	// FacePerimeterStrictMode escalates RuleFacePerimeterExceedsBlank
+	// from a warning to a hard error when set (Tier 3 #46). Default
+	// false preserves the historical warning-level behaviour so
+	// existing reports stay identical post-migration. Stored as
+	// INTEGER 0/1 in SQLite per the project conventions; surfaced as
+	// a JSON boolean to the frontend.
+	FacePerimeterStrictMode bool   `json:"face_perimeter_strict_mode"`
+	CreatedAt               string `json:"created_at"`
+	UpdatedAt               string `json:"updated_at"`
 }
 
 type AssetKind string

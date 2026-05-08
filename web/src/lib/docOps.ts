@@ -16,6 +16,7 @@ import type {
   Label,
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
+import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection } from './runArcs';
 import {
   offsetOpenPolyline,
@@ -223,6 +224,43 @@ export function setRunChannelLetterDepth(
     }
     return { ...run, channel_letter_depth_mm: depthMM };
   });
+}
+
+// autoAssignRaceways runs the baseline + horizontal-proximity clustering
+// in lib/raceway.ts and writes the assigned raceway IDs back onto every
+// face-flagged run in the doc. Tier 3 #46.
+//
+// Default behaviour overwrites existing manual raceway_id values so the
+// auto-pass produces a fully consistent result. Pass
+// `{ preserveExisting: true }` to skip runs that already have a non-empty
+// raceway_id — useful for incremental tagging when the operator has
+// already labelled a few letters by hand.
+//
+// Runs without `is_channel_letter_face` are untouched. The returned doc
+// is structurally new (same identity rules as every other docOp) so the
+// editor's editDoc() wrapper can push it onto the undo stack.
+export function autoAssignRaceways(doc: DesignDoc, opts: GroupOptions = {}): DesignDoc {
+  const assignments = groupByBaseline(doc.runs, opts);
+  if (assignments.size === 0 && !opts.preserveExisting) {
+    // No face-flagged runs at all — return a structurally new doc only
+    // if we'd otherwise overwrite values; otherwise skip the no-op
+    // allocation. We fall through to the rebuild path so the caller
+    // always gets a fresh doc identity (predictable for editDoc).
+  }
+  const nextRuns = doc.runs.map((run) => {
+    if (!run.is_channel_letter_face) return run;
+    const id = assignments.get(run.id);
+    if (id === undefined) {
+      // No assignment for this face run. With preserveExisting=true this
+      // is the path for runs that already had a manual raceway_id; leave
+      // them alone. With preserveExisting=false it means the run had an
+      // empty polyline and the clusterer skipped it; leave it alone too.
+      return run;
+    }
+    if (run.raceway_id === id) return run;
+    return { ...run, raceway_id: id };
+  });
+  return { ...doc, runs: nextRuns };
 }
 
 // setRunRacewayID labels a run with a raceway grouping id (Tier 3 #26).
