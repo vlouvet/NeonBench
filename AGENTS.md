@@ -83,6 +83,16 @@ Every parallel round (and most solo PRs that close a Tier row) ends with a docs-
 
 Cleanup PRs ship in 2–3 minutes (CI only, no review burden) and keep the source-of-truth docs honest. **Don't bundle cleanup work into feature PRs** — they're separate concerns; the cleanup PR's diff should be readable as docs-only.
 
+## Worktree file-path discipline (recurring agent failure)
+
+When an agent runs with `isolation: "worktree"`, it executes inside `.claude/worktrees/agent-{id}/` — but its absolute filesystem path STILL resolves to a normal directory; nothing at the OS level prevents it from writing into the main repo. **Three of the seven Phase 3 agents (#5, #6, #7 reported it explicitly; #2 also flagged it) accidentally Wrote files to `/Users/v/code/neonbench/web/...` (the main repo) instead of their worktree path.** The Write tool happily creates the file in the wrong place — and the agent only notices when `git status` from inside the worktree comes back empty.
+
+When dispatching an agent that touches a shared subdirectory (`web/src/preview/`, `web/src/components/`, etc.), include this guardrail in the prompt:
+
+> CRITICAL — file path discipline. You are in a worktree at `.claude/worktrees/agent-{your-id}/`. Verify your `cwd` before EVERY Write/Edit call. Use absolute paths starting with the worktree root. If you see your edits not appearing in `git status` from the worktree, you wrote to the wrong place — check immediately, copy to worktree, revert main.
+
+If the parent agent is also running things in `/Users/v/code/neonbench/`, the symptom looks like "agent's work is gone" — the file is sitting in the main repo's working tree, not the worktree's. Recovery: copy the file from main → worktree, then `git checkout -- <file>` in main to revert. Quick to fix once spotted, easy to miss until commit time.
+
 ## Worktree hygiene
 
 The Agent SDK creates worktrees under `.claude/worktrees/agent-{id}/`. After agents return, those worktrees stay locked by the SDK. They're gitignored and harmless, but accumulate.
