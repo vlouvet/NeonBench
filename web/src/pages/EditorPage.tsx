@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -14,6 +14,9 @@ import {
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import PrintHost from '../components/PrintHost';
+import ValidationReportView, {
+  type SeverityFilter,
+} from '../components/ValidationReportView';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as ops from '../lib/docOps';
@@ -40,6 +43,30 @@ export default function EditorPage() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [validating, setValidating] = useState(false);
   const validateAbortRef = useRef<AbortController | null>(null);
+  // Tier 3 #47 — marker overlay polish.
+  //
+  // hoveredIssueIndex: the index INTO the FILTERED issue list of the
+  //   marker / row currently under the cursor. Both subcomponents
+  //   write to it (via callbacks) and read from it (as a prop) so the
+  //   sidebar and canvas highlight in lock-step.
+  // selectedIssueIndex: separate "j/k cursor" — survives mouse-leave
+  //   so keyboard nav can advance from where the user last clicked.
+  // severityFilter: component-local. Unchecking either box hides those
+  //   markers from the canvas AND the matching rows from the sidebar.
+  // centerOnIssue: epoch-bumping pan-zoom command for the canvas. The
+  //   canvas's useEffect compares epoch and re-runs the tween only on
+  //   change.
+  const [hoveredIssueIndex, setHoveredIssueIndex] = useState<number | null>(null);
+  const [selectedIssueIndex, setSelectedIssueIndex] = useState<number | null>(null);
+  const [severityFilter, setSeverityFilter] = useState<SeverityFilter>({
+    errors: true,
+    warnings: true,
+  });
+  const [centerOnIssue, setCenterOnIssue] = useState<{
+    x: number;
+    y: number;
+    epoch: number;
+  } | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
   const [hersheyOpen, setHersheyOpen] = useState(false);
@@ -243,6 +270,117 @@ export default function EditorPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [joinArm]);
+
+  // Tier 3 #47 — list of GLOBAL indices (into `report.issues`) of the
+  // issues that pass the severity filter. j/k keyboard nav cycles
+  // through this list, but every other piece of state stays in
+  // global-index space (so the sidebar and canvas don't have to
+  // translate). The empty array here is fine — filter-empty just
+  // means j/k is a no-op until the operator re-enables a severity.
+  const visibleIssueIndices = useMemo(() => {
+    if (!report) return [] as number[];
+    const out: number[] = [];
+    for (let i = 0; i < report.issues.length; i++) {
+      const iss = report.issues[i];
+      if (iss.severity === 'error' && !severityFilter.errors) continue;
+      if (iss.severity === 'warning' && !severityFilter.warnings) continue;
+      out.push(i);
+    }
+    return out;
+  }, [report, severityFilter]);
+
+  // When the report changes (live revalidate, version load) the old
+  // hovered/selected indexes refer to a stale list. Drop them so the
+  // pulse animation doesn't fire on the wrong marker. Implemented
+  // with the "previous prop in state" pattern so the reset happens
+  // during render rather than in an effect — this avoids the
+  // cascading-render hit and keeps react-hooks/set-state-in-effect
+  // happy (matches the same pattern used for `prevTool` in
+  // EditorCanvas).
+  const [prevReport, setPrevReport] = useState<ValidationReport | null>(report);
+  if (prevReport !== report) {
+    setPrevReport(report);
+    if (hoveredIssueIndex !== null) setHoveredIssueIndex(null);
+    if (selectedIssueIndex !== null) setSelectedIssueIndex(null);
+  }
+
+  // nearestRunForPoint: replicates EditorCanvas's nearestRunId so
+  // sidebar-click and j/k can reuse the canvas's "click marker →
+  // select run" semantics. Iterates run vertices; cheap for typical
+  // signs (≤ a few thousand vertices total).
+  function nearestRunForPoint(target: [number, number]): string | null {
+    if (!doc) return null;
+    let bestId: string | null = null;
+    let bestD = Infinity;
+    for (const run of doc.runs) {
+      for (const p of run.polyline.points) {
+        const dx = p[0] - target[0];
+        const dy = p[1] - target[1];
+        const d = dx * dx + dy * dy;
+        if (d < bestD) {
+          bestD = d;
+          bestId = run.id;
+        }
+      }
+    }
+    return bestId;
+  }
+  // jumpToIssue: pan-zoom the canvas to the issue at GLOBAL index
+  // `globalIdx` AND select the nearest run (mirrors the canvas-click
+  // behavior so sidebar + canvas + j/k all converge on the same UX).
+  function jumpToIssue(globalIdx: number) {
+    if (!report) return;
+    if (globalIdx < 0 || globalIdx >= report.issues.length) return;
+    const iss = report.issues[globalIdx];
+    const x = iss.x_mm;
+    const y = iss.y_mm;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    setSelectedIssueIndex(globalIdx);
+    setCenterOnIssue((prev) => ({
+      x: x as number,
+      y: y as number,
+      epoch: (prev?.epoch ?? 0) + 1,
+    }));
+    const id = nearestRunForPoint([x as number, y as number]);
+    if (id) setSelected(id);
+  }
+
+  // Keyboard nav: j / ] = next, k / [ = prev. Cycles through the
+  // currently-visible filtered set; skipped while the user is typing
+  // in an input so the j key still works as a regular character.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (visibleIssueIndices.length === 0) return;
+      let dir: 1 | -1;
+      if (e.key === 'j' || e.key === ']') dir = 1;
+      else if (e.key === 'k' || e.key === '[') dir = -1;
+      else return;
+      e.preventDefault();
+      // Pressing the key while no issue is selected starts at the
+      // first (or last, when going backward) visible issue.
+      const cur = selectedIssueIndex;
+      const curPos = cur === null ? -1 : visibleIssueIndices.indexOf(cur);
+      let nextPos: number;
+      if (curPos < 0) {
+        nextPos = dir > 0 ? 0 : visibleIssueIndices.length - 1;
+      } else {
+        nextPos =
+          (curPos + dir + visibleIssueIndices.length) %
+          visibleIssueIndices.length;
+      }
+      jumpToIssue(visibleIssueIndices[nextPos]);
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // jumpToIssue closes over `doc` and `report`; re-binding keeps
+    // the closure fresh as those change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visibleIssueIndices, selectedIssueIndex, doc, report]);
 
   if (error) return <p className="error">{error}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
@@ -785,8 +923,30 @@ export default function EditorPage() {
           snapEnabled={snapEnabled}
           snapMM={snapMM}
           validationIssues={report?.issues}
+          issueSeverityFilter={severityFilter}
+          hoveredIssueIndex={hoveredIssueIndex}
+          onIssueHover={setHoveredIssueIndex}
+          centerOnIssue={centerOnIssue}
         />
         <aside className="editor-sidebar">
+          {/* Tier 3 #47 — Validation issue list lives at the top of
+              the sidebar so it's adjacent to the canvas markers
+              they're linked to. Severity filter, hover linking, and
+              j/k keyboard nav all flow through the props passed in
+              here. The list scrolls inside `.editor-sidebar`'s
+              overflow:auto so it doesn't push the runs panel off
+              screen on dense designs. */}
+          {report && (
+            <ValidationReportView
+              report={report}
+              hoveredIssueIndex={hoveredIssueIndex}
+              selectedIssueIndex={selectedIssueIndex}
+              onIssueHover={setHoveredIssueIndex}
+              onIssueClick={jumpToIssue}
+              severityFilter={severityFilter}
+              onSeverityFilterChange={setSeverityFilter}
+            />
+          )}
           <h3>Runs</h3>
           <ul className="run-list">
             {doc.runs.map((run) => {

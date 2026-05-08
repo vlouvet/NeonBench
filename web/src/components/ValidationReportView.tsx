@@ -13,18 +13,65 @@ const RULE_LABELS: Record<ValidationIssue['rule'], string> = {
   unsupported_path: 'Unsupported',
 };
 
+// Tier 3 #47 — sidebar↔canvas hover-link plumbing. The hover/click
+// callbacks carry the issue's index INTO `report.issues` (the unfiltered
+// array) so the parent can address the same issue both in the sidebar
+// and on the canvas without re-implementing index translation. The
+// severity filter, when supplied, renders two checkboxes above the
+// rule list and limits which rows + canvas markers stay visible.
+export type SeverityFilter = { errors: boolean; warnings: boolean };
+
 export default function ValidationReportView({
   report,
   onRevalidate,
   revalidating,
+  hoveredIssueIndex,
+  onIssueHover,
+  onIssueClick,
+  selectedIssueIndex,
+  severityFilter,
+  onSeverityFilterChange,
 }: {
   report: ValidationReport;
   onRevalidate?: () => void;
   revalidating?: boolean;
+  // Index INTO `report.issues`. When set, the matching row gets the
+  // `.issue-hovered` highlight class. The parent reflects canvas marker
+  // hovers into this prop and vice versa.
+  hoveredIssueIndex?: number | null;
+  // Emitted on row mouse-enter / mouse-leave. The leave variant
+  // passes `null` so the parent can clear the highlight unambiguously.
+  onIssueHover?: (idx: number | null) => void;
+  // Emitted on row click; the parent runs nearestRunId selection +
+  // sets the active-issue cursor used by j/k keyboard nav.
+  onIssueClick?: (idx: number) => void;
+  // Index INTO `report.issues` of the active issue (the j/k cursor).
+  // Distinct from `hoveredIssueIndex` so a user can hover one row to
+  // peek and still have a separate "currently selected" row that the
+  // next j keystroke advances from.
+  selectedIssueIndex?: number | null;
+  // When provided, two checkboxes appear above the rule list. Both
+  // checked = same behavior as today. State lives in the parent so
+  // it can also filter canvas markers.
+  severityFilter?: SeverityFilter;
+  onSeverityFilterChange?: (next: SeverityFilter) => void;
 }) {
   const errors = report.issues.filter((i) => i.severity === 'error');
   const warnings = report.issues.filter((i) => i.severity === 'warning');
-  const grouped = groupBy(report.issues, (i) => i.rule);
+
+  // Decorate each issue with its global index BEFORE filtering so
+  // hover/click props can refer to the same index space the canvas
+  // uses (post-filter, but still 0..N-1 over the FILTERED list).
+  // Sidebar rows show their global-issue index too — operators can
+  // tell which one j/k will land on next.
+  const showErrors = severityFilter?.errors ?? true;
+  const showWarnings = severityFilter?.warnings ?? true;
+  const filtered = report.issues
+    .map((iss, idx) => ({ iss, idx }))
+    .filter(({ iss }) =>
+      iss.severity === 'error' ? showErrors : showWarnings,
+    );
+  const grouped = groupBy(filtered, ({ iss }) => iss.rule);
   const ruleOrder: ValidationIssue['rule'][] = [
     'min_bend_radius',
     'min_spacing',
@@ -40,6 +87,40 @@ export default function ValidationReportView({
   const bbox = report.bounding_box_mm;
   const widthMM = bbox[2] - bbox[0];
   const heightMM = bbox[3] - bbox[1];
+
+  const filterControls = severityFilter && onSeverityFilterChange ? (
+    <div
+      className="report-severity-filter"
+      title="Hide warnings or errors from both the sidebar and the canvas markers. Component-local state — not persisted."
+    >
+      <label>
+        <input
+          type="checkbox"
+          checked={severityFilter.errors}
+          onChange={(e) =>
+            onSeverityFilterChange({
+              ...severityFilter,
+              errors: e.target.checked,
+            })
+          }
+        />
+        {' '}Show errors ({errors.length})
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={severityFilter.warnings}
+          onChange={(e) =>
+            onSeverityFilterChange({
+              ...severityFilter,
+              warnings: e.target.checked,
+            })
+          }
+        />
+        {' '}Show warnings ({warnings.length})
+      </label>
+    </div>
+  ) : null;
 
   return (
     <section className="report">
@@ -63,15 +144,28 @@ export default function ValidationReportView({
           </button>
         )}
       </div>
+      {filterControls}
 
       {report.issues.length === 0 ? (
         <p className="empty">No validation issues. Send to printer when ready.</p>
+      ) : filtered.length === 0 ? (
+        <p className="empty">All issues hidden by the severity filter.</p>
       ) : (
         <div className="report-rules">
           {ruleOrder.map((rule) => {
             const items = grouped.get(rule);
             if (!items || items.length === 0) return null;
-            return <RuleGroup key={rule} rule={rule} items={items} />;
+            return (
+              <RuleGroup
+                key={rule}
+                rule={rule}
+                items={items}
+                hoveredIssueIndex={hoveredIssueIndex ?? null}
+                selectedIssueIndex={selectedIssueIndex ?? null}
+                onIssueHover={onIssueHover}
+                onIssueClick={onIssueClick}
+              />
+            );
           })}
         </div>
       )}
@@ -79,13 +173,40 @@ export default function ValidationReportView({
   );
 }
 
-function RuleGroup({ rule, items }: { rule: ValidationIssue['rule']; items: ValidationIssue[] }) {
+function RuleGroup({
+  rule,
+  items,
+  hoveredIssueIndex,
+  selectedIssueIndex,
+  onIssueHover,
+  onIssueClick,
+}: {
+  rule: ValidationIssue['rule'];
+  items: { iss: ValidationIssue; idx: number }[];
+  hoveredIssueIndex: number | null;
+  selectedIssueIndex: number | null;
+  onIssueHover?: (idx: number | null) => void;
+  onIssueClick?: (idx: number) => void;
+}) {
   const [open, setOpen] = useState(false);
-  const errors = items.filter((i) => i.severity === 'error').length;
+  const errors = items.filter(({ iss }) => iss.severity === 'error').length;
   const warnings = items.length - errors;
-  const sample = items.slice(0, open ? items.length : 5);
+  // Force the group open when the hovered or selected issue lives
+  // inside it — otherwise hover from the canvas to a collapsed group
+  // can't surface a row at all. The user can still re-collapse later.
+  const containsActive =
+    (hoveredIssueIndex !== null &&
+      items.some(({ idx }) => idx === hoveredIssueIndex)) ||
+    (selectedIssueIndex !== null &&
+      items.some(({ idx }) => idx === selectedIssueIndex));
+  const effectiveOpen = open || containsActive;
+  const sample = items.slice(0, effectiveOpen ? items.length : 5);
   return (
-    <details className="rule-group" open={open} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+    <details
+      className="rule-group"
+      open={effectiveOpen}
+      onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}
+    >
       <summary>
         <span className={`rule-dot ${errors > 0 ? 'error' : 'warning'}`} />
         <span className="rule-name">{RULE_LABELS[rule]}</span>
@@ -96,17 +217,34 @@ function RuleGroup({ rule, items }: { rule: ValidationIssue['rule']; items: Vali
         </span>
       </summary>
       <ul className="issue-list">
-        {sample.map((iss, i) => (
-          <li key={i} className={`issue ${iss.severity}`}>
-            <span className="issue-msg">{iss.message}</span>
-            {(iss.x_mm !== undefined && iss.y_mm !== undefined) && (
-              <span className="issue-loc meta">
-                ({Math.round(iss.x_mm)}, {Math.round(iss.y_mm)})mm
-              </span>
-            )}
-          </li>
-        ))}
-        {!open && items.length > sample.length && (
+        {sample.map(({ iss, idx }) => {
+          const classes = ['issue', iss.severity];
+          if (idx === hoveredIssueIndex) classes.push('issue-hovered');
+          if (idx === selectedIssueIndex) classes.push('issue-selected');
+          const interactive = Boolean(onIssueHover || onIssueClick);
+          return (
+            <li
+              // Use the global index so the key is stable across
+              // filter / open-state changes (the previous "i" was the
+              // local-loop index; tasks adjacent to filter toggles
+              // would shift keys and force remount).
+              key={idx}
+              className={classes.join(' ')}
+              onMouseEnter={onIssueHover ? () => onIssueHover(idx) : undefined}
+              onMouseLeave={onIssueHover ? () => onIssueHover(null) : undefined}
+              onClick={onIssueClick ? () => onIssueClick(idx) : undefined}
+              style={interactive ? { cursor: 'pointer' } : undefined}
+            >
+              <span className="issue-msg">{iss.message}</span>
+              {(iss.x_mm !== undefined && iss.y_mm !== undefined) && (
+                <span className="issue-loc meta">
+                  ({Math.round(iss.x_mm)}, {Math.round(iss.y_mm)})mm
+                </span>
+              )}
+            </li>
+          );
+        })}
+        {!effectiveOpen && items.length > sample.length && (
           <li className="meta issue-more">+ {items.length - sample.length} more — click to expand</li>
         )}
       </ul>
