@@ -448,6 +448,17 @@ export default function EditorPage() {
     if (selectedIssueIndex !== null) setSelectedIssueIndex(null);
   }
 
+  // Tier 3 #48 — opt-in migration of pre-PR-#44 docs that still carry
+  // `<base>-a` / `<base>-b` (and nested `-a-a`) suffixes from the old
+  // splitRun emitter. Memoized so the regex scan runs only on doc
+  // change, not on every render. Hoisted up here (rather than next to
+  // its dispatcher) because the early-returns below for the loading /
+  // error states would otherwise put a hook after a conditional return.
+  const hasLegacyRunIds = useMemo(() => {
+    if (!doc) return false;
+    return doc.runs.some((r) => /-(a|b)(?:-(a|b))*$/.test(r.id));
+  }, [doc]);
+
   // nearestRunForPoint: replicates EditorCanvas's nearestRunId so
   // sidebar-click and j/k can reuse the canvas's "click marker →
   // select run" semantics. Iterates run vertices; cheap for typical
@@ -679,6 +690,24 @@ export default function EditorPage() {
     editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y));
   }
 
+  // Tier 3 #48 — multi-vertex drag committer. The canvas already
+  // computed the per-vertex target XY; we hand the batch to docOps in
+  // one shot so undo collapses to a single entry.
+  function moveVertices(
+    runId: string,
+    writes: { pointIndex: number; x: number; y: number }[],
+  ) {
+    editDoc((prev) => ops.moveVertices(prev, runId, writes));
+  }
+
+  // Tier 3 #48 — vertex-merge on drop committer. The canvas only fires
+  // this when the dropped vertex landed inside the snap-to-vertex
+  // radius of `keepIndex` — kicking the dropped vertex's references
+  // onto the kept one (see docOps.mergeVertices).
+  function mergeVerticesOnRun(runId: string, keepIndex: number, dropIndex: number) {
+    editDoc((prev) => ops.mergeVertices(prev, runId, keepIndex, dropIndex));
+  }
+
   function deleteVertex(runId: string, pointIndex: number) {
     editDoc((prev) => ops.deleteVertex(prev, runId, pointIndex));
   }
@@ -829,6 +858,16 @@ export default function EditorPage() {
     );
     if (!ok) return;
     editDoc((prev) => ops.autoAssignRaceways(prev));
+  }
+
+  // Tier 3 #48 — `hasLegacyRunIds` memo lives at the top of the
+  // component (before the loading/error early-returns) so it's a hook
+  // call on every render. The button below toggles visibility off when
+  // it's false; the op itself is also a no-op on a clean doc.
+  function renameLegacyRunIdsAction() {
+    if (!doc) return;
+    if (!hasLegacyRunIds) return;
+    editDoc((prev) => ops.renameLegacyRunIds(prev));
   }
 
   // Tier 3 #33b — group helpers. `groupSelected` prompts for a name
@@ -1315,6 +1354,8 @@ export default function EditorPage() {
           onDeleteLabel={deleteLabel}
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
+          onMoveVertices={moveVertices}
+          onMergeVertices={mergeVerticesOnRun}
           onDeleteVertex={deleteVertex}
           onInsertVertex={insertVertex}
           onSplitRun={splitRun}
@@ -1410,6 +1451,20 @@ export default function EditorPage() {
             >
               Auto-group raceways
             </button>
+            {/* Tier 3 #48 — opt-in legacy run-id rename. Renders only
+                when the doc still carries `<base>-a` / `<base>-b` ids
+                from the pre-PR-#44 splitRun emitter; on a clean doc
+                the button is suppressed so it doesn't add noise. */}
+            {hasLegacyRunIds && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={renameLegacyRunIdsAction}
+                title="Rewrite legacy `<base>-a` / `<base>-b` run IDs (from split-run before PR #44) to the flat numeric `r1`, `r2`, … scheme. Idempotent — running again on a clean doc is a no-op. Tier 3 #48."
+              >
+                Rename legacy IDs
+              </button>
+            )}
           </div>
           <ul className="run-list">
             {doc.runs.map((run) => {

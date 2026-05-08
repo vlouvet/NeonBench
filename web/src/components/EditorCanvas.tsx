@@ -72,6 +72,8 @@ export default function EditorCanvas({
   onDeleteLabel,
   onDeleteDimension,
   onMoveVertex,
+  onMoveVertices,
+  onMergeVertices,
   onDeleteVertex,
   onInsertVertex,
   onSplitRun,
@@ -151,6 +153,21 @@ export default function EditorCanvas({
   onDeleteLabel: (index: number) => void;
   onDeleteDimension: (index: number) => void;
   onMoveVertex: (runId: string, pointIndex: number, x: number, y: number) => void;
+  // Tier 3 #48 — multi-vertex drag. Fired in place of `onMoveVertex`
+  // when two or more vertices on the same run are selected and the
+  // operator drags any of them: the canvas computes the per-vertex
+  // target XY (anchor + delta) and submits the batch as one undo
+  // entry. Empty / single-vertex selections still go through the
+  // single-vertex `onMoveVertex` path so the existing tests don't
+  // need re-wiring.
+  onMoveVertices: (runId: string, writes: { pointIndex: number; x: number; y: number }[]) => void;
+  // Tier 3 #48 — vertex-merge on drop. Surfaced when a node-edit drag
+  // releases inside the snap-to-vertex radius of another vertex on the
+  // same run. The canvas picks `keepIndex` (the un-dragged target) and
+  // `dropIndex` (the dragged vertex) so the kept vertex's XY survives
+  // the merge — this matches the visual feedback the operator was
+  // looking at (the snap ring on the target).
+  onMergeVertices: (runId: string, keepIndex: number, dropIndex: number) => void;
   onDeleteVertex: (runId: string, pointIndex: number) => void;
   // Insert a new vertex on the run's polyline at the picked segment + t.
   // Surfaced as alt-click on a polyline path (away from existing vertex
@@ -286,6 +303,44 @@ export default function EditorCanvas({
     runId: string;
     pointIndex: number;
   } | null>(null);
+  // Tier 3 #48 — multi-vertex selection inside the node-edit tool.
+  // Scoped to ONE run (the primary-selected run that node-edit operates
+  // on) since vertex coordinates are run-local; cross-run vertex drag
+  // would need a different op signature. Cmd/Ctrl-click on a vertex
+  // toggles it in/out of the set; Cmd/Ctrl + drag on the empty canvas
+  // draws a rubber-band rect that selects every vertex on the primary
+  // run inside it on release. A length-0 / length-1 set behaves like
+  // the legacy single-vertex flow (drag one vertex, the others are
+  // unaffected).
+  const [selectedVertices, setSelectedVertices] = useState<{
+    runId: string;
+    indices: Set<number>;
+  } | null>(null);
+  // Rubber-band live state. World-space anchor + current corner; the
+  // render layer paints the dashed rectangle. On release the canvas
+  // walks the primary-selected run's polyline and marks every vertex
+  // inside the rect as selected. Cleared when the rubber-band ends or
+  // the tool changes.
+  const [rubberBand, setRubberBand] = useState<{
+    runId: string;
+    anchor: [number, number];
+    current: [number, number];
+    additive: boolean;
+  } | null>(null);
+  // Anchor snapshot for an active multi-vertex drag. When the operator
+  // grabs a NodeHandle that's part of a multi-vertex selection, we
+  // remember every selected vertex's pre-drag XY. The handle's
+  // pointermove computes a world-space delta against the dragged
+  // vertex's anchor and applies the same delta to all anchors so every
+  // selected vertex translates by the same amount. Cleared on
+  // pointerup. Out-of-band so the handle-internal drag state can be
+  // simple (just "is this dragging?").
+  const multiDragRef = useRef<{
+    runId: string;
+    draggedIndex: number;
+    anchorXY: [number, number];
+    snapshots: Map<number, [number, number]>;
+  } | null>(null);
   // Tier 3 #62 — hovered-electrode tracking. When non-null and the
   // operator has a contextmenu handler wired in, we render a small ⚙
   // icon next to the marker so the right-click affordance is
@@ -307,6 +362,111 @@ export default function EditorCanvas({
   const [connectHover, setConnectHover] = useState<[number, number] | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
 
+  // Tier 3 #48 — vertex drag dispatch. The NodeHandle's `onMove`
+  // callback routes through here so a single-vertex drag still goes
+  // through `onMoveVertex` (preserving every existing test that pins
+  // the single-vertex API), while a drag of any vertex inside a
+  // multi-select set translates the whole set by the same delta via
+  // `onMoveVertices`. The first onMove of a multi-drag snapshots every
+  // selected vertex's pre-drag XY into `multiDragRef`; subsequent moves
+  // compute a world-space delta from the dragged vertex's anchor and
+  // apply it to all anchors.
+  function dispatchVertexMove(runId: string, pointIndex: number, nx: number, ny: number) {
+    const sel = selectedVertices;
+    const isMulti =
+      sel !== null &&
+      sel.runId === runId &&
+      sel.indices.size >= 2 &&
+      sel.indices.has(pointIndex);
+    if (!isMulti) {
+      onMoveVertex(runId, pointIndex, nx, ny);
+      return;
+    }
+    if (!multiDragRef.current || multiDragRef.current.draggedIndex !== pointIndex) {
+      // First move of this drag — snapshot every selected vertex's XY.
+      const run = doc.runs.find((r) => r.id === runId);
+      if (!run) {
+        onMoveVertex(runId, pointIndex, nx, ny);
+        return;
+      }
+      const snapshots = new Map<number, [number, number]>();
+      for (const idx of sel.indices) {
+        const p = run.polyline.points[idx];
+        if (p) snapshots.set(idx, [p[0], p[1]]);
+      }
+      const anchor = snapshots.get(pointIndex) ?? [nx, ny];
+      multiDragRef.current = {
+        runId,
+        draggedIndex: pointIndex,
+        anchorXY: anchor,
+        snapshots,
+      };
+    }
+    const drag = multiDragRef.current;
+    const dx = nx - drag.anchorXY[0];
+    const dy = ny - drag.anchorXY[1];
+    const writes: { pointIndex: number; x: number; y: number }[] = [];
+    for (const [idx, anchor] of drag.snapshots) {
+      writes.push({ pointIndex: idx, x: anchor[0] + dx, y: anchor[1] + dy });
+    }
+    onMoveVertices(runId, writes);
+  }
+
+  // Tier 3 #48 — vertex-merge on drop. When a node-edit drag ends, we
+  // probe the run's other vertices for one within snap-to-vertex range
+  // of the drop point. If found, fire `onMergeVertices` to fold the
+  // dropped vertex into the target. Single-vertex drags only — a multi-
+  // drag is a translate, not a merge (and merging into one of your own
+  // dragged vertices would be non-sensical).
+  function handleVertexDragEnd(runId: string, pointIndex: number, x: number, y: number) {
+    const wasMulti = multiDragRef.current !== null;
+    multiDragRef.current = null;
+    if (wasMulti) return;
+    const run = doc.runs.find((r) => r.id === runId);
+    if (!run) return;
+    const radius = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
+    const r2 = radius * radius;
+    let bestIdx: number | null = null;
+    let bestD = r2;
+    for (let i = 0; i < run.polyline.points.length; i++) {
+      if (i === pointIndex) continue;
+      const p = run.polyline.points[i];
+      const ddx = p[0] - x;
+      const ddy = p[1] - y;
+      const d = ddx * ddx + ddy * ddy;
+      if (d <= bestD) {
+        bestD = d;
+        bestIdx = i;
+      }
+    }
+    if (bestIdx !== null) {
+      onMergeVertices(runId, bestIdx, pointIndex);
+      // Drop multi-vertex selection if the dropped index was part of
+      // it — its index is gone after the merge.
+      if (selectedVertices && selectedVertices.runId === runId && selectedVertices.indices.has(pointIndex)) {
+        setSelectedVertices(null);
+      }
+    }
+  }
+
+  // Tier 3 #48 — toggle a vertex in/out of the multi-vertex selection.
+  // Cmd/Ctrl-click on a NodeHandle routes here. The selection is
+  // single-run scoped (see `selectedVertices` declaration); a click on
+  // a vertex of a different run replaces the slice rather than mixing
+  // them. Empty result (toggled the only entry off) clears the slice.
+  function toggleSelectedVertex(runId: string, pointIndex: number) {
+    setSelectedVertices((prev) => {
+      if (!prev || prev.runId !== runId) {
+        return { runId, indices: new Set([pointIndex]) };
+      }
+      const next = new Set(prev.indices);
+      if (next.has(pointIndex)) next.delete(pointIndex);
+      else next.add(pointIndex);
+      if (next.size === 0) return null;
+      return { runId, indices: next };
+    });
+  }
+
   // Tool-change cleanup, render-phase per the "previous prop" React
   // pattern (avoids the cascading-render hit of a useEffect, and keeps
   // react-hooks/set-state-in-effect happy). The reducer handles its
@@ -327,6 +487,12 @@ export default function EditorCanvas({
     // hover-ring state — only clear it when neither tool is active so
     // toggling between them doesn't blink the highlight.
     if (tool !== 'node' && tool !== 'break-open' && hoveredVertex !== null) setHoveredVertex(null);
+    // Tier 3 #48 — leaving the node tool drops the multi-vertex slice
+    // and any in-progress rubber-band so they don't leak across tools.
+    if (tool !== 'node') {
+      if (selectedVertices !== null) setSelectedVertices(null);
+      if (rubberBand !== null) setRubberBand(null);
+    }
     if (geometryHover !== null) setGeometryHover(null);
     // Tier 3 #60 — leaving the connect tool drops any staged source
     // and the live-preview hover so they don't ambush the operator
@@ -334,6 +500,45 @@ export default function EditorCanvas({
     if (tool !== 'connect') {
       if (connectStaged !== null) setConnectStaged(null);
       if (connectHover !== null) setConnectHover(null);
+    }
+  }
+
+  // Tier 3 #48 — when the primary-selected run changes, the vertex
+  // multi-select slice would still point at the prior run's polyline
+  // indices. Same render-phase "previous prop" pattern used above.
+  // The polyline-length watch covers the second-failure case: a vertex
+  // op (insert / delete / merge) shrinks or grows the polyline; any
+  // selected index past the new length must drop or it renders a
+  // ghost NodeHandle.
+  const primaryPolyLen = useMemo(() => {
+    if (!primarySelectedRunId) return 0;
+    const run = doc.runs.find((r) => r.id === primarySelectedRunId);
+    return run ? run.polyline.points.length : 0;
+  }, [doc.runs, primarySelectedRunId]);
+  const [prevPrimaryRunId, setPrevPrimaryRunId] = useState(primarySelectedRunId);
+  const [prevPolyLen, setPrevPolyLen] = useState(primaryPolyLen);
+  if (prevPrimaryRunId !== primarySelectedRunId) {
+    setPrevPrimaryRunId(primarySelectedRunId);
+    setPrevPolyLen(primaryPolyLen);
+    if (selectedVertices !== null && selectedVertices.runId !== primarySelectedRunId) {
+      setSelectedVertices(null);
+    }
+    if (rubberBand !== null && rubberBand.runId !== primarySelectedRunId) {
+      setRubberBand(null);
+    }
+  } else if (prevPolyLen !== primaryPolyLen) {
+    setPrevPolyLen(primaryPolyLen);
+    if (selectedVertices !== null && selectedVertices.runId === primarySelectedRunId) {
+      // Prune indices that no longer point at a valid vertex; if the
+      // pruned set is empty, drop the slice entirely.
+      const pruned = new Set<number>();
+      for (const i of selectedVertices.indices) {
+        if (i < primaryPolyLen) pruned.add(i);
+      }
+      if (pruned.size !== selectedVertices.indices.size) {
+        if (pruned.size === 0) setSelectedVertices(null);
+        else setSelectedVertices({ runId: primarySelectedRunId, indices: pruned });
+      }
     }
   }
 
@@ -355,6 +560,16 @@ export default function EditorCanvas({
           e.preventDefault();
           setConnectStaged(null);
           setConnectHover(null);
+          return;
+        }
+        // Tier 3 #48 — Esc clears the multi-vertex selection inside
+        // the node tool. Listed before the parent's run-deselect Esc
+        // handler (which fires only when nothing inner-canvas claimed
+        // the key first) so the operator can clear the vertex slice
+        // without losing the run selection.
+        if (tool === 'node' && selectedVertices !== null) {
+          e.preventDefault();
+          setSelectedVertices(null);
           return;
         }
         if (drawing.tool === 'pen' && drawing.vertices.length > 0) {
@@ -393,7 +608,7 @@ export default function EditorCanvas({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drawing, onCommitShape, tool, connectStaged]);
+  }, [drawing, onCommitShape, tool, connectStaged, selectedVertices]);
 
   // Tier 3 #34 — track Shift independently of any focused element so
   // the angle-snap engages whenever the user holds Shift over the
@@ -638,6 +853,29 @@ export default function EditorCanvas({
       (e.currentTarget as Element).setPointerCapture(e.pointerId);
       return;
     }
+    // Tier 3 #48 — Cmd/Ctrl + drag in node mode draws a rubber-band
+    // selection rect on the primary-selected run. Plain (no-modifier)
+    // drag still pans, so the operator can navigate normally; the
+    // modifier is the explicit "I want to multi-select vertices" cue.
+    // Falls back to pan when no run is selected (rubber-band has
+    // nothing to operate on).
+    if (
+      tool === 'node' &&
+      primarySelectedRunId &&
+      (e.metaKey || e.ctrlKey)
+    ) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      if (w) {
+        setRubberBand({
+          runId: primarySelectedRunId,
+          anchor: w,
+          current: w,
+          additive: e.shiftKey,
+        });
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        return;
+      }
+    }
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
@@ -681,17 +919,58 @@ export default function EditorCanvas({
     // current snap target. The visible ring renders below; the alt-click
     // handler in onRunClick consults the same state to skip a redundant
     // insert.
+    //
+    // Tier 3 #48 — when joinArm is set, the alt-hover probes ENDPOINTS
+    // (head/tail) of every open run (and the closed flavor for the
+    // armed run itself, to allow self-join). The same teal ring acts
+    // as the snap target; alt-click commits the join with that
+    // endpoint as the second pick. Lets the operator drop the join
+    // without pixel-precise aim on the small endpoint handle.
     if (tool === 'node') {
-      if (e.altKey && primarySelectedRunId) {
+      if (e.altKey && (primarySelectedRunId || joinArm)) {
         const w = clientToWorld(e.clientX, e.clientY);
-        const run = w ? doc.runs.find((r) => r.id === primarySelectedRunId) : null;
-        if (w && run) {
+        if (w) {
           const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
-          const hit = nearestVertexWithin(run.polyline.points, w, snap);
-          if (hit !== null) {
-            const next = { runId: run.id, pointIndex: hit };
-            if (!hoveredVertex || hoveredVertex.runId !== next.runId || hoveredVertex.pointIndex !== next.pointIndex) {
-              setHoveredVertex(next);
+          let hitRunId: string | null = null;
+          let hitIdx: number | null = null;
+          let bestD = snap * snap;
+          if (joinArm) {
+            // Probe every open run's endpoints (and closed-run cases
+            // for self-join). Skip the armed endpoint itself — joining
+            // an end to itself is a no-op.
+            for (const run of doc.runs) {
+              const n = run.polyline.points.length;
+              if (n < 2) continue;
+              if (run.polyline.closed && run.id !== joinArm.runId) continue;
+              for (const ep of [0, n - 1]) {
+                if (run.id === joinArm.runId) {
+                  const armedIdx = joinArm.endpoint === 'head' ? 0 : n - 1;
+                  if (ep === armedIdx) continue;
+                }
+                const p = run.polyline.points[ep];
+                const dx = p[0] - w[0];
+                const dy = p[1] - w[1];
+                const d = dx * dx + dy * dy;
+                if (d <= bestD) {
+                  bestD = d;
+                  hitRunId = run.id;
+                  hitIdx = ep;
+                }
+              }
+            }
+          } else {
+            const run = doc.runs.find((r) => r.id === primarySelectedRunId);
+            if (run) {
+              const hit = nearestVertexWithin(run.polyline.points, w, snap);
+              if (hit !== null) {
+                hitRunId = run.id;
+                hitIdx = hit;
+              }
+            }
+          }
+          if (hitRunId !== null && hitIdx !== null) {
+            if (!hoveredVertex || hoveredVertex.runId !== hitRunId || hoveredVertex.pointIndex !== hitIdx) {
+              setHoveredVertex({ runId: hitRunId, pointIndex: hitIdx });
             }
           } else if (hoveredVertex) {
             setHoveredVertex(null);
@@ -746,6 +1025,19 @@ export default function EditorCanvas({
     } else if (connectHover !== null && tool !== 'connect') {
       setConnectHover(null);
     }
+    // Tier 3 #48 — rubber-band live drag. Update `current` so the
+    // dashed rect repaints; the actual selection commits on pointer-up.
+    if (rubberBand) {
+      const w = clientToWorld(e.clientX, e.clientY);
+      if (w) {
+        setRubberBand((prev) =>
+          prev && (prev.current[0] !== w[0] || prev.current[1] !== w[1])
+            ? { ...prev, current: w }
+            : prev,
+        );
+      }
+      return;
+    }
     if (drawing.tool === 'rect' && drawing.firstCorner !== null) {
       // Rect second corner: geometry snap probes existing vertices/
       // midpoints first; if shift is held, the working corner is
@@ -786,6 +1078,51 @@ export default function EditorCanvas({
   }
 
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
+    // Tier 3 #48 — commit rubber-band vertex selection. Walk the
+    // primary-selected run's polyline and mark every vertex inside the
+    // anchored rect (in world space). Shift held when the rubber-band
+    // started toggles into the existing selection; otherwise it
+    // replaces. A degenerate (anchor === current) rubber-band just
+    // clears the slice — same as a plain background click.
+    if (rubberBand) {
+      try {
+        (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+      } catch {
+        // already released
+      }
+      const rb = rubberBand;
+      setRubberBand(null);
+      const run = doc.runs.find((r) => r.id === rb.runId);
+      if (run) {
+        const minX = Math.min(rb.anchor[0], rb.current[0]);
+        const maxX = Math.max(rb.anchor[0], rb.current[0]);
+        const minY = Math.min(rb.anchor[1], rb.current[1]);
+        const maxY = Math.max(rb.anchor[1], rb.current[1]);
+        // A degenerate (zero-area) rubber-band is a no-op: the operator
+        // probably cmd-clicked on empty canvas to deselect, not to
+        // marquee-select an empty rect.
+        if (maxX - minX > 0 || maxY - minY > 0) {
+          const inside = new Set<number>();
+          for (let i = 0; i < run.polyline.points.length; i++) {
+            const p = run.polyline.points[i];
+            if (p[0] >= minX && p[0] <= maxX && p[1] >= minY && p[1] <= maxY) {
+              inside.add(i);
+            }
+          }
+          setSelectedVertices((prev) => {
+            if (rb.additive && prev && prev.runId === rb.runId) {
+              const merged = new Set(prev.indices);
+              for (const i of inside) merged.add(i);
+              if (merged.size === 0) return null;
+              return { runId: rb.runId, indices: merged };
+            }
+            if (inside.size === 0) return null;
+            return { runId: rb.runId, indices: inside };
+          });
+        }
+      }
+      return;
+    }
     // Rect / circle: pointer-up commits the drawn shape. We require a
     // minimum drag distance (1mm in world space) so an accidental click
     // doesn't emit a degenerate run.
@@ -824,6 +1161,30 @@ export default function EditorCanvas({
     }
     const tag = (e.target as SVGElement).tagName;
     const isBackground = tag === 'svg' || tag === 'rect';
+    // Tier 3 #48 — alt-click during join-arm second pick. The same
+    // snap-to-vertex hover ring (Tier 3 #25) telegraphs which endpoint
+    // will be picked; alt-click commits the join with that endpoint
+    // even if the operator missed the small endpoint NodeHandle
+    // hitbox. Plain (non-alt) clicks still go through the NodeHandle
+    // onPlainClick path so this only triggers on the explicit modifier.
+    if (tool === 'node' && joinArm && e.altKey && hoveredVertex) {
+      const run = doc.runs.find((r) => r.id === hoveredVertex.runId);
+      if (run) {
+        const n = run.polyline.points.length;
+        // Map polyline index → endpoint label. We only ever set
+        // hoveredVertex to head/tail in the join-arm branch above, so
+        // the tail-vs-head check is a defensive sanity guard.
+        const ep: 'head' | 'tail' | null =
+          hoveredVertex.pointIndex === 0 ? 'head'
+          : hoveredVertex.pointIndex === n - 1 ? 'tail'
+          : null;
+        if (ep) {
+          onPickJoinEndpoint(hoveredVertex.runId, ep);
+          setHoveredVertex(null);
+          return;
+        }
+      }
+    }
     // Background click in label/dimension mode places a marker in world
     // space; in any other mode it deselects the current run.
     if (tool === 'label' && isBackground) {
@@ -1736,6 +2097,31 @@ export default function EditorCanvas({
                 />
               ));
             })()}
+          {/* Tier 3 #48 — rubber-band rectangle. Drawn during Cmd/Ctrl+
+              drag in node mode while a primary run is selected. Pure
+              affordance — the actual selection commits on pointer-up.
+              Color matches the canvas's selection-blue family but uses
+              a dashed stroke + translucent fill so it reads as
+              "marquee", not "shape". */}
+          {rubberBand && (() => {
+            const minX = Math.min(rubberBand.anchor[0], rubberBand.current[0]);
+            const minY = Math.min(rubberBand.anchor[1], rubberBand.current[1]);
+            const w = Math.abs(rubberBand.current[0] - rubberBand.anchor[0]);
+            const h = Math.abs(rubberBand.current[1] - rubberBand.anchor[1]);
+            return (
+              <rect
+                x={minX}
+                y={minY}
+                width={w}
+                height={h}
+                fill="rgba(31, 111, 235, 0.12)"
+                stroke="#1f6feb"
+                strokeWidth={1 / transform.k}
+                strokeDasharray={`${4 / transform.k} ${3 / transform.k}`}
+                pointerEvents="none"
+              />
+            );
+          })()}
           {/* Tier 3 #25 — node-edit snap-to-vertex hover ring. When the
               user holds Alt over a vertex on the selected run while the
               node tool is active, draw a teal ring on that vertex so the
@@ -1829,6 +2215,10 @@ export default function EditorCanvas({
               if (primarySelectedRunId) {
                 const run = doc.runs.find((r) => r.id === primarySelectedRunId);
                 if (run) {
+                  const sel =
+                    selectedVertices && selectedVertices.runId === run.id
+                      ? selectedVertices.indices
+                      : null;
                   for (let pi = 0; pi < run.polyline.points.length; pi++) {
                     const p = run.polyline.points[pi];
                     // Skip if this vertex already rendered as armed/endpoint.
@@ -1840,16 +2230,20 @@ export default function EditorCanvas({
                         !run.polyline.closed
                       ) continue;
                     }
+                    const isSel = sel ? sel.has(pi) : false;
                     handles.push(
                       <NodeHandle
                         key={`node-${run.id}-${pi}`}
                         x={p[0]}
                         y={p[1]}
                         k={transform.k}
-                        onMove={(nx, ny) => onMoveVertex(run.id, pi, nx, ny)}
+                        onMove={(nx, ny) => dispatchVertexMove(run.id, pi, nx, ny)}
                         onShiftClick={() => onDeleteVertex(run.id, pi)}
                         onAltClick={() => onSplitRun(run.id, pi)}
+                        onMetaClick={() => toggleSelectedVertex(run.id, pi)}
+                        onDragEnd={(fx, fy) => handleVertexDragEnd(run.id, pi, fx, fy)}
                         clientToWorld={clientToWorldSnapped}
+                        selected={isSel}
                       />,
                     );
                   }
@@ -1945,9 +2339,11 @@ export default function EditorCanvas({
         {tool === 'node' && (
           <span className="meta hint">
             {joinArm
-              ? `Join armed at ${joinArm.runId} ${joinArm.endpoint} — click another endpoint (green) to merge`
+              ? `Join armed at ${joinArm.runId} ${joinArm.endpoint} — click another endpoint (green) to merge · alt-click within snap range commits the nearest endpoint`
               : primarySelectedRunId
-                ? 'Drag to reshape · alt-click path to insert vertex · alt-click vertex to split run · shift-click vertex to delete'
+                ? (selectedVertices && selectedVertices.runId === primarySelectedRunId && selectedVertices.indices.size >= 2
+                    ? `${selectedVertices.indices.size} vertices selected · drag any one to translate the group · drop a vertex onto another to merge · cmd/ctrl-click to toggle · esc to clear`
+                    : 'Drag to reshape · drop on another vertex to merge · cmd/ctrl-click vertex to multi-select · cmd/ctrl-drag to rubber-band · alt-click path to insert · alt-click vertex to split · shift-click vertex to delete')
                 : 'Select a run first, then drag/insert/split its vertices'}
           </span>
         )}
@@ -2061,9 +2457,12 @@ function NodeHandle({
   onMove,
   onShiftClick,
   onAltClick,
+  onMetaClick,
   onPlainClick,
+  onDragEnd,
   clientToWorld,
   highlight,
+  selected,
 }: {
   x: number;
   y: number;
@@ -2071,12 +2470,26 @@ function NodeHandle({
   onMove: (x: number, y: number) => void;
   onShiftClick: () => void;
   onAltClick?: () => void;
+  // Tier 3 #48 — Cmd/Ctrl-click toggles this vertex in/out of the
+  // multi-vertex selection. Falls through to onPlainClick if not wired.
+  onMetaClick?: () => void;
   onPlainClick?: () => void;
+  // Tier 3 #48 — fires on pointerup AFTER a drag (moved===true) with
+  // the final world-space XY. The canvas uses this to detect a
+  // vertex-merge drop (released within snap-to-vertex range of another
+  // vertex on the same run).
+  onDragEnd?: (x: number, y: number) => void;
   clientToWorld: (cx: number, cy: number) => [number, number] | null;
   highlight?: 'endpoint' | 'armed' | null;
+  // Tier 3 #48 — render this handle with the multi-select badge fill so
+  // the operator can see at a glance which vertices are part of the
+  // group drag. Visually distinct from the alt-hover ring (rendered
+  // separately) and from the endpoint/armed fills (which take priority).
+  selected?: boolean;
 }) {
   const dragging = useRef(false);
   const moved = useRef(false);
+  const lastXY = useRef<[number, number] | null>(null);
   const handlePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
     e.stopPropagation();
     if (e.shiftKey) {
@@ -2090,6 +2503,7 @@ function NodeHandle({
     }
     dragging.current = true;
     moved.current = false;
+    lastXY.current = null;
     (e.currentTarget as Element).setPointerCapture(e.pointerId);
   };
   const handlePointerMove = (e: React.PointerEvent<SVGCircleElement>) => {
@@ -2097,7 +2511,10 @@ function NodeHandle({
     e.stopPropagation();
     moved.current = true;
     const w = clientToWorld(e.clientX, e.clientY);
-    if (w) onMove(w[0], w[1]);
+    if (w) {
+      lastXY.current = w;
+      onMove(w[0], w[1]);
+    }
   };
   const handlePointerUp = (e: React.PointerEvent<SVGCircleElement>) => {
     if (!dragging.current) return;
@@ -2108,14 +2525,31 @@ function NodeHandle({
     } catch {
       // pointer might already be released
     }
-    // Plain click without a drag: surface as an explicit click for the
-    // join-arming flow (which fires on endpoint vertices specifically).
-    if (!moved.current && onPlainClick) onPlainClick();
+    if (!moved.current) {
+      // Plain click without a drag: cmd/ctrl wins (multi-vertex toggle);
+      // otherwise fall through to onPlainClick (join-arm endpoint pick).
+      if ((e.metaKey || e.ctrlKey) && onMetaClick) {
+        onMetaClick();
+      } else if (onPlainClick) {
+        onPlainClick();
+      }
+    } else if (onDragEnd && lastXY.current) {
+      onDragEnd(lastXY.current[0], lastXY.current[1]);
+    }
     moved.current = false;
+    lastXY.current = null;
   };
-  const fill = highlight === 'armed' ? '#ff8a00' : highlight === 'endpoint' ? '#1aa37a' : '#fff';
-  const stroke = highlight === 'armed' ? '#ff8a00' : highlight === 'endpoint' ? '#1aa37a' : '#1f6feb';
-  const r = (highlight ? 4 : 3) / k;
+  const fill =
+    highlight === 'armed' ? '#ff8a00'
+    : highlight === 'endpoint' ? '#1aa37a'
+    : selected ? '#ffd24c'
+    : '#fff';
+  const stroke =
+    highlight === 'armed' ? '#ff8a00'
+    : highlight === 'endpoint' ? '#1aa37a'
+    : selected ? '#c98700'
+    : '#1f6feb';
+  const r = (highlight || selected ? 4 : 3) / k;
   return (
     <circle
       cx={x}
