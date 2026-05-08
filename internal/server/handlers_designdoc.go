@@ -49,12 +49,31 @@ func (s *apiServer) handleValidateDoc(w http.ResponseWriter, r *http.Request) {
 	}
 
 	svg := designdoc.ToSVG(&req.Doc)
-	report, err := validate.ValidateSVG(svg, validate.Limits{
+	// AUDIT CHECKLIST (Tier 3 #44): every field on validate.Limits MUST be
+	// forwarded from the tube spec here. See the parallel construction in
+	// handlers_vectorize.go runValidation for the canonical doc-comment;
+	// any new validate.Limits field must be wired in BOTH places. Pointer
+	// fields on storage.TubeSpec flow through as zero when nil, which the
+	// validator interprets as "use derived default".
+	limits := validate.Limits{
 		DiameterMM:         spec.DiameterMM,
 		MinBendRadiusMM:    spec.MinBendRadiusMM,
 		MaxSegmentLengthMM: spec.MaxSegmentLengthMM,
 		MinSpacingMM:       spec.MinSpacingMM,
-	})
+	}
+	if spec.MinLeadInMM != nil {
+		limits.MinLeadInMM = *spec.MinLeadInMM
+	}
+	if spec.SharpBendAngleDeg != nil {
+		limits.SharpBendAngleDeg = *spec.SharpBendAngleDeg
+	}
+	if spec.WallThicknessMM != nil {
+		limits.WallThicknessMM = *spec.WallThicknessMM
+	}
+	if spec.BendTechnique != nil {
+		limits.BendTechnique = *spec.BendTechnique
+	}
+	report, err := validate.ValidateSVG(svg, limits)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "validate: "+err.Error())
 		return
