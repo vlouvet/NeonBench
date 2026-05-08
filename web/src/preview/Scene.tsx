@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 // drei's exported OrbitControls type isn't generic — pull the
 // underlying three-stdlib class so the imperative ref has the
 // `target` / `update` methods we need.
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
+import { Bloom, EffectComposer } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import type { DesignDoc } from '../api';
 import Tube from './Tube';
@@ -19,11 +20,15 @@ import {
  *
  * Phase 3 #1 stood this up as a placeholder spinning cube; Phase 3 #2
  * replaced the cube with real tube geometry. Phase 3 #5 adds orbit
- * controls and camera preset framing. Phase 3 #7 (this revision)
- * layers in scene-chrome controls — background color, ambient
- * intensity, and an optional wall plane — plus a "screenshot bridge"
- * that hands the renderer/scene/camera up to PreviewPage for the PNG
- * export.
+ * controls and camera preset framing. Phase 3 #7 layers in
+ * scene-chrome controls — background color, ambient intensity, and
+ * an optional wall plane — plus a "screenshot bridge" that hands the
+ * renderer/scene/camera up to PreviewPage for the PNG export. Phase
+ * 3 #4 (this revision — yes the numbering is out of order; #4 was
+ * deferred to last) layers a `<Bloom>` post-processing pass on top so
+ * emissive tubes get the soft halo glow that sells the neon look.
+ * Bloom can be disabled at runtime with `?nobloom` (e.g. for
+ * frame-rate debugging or A/B screenshot comparisons).
  *
  * Phase 3 #5 layered orbit controls + preset framing. Phase 3 #7
  * (this revision) adds:
@@ -83,6 +88,68 @@ export const WALL_SIZE_FACTOR = 1.5;
 // here, exotic edge cases could hand the plane geometry a near-zero
 // size and the user would see nothing).
 export const WALL_MIN_SIZE_MM = 100;
+
+// Bloom tuning constants (Phase 3 #4). Exported so test corpora /
+// future per-project tuning sliders have a single place to land.
+//
+// Rationale (carried from the spec; values left at the spec defaults
+// because manual smoke is deferred to post-merge per the round
+// coordination policy — adjusting these speculatively would ship a
+// look that nobody has actually eyeballed):
+//
+//   - `BLOOM_INTENSITY = 1.2` — strong enough to read as glow without
+//     washing out fine line work. Bloom's contribution is additive;
+//     anything north of ~2 on emissive surfaces of strength 1.4
+//     (Phase 3 #3 default) starts to clip.
+//   - `BLOOM_LUMINANCE_THRESHOLD = 0.4` — only emissive surfaces
+//     bloom. The wall plane (Phase 3 #7) and ambient-lit scene chrome
+//     come in well below 0.4 luminance so they stay matte. The
+//     directional key light (intensity 0.7) is also below the
+//     threshold on a non-emissive surface.
+//   - `BLOOM_LUMINANCE_SMOOTHING = 0.2` — soft falloff around the
+//     threshold so dim/desaturated tubes (e.g. powder blue ~0.5) get
+//     a softer halo than bright tubes (ruby red ~1.0). 0 produces a
+//     hard cutoff that looks artificial; >0.4 starts pulling the
+//     wall into the bloom.
+//   - `BLOOM_RADIUS = 0.7` — mid-large halo. With `mipmapBlur` on,
+//     this is a multi-step downsample radius, not a kernel size; 0.7
+//     is roughly "neon shop window seen from across the street",
+//     which is the look we want.
+//   - `BLOOM_MIPMAP_BLUR = true` — large soft halos via mipmap chain
+//     downsampling (cheap on every GPU we care about) instead of a
+//     wide convolution kernel. This is the difference between bloom
+//     costing ~0.3 ms/frame and ~3 ms/frame on integrated GPUs.
+export const BLOOM_INTENSITY = 1.2;
+export const BLOOM_LUMINANCE_THRESHOLD = 0.4;
+export const BLOOM_LUMINANCE_SMOOTHING = 0.2;
+export const BLOOM_RADIUS = 0.7;
+export const BLOOM_MIPMAP_BLUR = true;
+
+/**
+ * Read `?nobloom` from the current URL search string. Returns true
+ * when the param is present (with or without a value). We check the
+ * raw search string rather than going through `URLSearchParams` so
+ * the helper stays SSR-safe behind a `typeof window` guard — on
+ * vitest's jsdom there's a window, but on a hypothetical SSR build
+ * there wouldn't be, and we don't want a render-time crash.
+ *
+ * Used by Scene to conditionally skip the `<EffectComposer>` wrap.
+ * Useful for:
+ *   - frame-rate debugging on weak machines
+ *   - the windows-smoke CI runner (anyone wiring a smoke test that
+ *     doesn't want to depend on WebGL post-processing being healthy)
+ *   - A/B comparison screenshots ("what does this look like without
+ *     bloom?")
+ */
+function readNoBloomFromURL(): boolean {
+  if (typeof window === 'undefined') return false;
+  const search = window.location?.search ?? '';
+  if (!search) return false;
+  // Match `?nobloom`, `?nobloom=1`, `?foo=bar&nobloom`, etc. The bare
+  // form (no `=`) is allowed so users don't have to know an arbitrary
+  // value to type.
+  return /(^\?|&)nobloom(=|&|$)/.test(search);
+}
 
 /**
  * Preset request envelope. Each click of a preset button creates a
@@ -207,6 +274,14 @@ export default function Scene({
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const { camera } = useThree();
 
+  // `?nobloom` is read once at mount. We don't subscribe to URL
+  // changes — the preview route doesn't navigate without unmount,
+  // and listening to popstate just for this would be over-engineered.
+  // `useMemo` keeps the value stable so toggling other props doesn't
+  // remount EffectComposer (which would briefly drop a frame of
+  // bloom).
+  const noBloom = useMemo(() => readNoBloomFromURL(), []);
+
   // Animation bookkeeping. Held in a ref (not state) because the
   // animation runs in `useFrame` and re-rendering on every tick
   // would defeat the purpose of using fiber's render loop.
@@ -330,6 +405,39 @@ export default function Scene({
         zoomSpeed={1.0}
       />
       <ScreenshotBridge onCaptureReady={onCaptureReady} />
+      {/*
+        Bloom post-processing (Phase 3 #4). EffectComposer takes over
+        the render loop: it draws the scene into an offscreen target,
+        then runs the effect chain. We wrap only the effects (not the
+        scene meshes) — meshes stay rendered by fiber's default path,
+        which EffectComposer captures into its render target.
+
+        `multisampling={0}` disables MSAA on the composer's render
+        target. The trade-off: edges of non-emissive geometry may
+        show slight aliasing. We accept that because:
+          1. The dominant geometry is emissive tubes, where bloom
+             itself softens the edges below the visibility threshold.
+          2. MSAA on the composer pipeline is expensive on integrated
+             GPUs (the windows-smoke CI runner being the canary), and
+             we'd rather hold 60 fps than chase 4xMSAA edges.
+
+        `?nobloom` — when present in the URL, skip the composer wrap
+        entirely. Useful for performance debugging, A/B screenshot
+        comparisons, and any future smoke harness that wants to
+        confirm the preview route renders without depending on the
+        post-processing pipeline.
+      */}
+      {!noBloom && (
+        <EffectComposer multisampling={0}>
+          <Bloom
+            intensity={BLOOM_INTENSITY}
+            luminanceThreshold={BLOOM_LUMINANCE_THRESHOLD}
+            luminanceSmoothing={BLOOM_LUMINANCE_SMOOTHING}
+            mipmapBlur={BLOOM_MIPMAP_BLUR}
+            radius={BLOOM_RADIUS}
+          />
+        </EffectComposer>
+      )}
     </>
   );
 }
