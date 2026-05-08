@@ -40,6 +40,12 @@ export interface RunSegment {
   // a closed loop with no painted-over portion). Otherwise the
   // segment renders as an open tube.
   closed: boolean;
+  // Indices INTO `points` (segment-local) for each `kind: 'jump'`
+  // annotation that falls inside this segment's slice. Tier 3 #68 —
+  // the renderer feeds these to `liftPointsAtJumps` to raise the
+  // tube out of plane at jump locations. Empty array (the common
+  // case) means the segment renders flat at Z=0.
+  jumpPolylineIndices: number[];
 }
 
 /**
@@ -67,13 +73,40 @@ export function splitRunBySegments(run: DesignRun): RunSegment[] {
   const wholeRunIsLive =
     segs.length === 1 && !segs[0].isBlockout && arcs.liveClosed;
 
+  // Translate `kind: 'jump'` annotations from live-arc index to
+  // polyline index once. A jump's `live_index` is a position in the
+  // live arc; the polyline index it maps to is `liveIndices[live_index]`.
+  // Out-of-range live indices (from edits that orphaned an annotation)
+  // are silently skipped — `liftPointsAtJumps` already handles
+  // out-of-range polyline indices, but filtering here keeps the
+  // per-segment `jumpPolylineIndices` lists honest.
+  const jumpPolylineIdxs: number[] = [];
+  const annotations = run.annotations ?? [];
+  for (const a of annotations) {
+    if (a.kind !== 'jump') continue;
+    if (a.live_index < 0 || a.live_index >= liveIndices.length) continue;
+    jumpPolylineIdxs.push(liveIndices[a.live_index]);
+  }
+
   return segs
     .filter((s) => s.liveIndices.length >= 2)
-    .map((s) => ({
-      points: s.liveIndices.map((idx) => points[idx]),
-      isBlockout: s.isBlockout,
-      // Only a single, unbroken, live, closed loop renders as a
-      // closed tube. Any blockout breaks the loop into open arcs.
-      closed: wholeRunIsLive,
-    }));
+    .map((s) => {
+      // Per-segment: include only jumps whose polyline index falls
+      // inside this segment's slice. Translate to a segment-local
+      // (zero-based) index so the renderer can hand it straight to
+      // `liftPointsAtJumps` without further translation.
+      const segLocalJumps: number[] = [];
+      for (const ji of jumpPolylineIdxs) {
+        const localIdx = s.liveIndices.indexOf(ji);
+        if (localIdx >= 0) segLocalJumps.push(localIdx);
+      }
+      return {
+        points: s.liveIndices.map((idx) => points[idx]),
+        isBlockout: s.isBlockout,
+        // Only a single, unbroken, live, closed loop renders as a
+        // closed tube. Any blockout breaks the loop into open arcs.
+        closed: wholeRunIsLive,
+        jumpPolylineIndices: segLocalJumps,
+      };
+    });
 }
