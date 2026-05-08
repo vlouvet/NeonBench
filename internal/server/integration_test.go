@@ -2817,3 +2817,186 @@ func TestUpdateTubeSpecValidationRejects(t *testing.T) {
 func waitForClockTick() {
 	time.Sleep(2 * time.Millisecond)
 }
+
+// TestValidationConsultsAllTubeSpecFields is the wiring guard for Tier 3
+// #44: the four pointer-typed validate.Limits fields added by Tier 3 #29
+// (min_lead_in_mm, sharp_bend_angle_deg) and Tier 3 #31 (wall_thickness_mm,
+// bend_technique) must flow from storage.TubeSpec through the request-
+// scoped validate.Limits at every site that constructs one. Before this
+// PR the validator silently fell back to diameter-derived defaults
+// because handlers_vectorize.go and handlers_designdoc.go each hand-built
+// a four-field Limits — the optional rules' values from the spec were
+// dropped on the floor.
+//
+// The lead-in field is the cleanest end-to-end probe: a 12 mm leg passes
+// the diameter-derived default for a 5 mm tube (2 × 5 = 10 mm) but fails
+// an explicit 20 mm spec override. With the wiring fix, the validator
+// emits a min_lead_in issue. Without the fix, the issue is absent — the
+// regression this test is built to catch.
+//
+// The sharp-bend-angle field is exercised similarly: a 90° corner passes
+// the default 85° threshold but fails an explicit 95° spec override, and
+// only fires when the wiring forwards the spec value.
+//
+// The wall-thickness + bend-technique fields are wired through to
+// validate.Limits at the handler, but the bend-radius rule's checkBendRadius
+// has an early-return at limits.MinBendRadiusMM <= 0 — see
+// internal/validate/rules.go — so a tube spec with min_bend_radius_mm = 0
+// + populated wall + technique cannot, today, surface a derived-radius
+// issue end-to-end. That's a validate-package gating bug logged as a
+// Tier 3 follow-up; the wiring itself is verified by the lead-in and
+// sharp-bend assertions in this test plus the parallel rules unit tests
+// in internal/validate (TestRunBendLimitFallsBackToDerivedWhenSpecMissing).
+func TestValidationConsultsAllTubeSpecFields(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Insert a custom tube spec with the four new optional fields populated.
+	// The handler PATCH surface only exposes the four primary dimensional
+	// columns (see handlers_tube_specs.go updateTubeSpecRow doc-comment),
+	// so we go through the DB directly to set min_lead_in_mm /
+	// sharp_bend_angle_deg / wall_thickness_mm / bend_technique. The
+	// diameter is at the bottom of the validated range so the diameter-
+	// derived lead-in default (2 × 5 = 10 mm) falls below our test
+	// geometry's 12 mm first leg — only the explicit 20 mm override flags
+	// it.
+	res, err := db.Exec(`
+		INSERT INTO tube_specs (
+			name, diameter_mm, min_bend_radius_mm,
+			max_segment_length_mm, min_spacing_mm,
+			min_lead_in_mm, sharp_bend_angle_deg,
+			wall_thickness_mm, bend_technique,
+			is_default
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		"tier3-44-fixture", 5.0, 12.0, 1000.0, 5.0,
+		20.0, 95.0, 1.0, "ribbon")
+	if err != nil {
+		t.Fatalf("insert tube spec: %v", err)
+	}
+	tubeSpecID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	// Sanity: the spec we just inserted should round-trip with the new
+	// fields populated. If the storage layer ever drops the columns we'd
+	// get bogus test results downstream.
+	all, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list tube specs: %v", err)
+	}
+	var fixture storage.TubeSpec
+	for _, s := range all {
+		if s.ID == tubeSpecID {
+			fixture = s
+		}
+	}
+	if fixture.MinLeadInMM == nil || *fixture.MinLeadInMM != 20.0 {
+		t.Fatalf("fixture missing MinLeadInMM=20: %+v", fixture)
+	}
+	if fixture.SharpBendAngleDeg == nil || *fixture.SharpBendAngleDeg != 95.0 {
+		t.Fatalf("fixture missing SharpBendAngleDeg=95: %+v", fixture)
+	}
+	if fixture.WallThicknessMM == nil || *fixture.WallThicknessMM != 1.0 {
+		t.Fatalf("fixture missing WallThicknessMM=1: %+v", fixture)
+	}
+	if fixture.BendTechnique == nil || *fixture.BendTechnique != "ribbon" {
+		t.Fatalf("fixture missing BendTechnique=ribbon: %+v", fixture)
+	}
+
+	// Project that uses the fixture spec.
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "tier3-44 wiring guard",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// Geometry: open polyline with a 12 mm first leg, a 90° corner, and a
+	// 40 mm second leg. Lead-in length from electrode (0,0) to first bend
+	// at (12,0) is exactly 12 mm — passes the diameter-derived default
+	// (10 mm) but fails the spec's 20 mm explicit override. The 90° corner
+	// at (12,0) probes the sharp-bend-angle wiring: 90° passes the default
+	// 85° threshold but fails the spec's 95° threshold.
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 100, 100},
+		Runs: []designdoc.Run{{
+			ID: "lead-in-fixture",
+			Polyline: designdoc.Polyline{
+				Points: [][2]float64{{0, 0}, {12, 0}, {12, 40}},
+				Closed: false,
+			},
+			Electrodes: []designdoc.Electrode{{PointIndex: 0}, {PointIndex: 2}},
+		}},
+	}
+
+	// Drive both validation entry points: the live /validate_doc path
+	// (handlers_designdoc.go) and the persisted-version path
+	// (handlers_vectorize.go runValidation, reached by creating a design
+	// version and reading the stored report). Both must surface the
+	// wired-through fields.
+	var liveReport map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/validate_doc", map[string]any{
+		"design_doc": doc,
+	}, &liveReport)
+	assertReportFlagsLeadInAndSharpBend(t, liveReport, "validate_doc")
+
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "wiring-guard",
+		"design_doc": doc,
+	}, &version)
+	storedReport, _ := version["validation_report_json"].(string)
+	if storedReport == "" {
+		t.Fatal("design_versions create returned empty validation_report_json")
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(storedReport), &parsed); err != nil {
+		t.Fatalf("unmarshal stored report: %v", err)
+	}
+	assertReportFlagsLeadInAndSharpBend(t, parsed, "design_versions create")
+}
+
+// assertReportFlagsLeadInAndSharpBend confirms a validation report contains
+// at least one min_lead_in and one sharp_bend_angle issue, naming the
+// caller's report source for diagnostic output. Used by the Tier 3 #44
+// wiring guard to assert both the live and persisted paths forward the
+// spec's optional fields through to the validator.
+func assertReportFlagsLeadInAndSharpBend(t *testing.T, report map[string]any, source string) {
+	t.Helper()
+	issues, _ := report["issues"].([]any)
+	var leadIn, sharp int
+	for _, raw := range issues {
+		iss, _ := raw.(map[string]any)
+		switch iss["rule"] {
+		case "min_lead_in":
+			leadIn++
+		case "sharp_bend_angle":
+			sharp++
+		}
+	}
+	if leadIn == 0 {
+		t.Errorf("[%s] expected >=1 min_lead_in issue (12mm leg vs spec 20mm); got 0. issues=%v",
+			source, issues)
+	}
+	if sharp == 0 {
+		t.Errorf("[%s] expected >=1 sharp_bend_angle issue (90° corner vs spec 95° threshold); got 0. issues=%v",
+			source, issues)
+	}
+}
