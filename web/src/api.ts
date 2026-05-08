@@ -233,10 +233,19 @@ export type ValidationReport = {
   generated_at: string;
 };
 
+// Normalize a report parsed from JSON. Older rows in the database
+// (and any backend regression) can serialize `issues` as null instead
+// of `[]` — coerce it here so every consumer can rely on the array
+// shape its TypeScript signature promises.
+function normalizeReport(r: ValidationReport): ValidationReport {
+  if (r.issues == null) r.issues = [];
+  return r;
+}
+
 export function parseReport(dv: DesignVersion | null | undefined): ValidationReport | null {
   if (!dv?.validation_report_json) return null;
   try {
-    return JSON.parse(dv.validation_report_json) as ValidationReport;
+    return normalizeReport(JSON.parse(dv.validation_report_json) as ValidationReport);
   } catch {
     return null;
   }
@@ -415,7 +424,7 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ design_doc: doc }),
       signal,
-    }),
+    }).then(normalizeReport),
   exportBundleURL: (projectId: number) => `/api/projects/${projectId}/export.neonbench`,
   importBundle: async (file: File): Promise<Project> => {
     const fd = new FormData();
