@@ -3,6 +3,7 @@ package vectorize
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -204,9 +205,110 @@ func TestVectorizeGoldens(t *testing.T) {
 			}
 			if len(diffs) == 0 {
 				t.Logf("%s OK (runs=%d, total=%.3fmm)", name, actual.RunCount, actual.TotalLengthMM)
+				return
+			}
+			// Test failed — dump a self-contained SVG with the actual
+			// polyline geometry overlaid on a base64 copy of the source
+			// PNG, so reviewers can eyeball the regression in their PR
+			// diff tool of choice. See dumpFailureArtifact for the
+			// rationale on the format.
+			if path, err := dumpFailureArtifact(dir, name, data, res, golden); err != nil {
+				t.Logf("dump failure artifact: %v", err)
+			} else {
+				t.Logf("failure artifact: %s", path)
 			}
 		})
 	}
+}
+
+// dumpFailureArtifact writes an SVG to testdata/goldens/_failures/<name>.svg
+// containing:
+//
+//   - The source PNG embedded as a base64 data URL <image> so the artifact
+//     is self-contained and openable as a single file.
+//   - The actual polyline geometry from the failing run overlaid in red.
+//   - The golden polyline geometry overlaid in semi-transparent green
+//     for direct visual comparison.
+//
+// The _failures/ directory is in .gitignore so these don't end up
+// committed; they exist purely as reviewer triage aids.
+func dumpFailureArtifact(dir, fixtureName string, sourcePNG []byte, res *Result, golden goldenFile) (string, error) {
+	failuresDir := filepath.Join(dir, "_failures")
+	if err := os.MkdirAll(failuresDir, 0o755); err != nil {
+		return "", err
+	}
+	svgName := fixtureName[:len(fixtureName)-len(".png")] + ".svg"
+	out := filepath.Join(failuresDir, svgName)
+
+	var buf bytes.Buffer
+	widthMM := res.WidthMM
+	heightMM := res.HeightMM
+	fmt.Fprintf(&buf,
+		`<svg xmlns="http://www.w3.org/2000/svg" version="1.1" width="%smm" height="%smm" viewBox="0 0 %s %s">`+"\n",
+		fmtFloat(widthMM), fmtFloat(heightMM), fmtFloat(widthMM), fmtFloat(heightMM))
+	// Faint base64-embedded PNG behind the geometry. The image stretches
+	// to the full viewBox so source pixels line up with mm coordinates
+	// the same way the pipeline maps them.
+	enc := base64.StdEncoding.EncodeToString(sourcePNG)
+	fmt.Fprintf(&buf,
+		`<image x="0" y="0" width="%s" height="%s" opacity="0.25" href="data:image/png;base64,%s"/>`+"\n",
+		fmtFloat(widthMM), fmtFloat(heightMM), enc)
+	// Golden polylines in green (semi-transparent) — the expected result.
+	fmt.Fprintln(&buf, `<g fill="none" stroke="#00aa00" stroke-width="0.6" stroke-opacity="0.6" stroke-linecap="round" stroke-linejoin="round">`)
+	for _, pl := range golden.Polylines {
+		writeGoldenPath(&buf, pl)
+	}
+	fmt.Fprintln(&buf, `</g>`)
+	// Actual polylines in red — what the pipeline produced.
+	fmt.Fprintln(&buf, `<g fill="none" stroke="#cc0000" stroke-width="0.5" stroke-linecap="round" stroke-linejoin="round">`)
+	for _, pl := range res.Polylines {
+		writeMMPath(&buf, pl)
+	}
+	fmt.Fprintln(&buf, `</g>`)
+	fmt.Fprintln(&buf, `</svg>`)
+
+	if err := os.WriteFile(out, buf.Bytes(), 0o644); err != nil {
+		return "", err
+	}
+	return out, nil
+}
+
+func writeMMPath(buf *bytes.Buffer, pl MMPolyline) {
+	if len(pl.Points) < 2 {
+		return
+	}
+	buf.WriteString(`<path d="`)
+	for i, p := range pl.Points {
+		cmd := "L"
+		if i == 0 {
+			cmd = "M"
+		}
+		fmt.Fprintf(buf, "%s%s %s ", cmd, fmtFloat(p.X), fmtFloat(p.Y))
+	}
+	if pl.Closed {
+		buf.WriteByte('Z')
+	}
+	buf.WriteString(`"/>`)
+	buf.WriteByte('\n')
+}
+
+func writeGoldenPath(buf *bytes.Buffer, pl goldenPolyline) {
+	if len(pl.Points) < 2 {
+		return
+	}
+	buf.WriteString(`<path d="`)
+	for i, p := range pl.Points {
+		cmd := "L"
+		if i == 0 {
+			cmd = "M"
+		}
+		fmt.Fprintf(buf, "%s%s %s ", cmd, fmtFloat(p[0]), fmtFloat(p[1]))
+	}
+	if pl.Closed {
+		buf.WriteByte('Z')
+	}
+	buf.WriteString(`"/>`)
+	buf.WriteByte('\n')
 }
 
 func readGolden(path string) (goldenFile, error) {
