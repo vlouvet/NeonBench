@@ -588,14 +588,21 @@ export const api = {
     }
     return (await res.json()) as Project;
   },
+  // Build the print-PDF URL. The second arg is optional so the
+  // single-arg call shape (the existing Print button on EditorPage)
+  // keeps working unchanged. Tier 3 #50 added the `strips_only`
+  // backend toggle (PR #51); the popover wires it up here so the
+  // operator can request a returns-only PDF without the main pattern
+  // pages.
   printPDFURL: (
     projectId: number,
     versionId: number,
-    opts: { paper?: string; landscape?: boolean } = {},
+    opts: { paper?: string; landscape?: boolean; stripsOnly?: boolean } = {},
   ) => {
     const params = new URLSearchParams();
     if (opts.paper) params.set('paper', opts.paper);
     if (opts.landscape) params.set('landscape', '1');
+    if (opts.stripsOnly) params.set('strips_only', '1');
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
