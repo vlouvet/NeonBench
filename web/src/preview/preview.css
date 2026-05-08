@@ -260,3 +260,28 @@
 .preview-page__scene-screenshot:active {
   background: #142840;
 }
+
+/* Tier 3 #56 — "↺ Reset to defaults" link. Subdued button styling so
+ * it sits below the screenshot CTA without competing for attention.
+ * Visually equivalent to a text link with a generous hit area, which
+ * is the standard pattern for "tertiary, non-destructive" actions. */
+.preview-page__scene-reset {
+  appearance: none;
+  background: transparent;
+  color: #888;
+  border: none;
+  border-radius: 4px;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  align-self: center;
+  transition: color 80ms ease, background 80ms ease;
+}
+
+.preview-page__scene-reset:hover,
+.preview-page__scene-reset:focus-visible {
+  color: #6cf;
+  background: #1a1a1a;
+  outline: none;
+}
