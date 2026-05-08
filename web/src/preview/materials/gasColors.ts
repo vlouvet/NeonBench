@@ -77,13 +77,64 @@ const EDITOR_COLOR_TO_GAS: Record<string, string> = {
 };
 
 /**
- * V1 emissive intensity for every known gas. Per-gas tuning (some
- * phosphors visually punch harder than others) is a deliberate
- * Phase 3 follow-up; uniform 1.5 was chosen because it reads as
- * "convincingly lit" without bloom, and bloom in Phase 3 #4 will
- * pick up the brighter gases preferentially anyway.
+ * Per-gas emissive intensity table (Tier 1 #69). Bloom amplifies the
+ * brighter base hexes preferentially, so a uniform intensity multiplier
+ * left cool-spectrum gases (cobalt blue, royal purple, lime green)
+ * reading as "dull" against the dark scene while warm-spectrum gases
+ * (rose pink, sunset orange) read as "convincingly lit." Rose pink is
+ * the user's reference for "this looks right" — every other gas is
+ * tuned relative to it so no single color dominates and none falls
+ * below the rose-pink read.
+ *
+ * Phosphor-coated argon-mercury entries: bluer / greener phosphors lose
+ * more energy to the coating layer and thus need more compensation.
+ * Pure-gas fills (no phosphor) get a smaller bump because their spectra
+ * are cleaner.
+ *
+ * These values are calibrated by the table above + visual review against
+ * the OPEN-sign render and project 21232. Adjust here (not at the call
+ * site) if a future tuning pass surfaces new issues. Bloom-config sliders
+ * (Tier 3 todo row 55) will eventually let users tune further at runtime.
  */
-const DEFAULT_INTENSITY = 1.5;
+const GAS_INTENSITY: Record<string, number> = {
+  // Argon + mercury (with phosphor coatings)
+  'ruby red':        1.6,
+  'rose pink':       1.5, // user reference — "looks right"
+  'neon orange':     1.7,
+  'sunset orange':   1.6,
+  'lemon yellow':    2.0,
+  'gold':            2.0,
+  'lime green':      2.4,
+  'turquoise':       2.4,
+  'powder blue':     2.6,
+  'cobalt blue':     2.8,
+  'royal purple':    2.6,
+  'deep magenta':    2.2,
+  // Pure gases (no phosphor)
+  'neon (red)':      1.8,
+  'argon (blue)':    2.6,
+  'helium (yellow)': 2.0,
+  'krypton (white)': 2.0,
+  'xenon (white)':   2.0,
+  // Defaults / whites
+  'white':           1.8,
+  'warm white':      1.6,
+  'cool white':      2.0,
+};
+
+/**
+ * Fallback intensity for any GAS_COLORS key not enumerated in
+ * GAS_INTENSITY. New gases added to GAS_COLORS without an explicit
+ * intensity row land here — 1.8 is the rough mid-point of the table
+ * above and a safe "convincingly lit" default until a per-gas value
+ * is tuned in.
+ *
+ * Distinct from FALLBACK_INTENSITY (0.75), which is reserved for the
+ * "unknown gas" case where the resolver couldn't even identify the
+ * gas; that case renders dim warm white as a "lit but unidentified"
+ * signal.
+ */
+const DEFAULT_INTENSITY = 1.8;
 
 export type EmissiveLookup = {
   color: string;
@@ -119,12 +170,12 @@ export function gasToEmissiveColor(gasName: string | undefined | null): Emissive
   if (bridged !== undefined) {
     const hex = GAS_COLORS[bridged];
     if (hex !== undefined) {
-      return { color: hex, intensity: DEFAULT_INTENSITY };
+      return { color: hex, intensity: GAS_INTENSITY[bridged] ?? DEFAULT_INTENSITY };
     }
   }
   const direct = GAS_COLORS[normalized];
   if (direct !== undefined) {
-    return { color: direct, intensity: DEFAULT_INTENSITY };
+    return { color: direct, intensity: GAS_INTENSITY[normalized] ?? DEFAULT_INTENSITY };
   }
   // Substring fallback: longest matching key wins (so "warm white"
   // beats "white" in "warm white tube"). Iterate keys sorted by
@@ -132,7 +183,7 @@ export function gasToEmissiveColor(gasName: string | undefined | null): Emissive
   const keys = Object.keys(GAS_COLORS).sort((a, b) => b.length - a.length);
   for (const key of keys) {
     if (normalized.includes(key)) {
-      return { color: GAS_COLORS[key], intensity: DEFAULT_INTENSITY };
+      return { color: GAS_COLORS[key], intensity: GAS_INTENSITY[key] ?? DEFAULT_INTENSITY };
     }
   }
   return { color: FALLBACK_COLOR, intensity: FALLBACK_INTENSITY };
