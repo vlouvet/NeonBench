@@ -8,8 +8,10 @@ import {
   DEFAULT_TUBE_END_GAP_MM,
   derivedMinBendRadiusMM,
   parseReport,
+  TubeSpecInUseError,
   type Asset,
   type BendTechnique,
+  type CreateTubeSpecBody,
   type DesignVersion,
   type Project,
   type TubeSpec,
@@ -292,6 +294,35 @@ export default function ProjectDetail() {
             ))}
           </select>
         </label>
+        {' '}
+        <NewTubeSpecButton
+          onCreated={async (created) => {
+            // Refresh the spec list and switch the project to the
+            // freshly created spec — matches the Tier 3 #51 spec's
+            // "form submit → dropdown gains entry → project switches"
+            // flow without a manual click on the dropdown.
+            const [specs, updated] = await Promise.all([
+              api.listTubeSpecs(),
+              api.updateProject(projectId, { tube_spec_id: created.id }),
+            ]);
+            setAllSpecs(specs);
+            setProject(updated);
+          }}
+          onError={(msg) => setError(msg)}
+        />
+        {' '}
+        <DeleteTubeSpecButton
+          spec={allSpecs.find((s) => s.id === project.tube_spec_id) ?? null}
+          onDeleted={async () => {
+            // The deleted spec was the project's active spec, so the
+            // backend already 409'd — which is why this button is
+            // disabled in that branch. We still reload defensively in
+            // case another tab / process did the delete first.
+            const specs = await api.listTubeSpecs();
+            setAllSpecs(specs);
+          }}
+          onError={(msg) => setError(msg)}
+        />
         {' '}
         <TubeSpecEditor
           spec={allSpecs.find((s) => s.id === project.tube_spec_id) ?? null}
@@ -989,6 +1020,271 @@ function FacePerimeterStrictModeField({
         <span className="meta">{' '}(face perimeter &gt; blank → error)</span>
       </label>
     </span>
+  );
+}
+
+// NewTubeSpecButton renders a tiny inline form that POSTs a new tube
+// spec to /api/tube_specs (Tier 3 #51). Closed by default to avoid
+// crowding the project header; one click opens the four-input form
+// (name + diameter + bend radius + segment length + spacing). Submit
+// hands control back to the parent so it can refresh the spec list
+// and switch the project to the freshly-created entry. Server errors
+// (uniqueness collision, range failure) surface inline so the user
+// can fix the value without scrolling up.
+function NewTubeSpecButton({
+  onCreated,
+  onError,
+}: {
+  onCreated: (created: TubeSpec) => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState('');
+  const [diameter, setDiameter] = useState('12');
+  const [bend, setBend] = useState('27');
+  const [segment, setSegment] = useState('2500');
+  const [spacing, setSpacing] = useState('14');
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary"
+        onClick={() => {
+          setName('');
+          setDiameter('12');
+          setBend('27');
+          setSegment('2500');
+          setSpacing('14');
+          setLocalError(null);
+          setOpen(true);
+        }}
+        title="Add a new tube spec to the library (e.g. a custom diameter or unusual glass). Newly created specs appear in the dropdown immediately and can be edited or deleted afterward."
+      >
+        + New tube spec
+      </button>
+    );
+  }
+
+  async function commit() {
+    if (busy) return;
+    const trimmedName = name.trim();
+    const errors: string[] = [];
+    if (trimmedName === '') errors.push('Name is required.');
+    const checks: { label: string; raw: string; min: number; max: number }[] = [
+      { label: 'Diameter', raw: diameter, min: 5, max: 30 },
+      { label: 'Min bend radius', raw: bend, min: 1, max: 200 },
+      { label: 'Max segment length', raw: segment, min: 100, max: 5000 },
+      { label: 'Min spacing', raw: spacing, min: 1, max: 100 },
+    ];
+    const parsed: Record<string, number> = {};
+    for (const c of checks) {
+      const n = Number(c.raw);
+      if (!Number.isFinite(n)) {
+        errors.push(`${c.label} must be a number.`);
+        continue;
+      }
+      if (n < c.min || n > c.max) {
+        errors.push(`${c.label} must be between ${c.min} and ${c.max}.`);
+        continue;
+      }
+      parsed[c.label] = n;
+    }
+    if (
+      parsed['Min bend radius'] !== undefined &&
+      parsed['Diameter'] !== undefined &&
+      parsed['Min bend radius'] < parsed['Diameter']
+    ) {
+      errors.push('Min bend radius must be at least the diameter.');
+    }
+    if (errors.length > 0) {
+      setLocalError(errors.join(' '));
+      return;
+    }
+    const body: CreateTubeSpecBody = {
+      name: trimmedName,
+      diameter_mm: parsed['Diameter'],
+      min_bend_radius_mm: parsed['Min bend radius'],
+      max_segment_length_mm: parsed['Max segment length'],
+      min_spacing_mm: parsed['Min spacing'],
+    };
+    setBusy(true);
+    setLocalError(null);
+    try {
+      const created = await api.createTubeSpec(body);
+      await onCreated(created);
+      setOpen(false);
+    } catch (e) {
+      // Server errors (409 uniqueness, 400 range, etc.) surface
+      // inline so the user can edit and retry without scrolling up
+      // to the page-level error banner.
+      const msg = (e as Error).message;
+      setLocalError(msg);
+      onError(`New tube spec: ${msg}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span
+      className="new-tube-spec-form"
+      style={{ display: 'inline-flex', gap: '0.5rem', alignItems: 'baseline', flexWrap: 'wrap' }}
+    >
+      <strong>New spec:</strong>
+      <label>
+        name{' '}
+        <input
+          type="text"
+          value={name}
+          disabled={busy}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={100}
+          style={{ width: '10rem' }}
+          aria-label="new tube spec name"
+        />
+      </label>
+      <label>
+        Ø{' '}
+        <input
+          type="number"
+          step={0.1}
+          min={5}
+          max={30}
+          value={diameter}
+          disabled={busy}
+          onChange={(e) => setDiameter(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="new diameter mm"
+        />
+        mm
+      </label>
+      <label>
+        bend{' '}
+        <input
+          type="number"
+          step={0.5}
+          min={1}
+          max={200}
+          value={bend}
+          disabled={busy}
+          onChange={(e) => setBend(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="new min bend radius mm"
+        />
+        mm
+      </label>
+      <label>
+        seg{' '}
+        <input
+          type="number"
+          step={10}
+          min={100}
+          max={5000}
+          value={segment}
+          disabled={busy}
+          onChange={(e) => setSegment(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="new max segment length mm"
+        />
+        mm
+      </label>
+      <label>
+        spacing{' '}
+        <input
+          type="number"
+          step={0.5}
+          min={1}
+          max={100}
+          value={spacing}
+          disabled={busy}
+          onChange={(e) => setSpacing(e.target.value)}
+          style={{ width: '5rem' }}
+          aria-label="new min spacing mm"
+        />
+        mm
+      </label>
+      <button type="button" className="btn-secondary" onClick={commit} disabled={busy}>
+        {busy ? 'Saving…' : 'Create'}
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpen(false);
+          setLocalError(null);
+        }}
+        disabled={busy}
+      >
+        Cancel
+      </button>
+      {localError && <span className="error">{localError}</span>}
+    </span>
+  );
+}
+
+// DeleteTubeSpecButton renders a "Delete spec" action for the active
+// tube spec. Tier 3 #51 V1 deliberately matches the server's strict
+// "any-reference blocks" rule: clicking Delete on a spec that's still
+// referenced by this (or any other) project surfaces a 409 with the
+// referencing project names so the user knows which to migrate first.
+// The button is always enabled — it's safe because the server is the
+// final gate and the confirm() prompt prevents accidental clicks.
+//
+// V2 work could pre-flight by reading the project list and disabling
+// the button until refs == 0; we defer that because the dropdown
+// already shows only the active spec, so the V1 flow naturally walks
+// the user through "switch → delete" anyway.
+function DeleteTubeSpecButton({
+  spec,
+  onDeleted,
+  onError,
+}: {
+  spec: TubeSpec | null;
+  onDeleted: () => Promise<void>;
+  onError: (msg: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  if (!spec) return null;
+
+  async function commit() {
+    if (busy || !spec) return;
+    if (
+      !window.confirm(
+        `Delete tube spec "${spec.name}"? This cannot be undone. Seeded specs will be re-created on a fresh database.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.deleteTubeSpec(spec.id);
+      await onDeleted();
+    } catch (e) {
+      if (e instanceof TubeSpecInUseError) {
+        const names = e.conflict.projects.map((p) => p.name).join(', ');
+        onError(
+          `Tube spec "${spec.name}" is in use by ${e.conflict.project_count} project(s): ${names}. Switch them first.`,
+        );
+      } else {
+        onError(`Delete tube spec: ${(e as Error).message}`);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="btn-secondary"
+      onClick={commit}
+      disabled={busy}
+      title="Delete this tube spec from the library. Refused if any project still references it; switch those projects to a different spec first."
+    >
+      {busy ? 'Deleting…' : 'Delete spec'}
+    </button>
   );
 }
 
