@@ -3000,3 +3000,373 @@ func assertReportFlagsLeadInAndSharpBend(t *testing.T, report map[string]any, so
 			source, issues)
 	}
 }
+
+// fetchTubeSpecRow looks up a tube spec by ID via the storage layer
+// (rather than the JSON API) so tests can directly assert that
+// nullable columns are NULL rather than the zero-value of their JSON
+// type. Returns the wall-thickness pointer, the technique pointer, and
+// the row's primary fields. Used by the Tier 3 #43 PATCH tests.
+func fetchTubeSpecRow(t *testing.T, db *sql.DB, id int64) storage.TubeSpec {
+	t.Helper()
+	specs, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list tube specs: %v", err)
+	}
+	for _, s := range specs {
+		if s.ID == id {
+			return s
+		}
+	}
+	t.Fatalf("tube spec %d not found", id)
+	return storage.TubeSpec{}
+}
+
+// patchTubeSpecRaw issues a PATCH /api/tube_specs/{id} with the given
+// raw JSON body. Returns the response status and decoded body so the
+// caller can assert exact JSON payloads without having Go's encoder
+// rewrite "null" → omitted via the omitempty tag on a *float64.
+func patchTubeSpecRaw(t *testing.T, client *http.Client, base string, id int64, body string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest("PATCH",
+		base+"/api/tube_specs/"+itoa(id), strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build PATCH: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH: %v", err)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read PATCH body: %v", err)
+	}
+	return resp.StatusCode, out
+}
+
+// TestPatchTubeSpecWallThicknessOmitted pins the three-state PATCH
+// preserve semantics: a body that mentions only `name` must leave the
+// optional wall_thickness_mm + bend_technique columns untouched. Without
+// this guard a future refactor that always overwrites those columns
+// (e.g. zero-value-merging from a non-pointer struct) would silently
+// blank seeded data. Tier 3 #43.
+func TestPatchTubeSpecWallThicknessOmitted(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	// 12mm clear is seeded with wall=1.07 mm, technique=ribbon by
+	// migration 0010. PATCH with only name set; nothing else should
+	// move.
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+	pre := fetchTubeSpecRow(t, db, specID)
+	if pre.WallThicknessMM == nil || *pre.WallThicknessMM != 1.07 {
+		t.Fatalf("baseline wall_thickness_mm: want 1.07, got %v", pre.WallThicknessMM)
+	}
+	if pre.BendTechnique == nil || *pre.BendTechnique != "ribbon" {
+		t.Fatalf("baseline bend_technique: want ribbon, got %v", pre.BendTechnique)
+	}
+
+	status, body := patchTubeSpecRaw(t, client, srv.URL, specID, `{"name":"12mm clear renamed"}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.WallThicknessMM == nil || *post.WallThicknessMM != 1.07 {
+		t.Errorf("wall_thickness_mm dirtied by name-only PATCH: want 1.07, got %v", post.WallThicknessMM)
+	}
+	if post.BendTechnique == nil || *post.BendTechnique != "ribbon" {
+		t.Errorf("bend_technique dirtied by name-only PATCH: want ribbon, got %v", post.BendTechnique)
+	}
+	if post.Name != "12mm clear renamed" {
+		t.Errorf("name not applied: got %q", post.Name)
+	}
+}
+
+// TestPatchTubeSpecWallThicknessClears proves explicit `null` in the
+// PATCH body clears the column to SQL NULL — the third state in the
+// three-state semantics that distinguishes "leave alone" (omit) from
+// "wipe this" (null). Tier 3 #43.
+func TestPatchTubeSpecWallThicknessClears(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+
+	// Confirm the seed (defensive — if migration 0010 ever moves this
+	// number we'd otherwise pass without exercising the clear path).
+	pre := fetchTubeSpecRow(t, db, specID)
+	if pre.WallThicknessMM == nil {
+		t.Fatal("baseline wall_thickness_mm is already NULL; can't exercise clear path")
+	}
+
+	status, body := patchTubeSpecRaw(t, client, srv.URL, specID,
+		`{"wall_thickness_mm":null,"bend_technique":null}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.WallThicknessMM != nil {
+		t.Errorf("wall_thickness_mm not cleared: got %v", *post.WallThicknessMM)
+	}
+	if post.BendTechnique != nil {
+		t.Errorf("bend_technique not cleared: got %v", *post.BendTechnique)
+	}
+}
+
+// TestPatchTubeSpecBendTechniqueValidates rejects a bend_technique
+// value outside the whitelist with a 422. The unknown string would
+// otherwise silently fall back to the diameter-only 2.25·D bound in
+// the validator's derivedMinBendRadius helper — operators would never
+// see why their derived radius stopped tightening, hence the strict
+// gate. The row must remain unchanged after the rejection. Tier 3 #43.
+func TestPatchTubeSpecBendTechniqueValidates(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+	pre := fetchTubeSpecRow(t, db, specID)
+
+	// "torch" is a plausible typo for "hand_torch" — exactly the kind
+	// of input we want to surface as a 422 rather than coerce.
+	status, body := patchTubeSpecRaw(t, client, srv.URL, specID,
+		`{"bend_technique":"torch"}`)
+	if status != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want 422 (body=%s)", status, body)
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.BendTechnique == nil || pre.BendTechnique == nil ||
+		*post.BendTechnique != *pre.BendTechnique {
+		t.Errorf("rejected PATCH leaked: bend_technique pre=%v post=%v",
+			pre.BendTechnique, post.BendTechnique)
+	}
+	if post.WallThicknessMM == nil || pre.WallThicknessMM == nil ||
+		*post.WallThicknessMM != *pre.WallThicknessMM {
+		t.Errorf("rejected PATCH dirtied wall_thickness_mm: pre=%v post=%v",
+			pre.WallThicknessMM, post.WallThicknessMM)
+	}
+
+	// Out-of-range wall thickness also rejects with 422.
+	status2, body2 := patchTubeSpecRaw(t, client, srv.URL, specID,
+		`{"wall_thickness_mm":50}`)
+	if status2 != http.StatusUnprocessableEntity {
+		t.Errorf("oversized wall thickness status = %d, want 422 (body=%s)", status2, body2)
+	}
+	status3, body3 := patchTubeSpecRaw(t, client, srv.URL, specID,
+		`{"wall_thickness_mm":0.05}`)
+	if status3 != http.StatusUnprocessableEntity {
+		t.Errorf("undersized wall thickness status = %d, want 422 (body=%s)", status3, body3)
+	}
+}
+
+// TestPatchTubeSpecFanoutRevalidatesAfterWallChange asserts the PR #18
+// fan-out path runs on wall-thickness edits too: every design version
+// referencing the spec must get a fresh report after the column moves.
+// We don't assert that the issue list changes (whether the new wall
+// trips a bend-radius rule depends on the validator's gating, which is
+// the subject of the Tier 3 #44 work), only that revalidated.version_count
+// > 0 — i.e. the fan-out actually ran. Tier 3 #43.
+func TestPatchTubeSpecFanoutRevalidatesAfterWallChange(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "wall-fanout project",
+		"tube_spec_id": specID,
+	}, &project)
+	pid := int64(project["id"].(float64))
+
+	circleSVG := buildCirclePolylineSVG(50.0, 100, 100, 200, 1)
+	for v := 0; v < 2; v++ {
+		dv, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+			ProjectID: pid,
+			Label:     fmt.Sprintf("v%d", v+1),
+			SVGData:   circleSVG,
+		})
+		if err != nil {
+			t.Fatalf("create design version: %v", err)
+		}
+		// Seed a baseline report so the fan-out has something to refresh.
+		revalURL := base + "/api/projects/" + itoa(pid) + "/design_versions/" + itoa(dv.ID) + "/validate"
+		postJSON(t, client, revalURL, nil, nil)
+	}
+	waitForClockTick()
+
+	status, body := patchTubeSpecRaw(t, client, base, specID,
+		`{"wall_thickness_mm":1.50}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	var out struct {
+		TubeSpec    storage.TubeSpec   `json:"tube_spec"`
+		Revalidated revalidatedSummary `json:"revalidated"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode PATCH response: %v", err)
+	}
+	if out.Revalidated.VersionCount == 0 {
+		t.Errorf("fan-out skipped: version_count = 0; want > 0 (%+v)", out.Revalidated)
+	}
+	if out.TubeSpec.WallThicknessMM == nil || *out.TubeSpec.WallThicknessMM != 1.50 {
+		t.Errorf("response wall_thickness_mm = %v, want 1.50", out.TubeSpec.WallThicknessMM)
+	}
+}
+
+// TestPatchTubeSpecAcceptsAllValidTechniques is the parametric pin
+// across the three whitelist values plus the explicit empty-string
+// clear sentinel. Each must round-trip with status 200 and the column
+// must end up at the patched value (or NULL for the clear). Tier 3 #43.
+func TestPatchTubeSpecAcceptsAllValidTechniques(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+
+	cases := []struct {
+		name      string
+		body      string
+		wantValue string // "" means expect NULL
+	}{
+		{"ribbon", `{"bend_technique":"ribbon"}`, "ribbon"},
+		{"crossfire", `{"bend_technique":"crossfire"}`, "crossfire"},
+		{"hand_torch", `{"bend_technique":"hand_torch"}`, "hand_torch"},
+		{"empty-string clears", `{"bend_technique":""}`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := patchTubeSpecRaw(t, client, srv.URL, specID, tc.body)
+			if status/100 != 2 {
+				t.Fatalf("status %d: %s", status, body)
+			}
+			row := fetchTubeSpecRow(t, db, specID)
+			if tc.wantValue == "" {
+				if row.BendTechnique != nil {
+					t.Errorf("technique not cleared: got %v", *row.BendTechnique)
+				}
+			} else {
+				if row.BendTechnique == nil || *row.BendTechnique != tc.wantValue {
+					t.Errorf("technique = %v, want %q", row.BendTechnique, tc.wantValue)
+				}
+			}
+		})
+	}
+}
