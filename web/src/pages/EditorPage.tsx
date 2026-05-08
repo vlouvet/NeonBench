@@ -19,6 +19,8 @@ import PrintPopover, { type PrintPopoverValues } from '../components/PrintPopove
 import ValidationReportView, {
   type SeverityFilter,
 } from '../components/ValidationReportView';
+import { Eye } from '../components/icons/Eye';
+import { Padlock } from '../components/icons/Padlock';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as ops from '../lib/docOps';
@@ -61,12 +63,30 @@ export default function EditorPage() {
   }
   function selectAllRuns() {
     setSelectedRunIds((prev) => {
-      const everyId = (doc?.runs ?? []).map((r) => r.id);
-      // No-op if already-everything selected so we don't churn renders.
-      if (everyId.length === prev.length && everyId.every((id) => prev.includes(id))) {
+      // Tier 3 #33c — Cmd-A only selects runs the operator can see
+      // and click. A hidden run wouldn't visibly land in the
+      // selection (no ring on canvas), and a locked run shouldn't
+      // pick up canvas-driven selection either. Ungrouped runs
+      // (with no group_id) are always eligible. Pre-33b docs don't
+      // have a `groups` array; that branch falls through cleanly to
+      // "every run is eligible".
+      const groupFlags = new Map<string, { visible: boolean; locked: boolean }>();
+      for (const g of doc?.groups ?? []) {
+        groupFlags.set(g.id, { visible: g.visible !== false, locked: !!g.locked });
+      }
+      const eligible = (doc?.runs ?? [])
+        .filter((r) => {
+          if (!r.group_id) return true;
+          const f = groupFlags.get(r.group_id);
+          if (!f) return true;
+          return f.visible && !f.locked;
+        })
+        .map((r) => r.id);
+      // No-op if the eligible set is already exactly the selection.
+      if (eligible.length === prev.length && eligible.every((id) => prev.includes(id))) {
         return prev;
       }
-      return everyId;
+      return eligible;
     });
   }
   // Canvas click handler: routes to replace-or-toggle based on the
@@ -908,6 +928,59 @@ export default function EditorPage() {
     editDoc((prev) => ops.renameGroup(prev, groupId, trimmed));
   }
 
+  // Tier 3 #33c — Layers panel helpers. The visibility toggle also
+  // drops any of the group's runs out of the current selection
+  // (hidden runs can't visibly stay selected — there's no ring on
+  // canvas for a hidden run, so the operator would have a phantom
+  // multi-op target). The lock toggle leaves the selection alone
+  // (lock is click-protect, not display-protect, so a previously-
+  // selected locked run is still meaningfully editable via the
+  // sidebar's color/diameter/Delete affordances).
+  function toggleGroupVisible(groupId: string) {
+    if (!doc) return;
+    const group = (doc.groups ?? []).find((g) => g.id === groupId);
+    if (!group) return;
+    const wasVisible = group.visible !== false;
+    editDoc((prev) => ops.setGroupVisible(prev, groupId, !wasVisible));
+    if (wasVisible) {
+      // Hiding: drop members from the current selection.
+      setSelectedRunIds((prev) => {
+        const memberIds = new Set(
+          (doc.runs ?? [])
+            .filter((r) => r.group_id === groupId)
+            .map((r) => r.id),
+        );
+        const filtered = prev.filter((id) => !memberIds.has(id));
+        return filtered.length === prev.length ? prev : filtered;
+      });
+    }
+  }
+
+  function toggleGroupLocked(groupId: string) {
+    if (!doc) return;
+    const group = (doc.groups ?? []).find((g) => g.id === groupId);
+    if (!group) return;
+    editDoc((prev) => ops.setGroupLocked(prev, groupId, !group.locked));
+    // Selection unchanged — lock is a click-protect, not a
+    // display-protect. A locked-but-selected run still lets the
+    // operator do everything the sidebar offers (color, diameter,
+    // delete), just not pick it via canvas clicks.
+  }
+
+  // Click on a Layers row body picks every run in the group. Bypasses
+  // the lock on purpose — the sidebar is the deliberate escape hatch
+  // so the operator can edit a locked layer's runs through explicit
+  // selection. Hidden groups still select-on-click (the operator may
+  // be about to un-hide and operate on them).
+  function selectGroupMembers(groupId: string) {
+    if (!doc) return;
+    const memberIds = (doc.runs ?? [])
+      .filter((r) => r.group_id === groupId)
+      .map((r) => r.id);
+    if (memberIds.length === 0) return;
+    setSelectedRunIds(memberIds);
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (selectedRunIds.length === 0) return;
     // Tier 3 #33a — apply Douglas-Peucker to each selected run in
@@ -1397,9 +1470,17 @@ export default function EditorPage() {
               as one logical unit. The "Group selected" button stays
               disabled until at least two runs are selected (a one-run
               "group" is meaningless and would just clutter the list).
-              Each existing group exposes inline rename + Dissolve. */}
+              Each existing group exposes inline rename + Dissolve.
+
+              Tier 3 #33c renames this section to "Layers" and adds
+              eye + padlock toggles per group. The icons act as
+              click-protect / display-only toggles; clicking the row
+              body still selects the group's members (Layers sidebar
+              is the deliberate escape hatch that bypasses the lock,
+              so the operator can edit a locked layer's runs through
+              explicit selection). */}
           <div className="groups-header">
-            <h3>Groups ({doc.groups?.length ?? 0})</h3>
+            <h3>Layers ({doc.groups?.length ?? 0})</h3>
             <button
               type="button"
               className="btn-secondary"
@@ -1414,13 +1495,58 @@ export default function EditorPage() {
             <ul className="group-list">
               {(doc.groups ?? []).map((g) => {
                 const memberCount = doc.runs.filter((r) => r.group_id === g.id).length;
+                const visible = g.visible !== false;
+                const locked = !!g.locked;
+                const dimClass = visible ? '' : ' layer-hidden';
+                const lockClass = locked ? ' layer-locked' : '';
                 return (
-                  <li key={g.id} className="group-row">
+                  <li
+                    key={g.id}
+                    className={`group-row layer-row${dimClass}${lockClass}`}
+                  >
                     <button
                       type="button"
-                      className="group-name btn-link"
-                      onClick={() => renameGroupById(g.id)}
-                      title="Click to rename"
+                      className={`layer-icon-btn${visible ? '' : ' off'}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleGroupVisible(g.id);
+                      }}
+                      aria-label={visible ? `Hide layer ${g.name}` : `Show layer ${g.name}`}
+                      aria-pressed={!visible}
+                      title={
+                        visible
+                          ? 'Hide this layer (canvas only — validation, save, PDF still see it).'
+                          : 'Show this layer.'
+                      }
+                    >
+                      <Eye open={visible} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`layer-icon-btn${locked ? ' on' : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleGroupLocked(g.id);
+                      }}
+                      aria-label={locked ? `Unlock layer ${g.name}` : `Lock layer ${g.name}`}
+                      aria-pressed={locked}
+                      title={
+                        locked
+                          ? 'Unlock this layer (canvas clicks pick its runs again).'
+                          : 'Lock this layer (canvas clicks ignore its runs; this sidebar still selects them).'
+                      }
+                    >
+                      <Padlock locked={locked} />
+                    </button>
+                    <button
+                      type="button"
+                      className="group-name btn-link layer-row-body"
+                      onClick={() => selectGroupMembers(g.id)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        renameGroupById(g.id);
+                      }}
+                      title="Click to select this layer's runs; double-click to rename."
                     >
                       {g.name}
                     </button>

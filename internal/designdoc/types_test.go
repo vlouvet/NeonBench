@@ -279,6 +279,122 @@ func TestGroupRoundTrip(t *testing.T) {
 	}
 }
 
+// TestGroupVisibleLockedRoundTrip verifies the new Group.Visible
+// (*bool) and Group.Locked (bool) flags (Tier 3 #33c) survive a
+// JSON round-trip and that omitempty keeps unset flags out of the
+// encoded blob. Visible is a pointer-bool so a nil value (the only
+// shape pre-33c JSON can produce) deserializes as "visible" by
+// convention — see the consumer side in web/src/api.ts and
+// EditorCanvas.tsx.
+func TestGroupVisibleLockedRoundTrip(t *testing.T) {
+	hidden := false
+	visible := true
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Groups: []Group{
+			// Default: no Visible / Locked set. Both should serialize
+			// as omitempty (no keys in the JSON).
+			{ID: "g1", Name: "Default"},
+			// Explicitly hidden + locked.
+			{ID: "g2", Name: "Hidden+Locked", Visible: &hidden, Locked: true},
+			// Explicitly visible (non-nil *true). Round-trips as
+			// {"visible":true} — semantically equivalent to nil but
+			// lets a caller force the field through.
+			{ID: "g3", Name: "ExplicitVisible", Visible: &visible},
+		},
+	}
+
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Default group: no visible / locked keys.
+	if strings.Contains(string(raw), `{"id":"g1","name":"Default","visible"`) {
+		t.Errorf("default group leaked a visible key: %s", raw)
+	}
+	if strings.Contains(string(raw), `{"id":"g1","name":"Default","locked"`) {
+		t.Errorf("default group leaked a locked key: %s", raw)
+	}
+	// Hidden+Locked group should emit both fields with the right values.
+	if !strings.Contains(string(raw), `"visible":false`) {
+		t.Errorf("hidden group missing visible:false in JSON: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"locked":true`) {
+		t.Errorf("locked group missing locked:true in JSON: %s", raw)
+	}
+	// Explicit-visible group should emit visible:true.
+	if !strings.Contains(string(raw), `"visible":true`) {
+		t.Errorf("explicit-visible group missing visible:true in JSON: %s", raw)
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Groups) != 3 {
+		t.Fatalf("unexpected group count: %d", len(got.Groups))
+	}
+	if got.Groups[0].Visible != nil {
+		t.Errorf("default group picked up a Visible pointer: %v", *got.Groups[0].Visible)
+	}
+	if got.Groups[0].Locked {
+		t.Errorf("default group picked up Locked=true")
+	}
+	if got.Groups[1].Visible == nil || *got.Groups[1].Visible != false {
+		t.Errorf("hidden group lost its Visible=*false: %+v", got.Groups[1])
+	}
+	if !got.Groups[1].Locked {
+		t.Errorf("locked group lost its Locked=true")
+	}
+	if got.Groups[2].Visible == nil || *got.Groups[2].Visible != true {
+		t.Errorf("explicit-visible group lost its Visible=*true: %+v", got.Groups[2])
+	}
+}
+
+// TestGroupVisibleBackwardsCompat verifies a pre-33c doc blob (one
+// with Groups but no visible / locked keys) deserializes cleanly:
+// every Group.Visible stays nil (which the consumer interprets as
+// "visible") and Group.Locked stays false. Pins the back-compat
+// promise for any row persisted before this PR.
+func TestGroupVisibleBackwardsCompat(t *testing.T) {
+	old := []byte(`{
+        "version": 1,
+        "view_box_mm": [0, 0, 100, 50],
+        "runs": [
+          {"id": "r1", "group_id": "g1", "polyline": {"points": [[0,0],[10,0]], "closed": false}}
+        ],
+        "groups": [{"id": "g1", "name": "Trim"}]
+      }`)
+	var doc Doc
+	if err := json.Unmarshal(old, &doc); err != nil {
+		t.Fatalf("unmarshal pre-33c doc: %v", err)
+	}
+	if len(doc.Groups) != 1 {
+		t.Fatalf("unexpected shape: %+v", doc)
+	}
+	g := doc.Groups[0]
+	if g.Visible != nil {
+		t.Errorf("pre-33c group picked up Visible=%v from old JSON; expected nil (interpreted as visible)", *g.Visible)
+	}
+	if g.Locked {
+		t.Errorf("pre-33c group picked up Locked=true from old JSON")
+	}
+	// Re-marshal: the encoded form should not contain visible / locked
+	// keys (omitempty kicks in). Pins the "byte-identical for pre-33c
+	// docs" invariant.
+	raw, err := json.Marshal(&doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"visible":`) {
+		t.Errorf("pre-33c doc leaked a visible key after re-marshal: %s", raw)
+	}
+	if strings.Contains(string(raw), `"locked":`) {
+		t.Errorf("pre-33c doc leaked a locked key after re-marshal: %s", raw)
+	}
+}
+
 // TestGroupBackwardsCompat verifies a pre-33b doc blob (no Groups
 // field, no group_id FKs on runs) deserializes cleanly: every
 // Run.GroupID stays "" and Doc.Groups stays nil. Confirms the new

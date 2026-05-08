@@ -692,6 +692,75 @@
   font-size: 0.75rem;
 }
 
+/* Tier 3 #33c — Layers panel. The eye + padlock icon buttons are
+   square-ish, transparent, and dim by default; hover bumps the
+   color so the operator gets a clear "I can click this" signal.
+   Active states (locked = on, hidden = off-eye) are signaled by
+   a stronger color via the .on / .off modifier classes. The row
+   body button (.layer-row-body) reuses the same .group-name
+   look-and-feel; .layer-row inherits .group-row layout with one
+   override: the row-body button stretches into the available
+   horizontal space so the click target spans the row.
+
+   Hidden layers (.layer-hidden) and locked layers (.layer-locked)
+   dim the row label at 50% opacity so the state reads at a
+   glance. The icons stay full-opacity inside the dimmed row
+   (otherwise they'd be invisible) by way of the explicit
+   `opacity: 1` rule on the icon button. */
+.layer-row .layer-icon-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.125rem 0.25rem;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted, #6b7280);
+  cursor: pointer;
+  line-height: 0;
+  opacity: 1;
+}
+.layer-row .layer-icon-btn:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+.layer-row .layer-icon-btn.on {
+  /* Lock-on / explicit-visible-on: pull color toward the page
+     accent so the active state is visually distinct from the
+     default off state. */
+  color: var(--text);
+}
+.layer-row .layer-icon-btn.off {
+  /* Eye-off: dimmer text color so the closed-eye reads as
+     "currently inactive" without needing a different SVG. */
+  color: var(--muted, #9ca3af);
+}
+.layer-row .layer-row-body {
+  flex: 1 1 auto;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+.layer-row .layer-row-body:hover {
+  text-decoration: underline;
+}
+.layer-row.layer-hidden .layer-row-body,
+.layer-row.layer-hidden .meta {
+  opacity: 0.5;
+}
+.layer-row.layer-locked .layer-row-body,
+.layer-row.layer-locked .meta {
+  opacity: 0.7;
+  font-style: italic;
+}
+
+
 /* Tier 3 #33a — drag-drop image upload overlay on ProjectDetail.
    Mirrors the .drop-overlay treatment from Tier 3 #22's bundle drop
    on the project list, but uses .project-detail-section as the

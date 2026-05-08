@@ -1758,6 +1758,141 @@ describe('group ops', () => {
   });
 });
 
+// Tier 3 #33c — Layers panel ops (setGroupVisible / setGroupLocked).
+// Both flags are display-only filters carried on Doc.Groups; the canvas
+// honors them but validation / save / PDF / DXF do not. These tests pin
+// the value-shape contract (undefined vs explicit false), the no-op
+// invariants (missing groupId, unchanged value), and the JSON
+// back-compat promise (pre-33c group literal interpreted as visible).
+describe('layer visibility + lock ops', () => {
+  function twoGroupDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 50],
+      runs: [
+        {
+          id: 'r1',
+          group_id: 'g1',
+          polyline: { points: [[0, 0], [10, 0]], closed: false },
+        },
+        {
+          id: 'r2',
+          group_id: 'g1',
+          polyline: { points: [[0, 5], [10, 5]], closed: false },
+        },
+        {
+          id: 'r3',
+          group_id: 'g2',
+          polyline: { points: [[0, 10], [10, 10]], closed: false },
+        },
+      ],
+      groups: [
+        { id: 'g1', name: 'Trim' },
+        { id: 'g2', name: 'Strokes' },
+      ],
+    };
+  }
+
+  it('setGroupVisible(false) writes visible:false on the target group', () => {
+    const before = twoGroupDoc();
+    const after = ops.setGroupVisible(before, 'g1', false);
+    expect(after.groups?.[0].visible).toBe(false);
+    expect(after.groups?.[1].visible).toBeUndefined();
+    // Other state (name, runs, FKs) untouched.
+    expect(after.groups?.[0].name).toBe('Trim');
+    expect(after.runs).toBe(before.runs); // same reference (immutable)
+  });
+
+  it('setGroupVisible(true) drops the visible field entirely', () => {
+    let doc = twoGroupDoc();
+    doc = ops.setGroupVisible(doc, 'g1', false);
+    expect(doc.groups?.[0].visible).toBe(false);
+    doc = ops.setGroupVisible(doc, 'g1', true);
+    expect(doc.groups?.[0].visible).toBeUndefined();
+    // Round-trip: re-marshal should not leak a visible:true key.
+    expect(JSON.stringify(doc.groups?.[0])).not.toContain('"visible"');
+  });
+
+  it('setGroupVisible no-ops on missing groupId', () => {
+    const before = twoGroupDoc();
+    expect(ops.setGroupVisible(before, '', false)).toBe(before);
+    expect(ops.setGroupVisible(before, 'gZ', false)).toBe(before);
+  });
+
+  it('setGroupVisible no-ops when the value is unchanged', () => {
+    const before = twoGroupDoc();
+    // unchanged: visible was already undefined; setting visible=true
+    // is the same shape and should short-circuit.
+    expect(ops.setGroupVisible(before, 'g1', true)).toBe(before);
+    const hidden = ops.setGroupVisible(before, 'g1', false);
+    expect(ops.setGroupVisible(hidden, 'g1', false)).toBe(hidden);
+  });
+
+  it('setGroupLocked writes locked:true and drops the key on false', () => {
+    let doc = twoGroupDoc();
+    doc = ops.setGroupLocked(doc, 'g2', true);
+    expect(doc.groups?.[1].locked).toBe(true);
+    // Round-trip-clean encode of the unlocked group.
+    expect(JSON.stringify(doc.groups?.[0])).not.toContain('"locked"');
+    doc = ops.setGroupLocked(doc, 'g2', false);
+    expect(doc.groups?.[1].locked).toBeUndefined();
+    expect(JSON.stringify(doc.groups?.[1])).not.toContain('"locked"');
+  });
+
+  it('setGroupLocked no-ops on missing groupId / unchanged value', () => {
+    const before = twoGroupDoc();
+    expect(ops.setGroupLocked(before, '', true)).toBe(before);
+    expect(ops.setGroupLocked(before, 'gZ', true)).toBe(before);
+    // Unchanged: locked was already undefined (i.e. false); set false
+    // again should short-circuit.
+    expect(ops.setGroupLocked(before, 'g1', false)).toBe(before);
+  });
+
+  it('setGroupVisible and setGroupLocked are independent', () => {
+    let doc = twoGroupDoc();
+    doc = ops.setGroupVisible(doc, 'g1', false);
+    doc = ops.setGroupLocked(doc, 'g1', true);
+    expect(doc.groups?.[0].visible).toBe(false);
+    expect(doc.groups?.[0].locked).toBe(true);
+    // Toggling lock off doesn't restore visibility.
+    doc = ops.setGroupLocked(doc, 'g1', false);
+    expect(doc.groups?.[0].visible).toBe(false);
+    expect(doc.groups?.[0].locked).toBeUndefined();
+  });
+
+  it('JSON round-trip preserves visible:false and locked:true', () => {
+    let doc = twoGroupDoc();
+    doc = ops.setGroupVisible(doc, 'g1', false);
+    doc = ops.setGroupLocked(doc, 'g2', true);
+    const round = JSON.parse(JSON.stringify(doc)) as DesignDoc;
+    expect(round.groups?.[0].visible).toBe(false);
+    expect(round.groups?.[0].locked).toBeUndefined();
+    expect(round.groups?.[1].visible).toBeUndefined();
+    expect(round.groups?.[1].locked).toBe(true);
+  });
+
+  it('loads a pre-33c doc literal: groups with no visible/locked → treated as visible+unlocked', () => {
+    // Hand-written pre-33c JSON shape — Doc.Groups exists (33b
+    // shipped) but no visible / locked keys. Consumers must treat
+    // visible===undefined as "visible" (the back-compat invariant).
+    const old = JSON.parse(`{
+      "version": 1,
+      "view_box_mm": [0, 0, 100, 50],
+      "runs": [
+        {"id": "r1", "group_id": "g1", "polyline": {"points": [[0,0],[10,0]], "closed": false}}
+      ],
+      "groups": [{"id": "g1", "name": "Trim"}]
+    }`) as DesignDoc;
+    expect(old.groups?.[0].visible).toBeUndefined();
+    expect(old.groups?.[0].locked).toBeUndefined();
+    // The setGroupVisible(true) op against the pre-33c literal is a
+    // no-op (already visible); setGroupVisible(false) writes through.
+    expect(ops.setGroupVisible(old, 'g1', true)).toBe(old);
+    const hidden = ops.setGroupVisible(old, 'g1', false);
+    expect(hidden.groups?.[0].visible).toBe(false);
+  });
+});
+
 // Tier 3 #48 — multi-vertex select + drag follow-up. moveVertices
 // applies a batch of (pointIndex → XY) writes in one op so a node-edit
 // drag of N selected vertices stays one undo-stack entry. Out-of-range

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { DesignDoc, DesignRun, ValidationIssue } from '../api';
+import { isGroupVisible } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
@@ -224,6 +225,35 @@ export default function EditorCanvas({
     [selectedRunIds],
   );
 
+  // Tier 3 #33c — per-run flags from the Layers panel. `hidden` skips
+  // the run from the canvas render entirely (the polyline isn't even
+  // emitted, so there's no SVG node to hit-test). `locked` keeps the
+  // run rendered but sets `pointer-events: none` on its hit-target
+  // path AND excludes it from any nearest-run hit-test the canvas
+  // runs in pointer handlers. Both flags are display-only — neither
+  // affects validation, save, PDF, or DXF output.
+  //
+  // Lookup is by group_id → group; ungrouped runs are always visible
+  // and never locked (they have no group entry to flag). The map is
+  // memoized on `doc.groups` so a polyline edit doesn't churn it.
+  const groupFlagMap = useMemo(() => {
+    const map = new Map<string, { visible: boolean; locked: boolean }>();
+    for (const g of doc.groups ?? []) {
+      map.set(g.id, { visible: isGroupVisible(g), locked: !!g.locked });
+    }
+    return map;
+  }, [doc.groups]);
+  const isRunVisible = (run: DesignRun): boolean => {
+    if (!run.group_id) return true;
+    const flags = groupFlagMap.get(run.group_id);
+    return flags ? flags.visible : true;
+  };
+  const isRunLocked = (run: DesignRun): boolean => {
+    if (!run.group_id) return false;
+    const flags = groupFlagMap.get(run.group_id);
+    return flags ? flags.locked : false;
+  };
+
   // Tier 3 #33b — group outlines. For each group with 2+ members,
   // compute the axis-aligned bbox enclosing every member's polyline
   // points and emit a pale dashed rectangle so the operator can see
@@ -232,9 +262,13 @@ export default function EditorCanvas({
   // already covers it. Re-runs only when `doc.runs` or `doc.groups`
   // changes (run polyline edits invalidate the bbox; group rename
   // doesn't but is cheap to recompute).
+  //
+  // Tier 3 #33c — hidden groups are skipped from the bbox draw too
+  // (no point in marking the bounds of an invisible cluster).
   const groupBBoxes = useMemo(() => {
     const out: { id: string; minX: number; minY: number; maxX: number; maxY: number }[] = [];
     for (const g of doc.groups ?? []) {
+      if (!isGroupVisible(g)) continue;
       const members = doc.runs.filter((r) => r.group_id === g.id);
       if (members.length < 2) continue;
       let minX = Infinity;
@@ -938,7 +972,13 @@ export default function EditorCanvas({
             // Probe every open run's endpoints (and closed-run cases
             // for self-join). Skip the armed endpoint itself — joining
             // an end to itself is a no-op.
+            //
+            // Tier 3 #33c — hidden + locked runs are skipped: a hidden
+            // run can't be a join target (no visual handle to aim at),
+            // and a locked run shouldn't accept canvas-driven edits.
             for (const run of doc.runs) {
+              if (!isRunVisible(run)) continue;
+              if (isRunLocked(run)) continue;
               const n = run.polyline.points.length;
               if (n < 2) continue;
               if (run.polyline.closed && run.id !== joinArm.runId) continue;
@@ -995,6 +1035,10 @@ export default function EditorCanvas({
         let bestIdx: number | null = null;
         let bestD = snap * snap;
         for (const run of doc.runs) {
+          // Tier 3 #33c — hidden + locked runs don't accept break-open
+          // hovers / clicks. Skip them entirely from the snap probe.
+          if (!isRunVisible(run)) continue;
+          if (isRunLocked(run)) continue;
           for (let i = 0; i < run.polyline.points.length; i++) {
             const p = run.polyline.points[i];
             const dx = p[0] - w[0];
@@ -1518,10 +1562,17 @@ export default function EditorCanvas({
   // canvas already does the same in nearestPointIndex for electrode
   // placement); for typical signs (≤ a few thousand vertices total)
   // this is well under a millisecond.
+  //
+  // Tier 3 #33c — hidden + locked runs are skipped so a background
+  // click can't pick a run that the canvas is hiding or click-
+  // protecting. The Layers sidebar still lets the user select locked
+  // members on purpose (sidebar bypasses the lock).
   function nearestRunId(target: [number, number]): string | null {
     let bestId: string | null = null;
     let bestD = Infinity;
     for (const run of doc.runs) {
+      if (!isRunVisible(run)) continue;
+      if (isRunLocked(run)) continue;
       for (const p of run.polyline.points) {
         const dx = p[0] - target[0];
         const dy = p[1] - target[1];
@@ -1586,6 +1637,12 @@ export default function EditorCanvas({
             );
           })}
           {doc.runs.map((run) => {
+            // Tier 3 #33c — hidden groups skip rendering entirely. No
+            // polyline, no electrodes, no blockouts, no selection ring.
+            // Validation / save / PDF / DXF still see the run; this
+            // is a *display* filter only.
+            if (!isRunVisible(run)) return null;
+            const locked = isRunLocked(run);
             const selected = primarySelectedRunIdSet.has(run.id);
             const arcs = runArcs(run);
             const inactiveD = arcs.inactive.length > 1
@@ -1620,7 +1677,12 @@ export default function EditorCanvas({
                     d={liveD}
                     stroke="#ff3b6b"
                     strokeWidth={3.2 / transform.k}
-                    strokeOpacity={0.35}
+                    // Locked-but-selected runs (selection survives a
+                    // lock toggle — see EditorPage's selection invariants)
+                    // render the halo at 50% the normal opacity so the
+                    // user sees at a glance that further canvas clicks
+                    // won't pick this run.
+                    strokeOpacity={locked ? 0.18 : 0.35}
                     fill="none"
                     pointerEvents="none"
                   />
@@ -1629,14 +1691,20 @@ export default function EditorCanvas({
                     so SVG hit-tests it regardless of paint. Wide enough
                     that clicks don't have to land on the 1px visible line.
                     Layered under the visible strokes so the latter render
-                    on top. */}
+                    on top.
+
+                    Tier 3 #33c — locked-group runs disable pointer-events
+                    here so canvas clicks fall through to whatever is
+                    behind. The Layers sidebar bypasses the lock with its
+                    own click handler, so the operator can still select
+                    locked-group members on purpose. */}
                 <path
                   d={liveD}
                   stroke="black"
                   strokeOpacity={0}
                   strokeWidth={hitWidth}
                   fill="none"
-                  pointerEvents="stroke"
+                  pointerEvents={locked ? 'none' : 'stroke'}
                   onClick={(e) => onRunClick(e, run)}
                   onPointerMove={(e) => onRunPointerMoveForDB(e, run)}
                   onPointerLeave={() => {
@@ -1985,8 +2053,15 @@ export default function EditorCanvas({
                  see the candidate jumper before committing. */}
           {tool === 'connect' && (
             <g pointerEvents="none">
-              {doc.runs.flatMap((run) =>
-                (run.electrodes ?? []).map((e, ei) => {
+              {doc.runs.flatMap((run) => {
+                // Tier 3 #33c — hidden runs aren't drawn, so their
+                // electrodes shouldn't show as connect-tool targets.
+                // Locked runs are still picked here: connecting two
+                // already-laid-out tube ends doesn't break the lock
+                // model (the lock is a click-protect, not an edit-
+                // protect; click is *via this overlay* on purpose).
+                if (!isRunVisible(run)) return [];
+                return (run.electrodes ?? []).map((e, ei) => {
                   const p = run.polyline.points[e.point_index];
                   if (!p) return null;
                   const isStaged =
@@ -2019,8 +2094,8 @@ export default function EditorCanvas({
                       strokeOpacity={isStaged ? 0.95 : isHov ? 0.85 : 0.55}
                     />
                   );
-                }),
-              )}
+                });
+              })}
               {connectStaged !== null && connectHover !== null && (() => {
                 const run = doc.runs.find((r) => r.id === connectStaged.runId);
                 const electrode = run?.electrodes?.[connectStaged.electrodeIndex];
@@ -2042,8 +2117,15 @@ export default function EditorCanvas({
               })()}
             </g>
           )}
-          {doc.runs.flatMap((run) =>
-            (run.electrodes ?? []).map((e, ei) => {
+          {doc.runs.flatMap((run) => {
+            // Tier 3 #33c — hidden runs render no electrode markers.
+            // Locked runs DO show electrode markers (so the user can
+            // see the existing tube layout) but those markers ignore
+            // canvas clicks for selection — see ElectrodeMarker's
+            // own pointer-events handling below.
+            if (!isRunVisible(run)) return [];
+            const lockedRun = isRunLocked(run);
+            return (run.electrodes ?? []).map((e, ei) => {
               const p = run.polyline.points[e.point_index];
               if (!p) return null;
               const isHovered =
@@ -2056,10 +2138,10 @@ export default function EditorCanvas({
                   x={p[0]}
                   y={p[1]}
                   sizeMM={markerSizeMM}
-                  showGear={isHovered && !!onElectrodeContextMenu}
-                  onClick={(ev) => onElectrodeClick(ev, run.id, ei)}
+                  showGear={isHovered && !!onElectrodeContextMenu && !lockedRun}
+                  onClick={lockedRun ? undefined : (ev) => onElectrodeClick(ev, run.id, ei)}
                   onContextMenu={
-                    onElectrodeContextMenu
+                    onElectrodeContextMenu && !lockedRun
                       ? (ev) => {
                           ev.preventDefault();
                           ev.stopPropagation();
@@ -2067,20 +2149,26 @@ export default function EditorCanvas({
                         }
                       : undefined
                   }
-                  onPointerEnter={() =>
-                    setHoveredElectrode({ runId: run.id, electrodeIndex: ei })
+                  onPointerEnter={
+                    lockedRun
+                      ? undefined
+                      : () => setHoveredElectrode({ runId: run.id, electrodeIndex: ei })
                   }
-                  onPointerLeave={() => {
-                    setHoveredElectrode((prev) =>
-                      prev && prev.runId === run.id && prev.electrodeIndex === ei
-                        ? null
-                        : prev,
-                    );
-                  }}
+                  onPointerLeave={
+                    lockedRun
+                      ? undefined
+                      : () => {
+                          setHoveredElectrode((prev) =>
+                            prev && prev.runId === run.id && prev.electrodeIndex === ei
+                              ? null
+                              : prev,
+                          );
+                        }
+                  }
                 />
               );
-            }),
-          )}
+            });
+          })}
           {primarySelectedRunId &&
             (() => {
               const run = doc.runs.find((r) => r.id === primarySelectedRunId);
@@ -2163,6 +2251,12 @@ export default function EditorCanvas({
               const armed = joinArm;
               if (armed) {
                 for (const run of doc.runs) {
+                  // Tier 3 #33c — don't render endpoint join handles
+                  // for hidden / locked runs; the lock blocks join
+                  // selection on canvas, and there's nothing to aim
+                  // at on a hidden run.
+                  if (!isRunVisible(run)) continue;
+                  if (isRunLocked(run)) continue;
                   if (run.polyline.closed && run.id !== armed.runId) continue;
                   const n = run.polyline.points.length;
                   if (n < 2) continue;
@@ -2394,7 +2488,11 @@ function ElectrodeMarker({
   x: number;
   y: number;
   sizeMM: number;
-  onClick: (e: React.MouseEvent) => void;
+  // Tier 3 #33c — onClick is optional so locked-group electrodes can
+  // render the marker (a visual reference for the operator) without
+  // accepting canvas-driven clicks. The Layers sidebar stays the
+  // explicit selection entry-point in that case.
+  onClick?: (e: React.MouseEvent) => void;
   onContextMenu?: (e: React.MouseEvent) => void;
   onPointerEnter?: () => void;
   onPointerLeave?: () => void;
@@ -2402,6 +2500,7 @@ function ElectrodeMarker({
 }) {
   const r = sizeMM / 2;
   const points = `${x},${y - r} ${x + r},${y} ${x},${y + r} ${x - r},${y}`;
+  const interactive = !!onClick;
   // The gear icon sits to the upper-right of the marker so it doesn't
   // overlap the diamond (or its hit-area). Sized at ~70% of the marker
   // so it reads as a "secondary affordance" rather than competing for
@@ -2420,7 +2519,11 @@ function ElectrodeMarker({
         onContextMenu={onContextMenu}
         onPointerEnter={onPointerEnter}
         onPointerLeave={onPointerLeave}
-        style={{ cursor: 'pointer' }}
+        // Locked-group electrode markers don't pick up clicks. Setting
+        // pointer-events: none here is enough — the Layers sidebar is
+        // the deliberate escape hatch for selecting locked-group runs.
+        pointerEvents={interactive ? undefined : 'none'}
+        style={{ cursor: interactive ? 'pointer' : 'default' }}
       >
         <title>
           {onContextMenu

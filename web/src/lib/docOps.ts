@@ -1975,3 +1975,68 @@ export function renameGroup(
   next[idx] = { ...next[idx], name: newName };
   return { ...doc, groups: next };
 }
+
+// setGroupVisible toggles the display-only `visible` flag on one
+// group (Tier 3 #33c). No-op for missing groupId so the sidebar's
+// eye-toggle can fire safely against a stale UI snapshot. Setting
+// the flag to its only-meaningful "false" value writes through;
+// setting it to "true" deletes the field entirely (encoded JSON
+// stays clean — undefined / nil-pointer is the back-compat
+// "visible" semantic). Validation, save, PDF, DXF all ignore this
+// field — it's a *display* filter, not a doc filter.
+export function setGroupVisible(
+  doc: DesignDoc,
+  groupId: string,
+  visible: boolean,
+): DesignDoc {
+  if (!groupId) return doc;
+  const groups = doc.groups ?? [];
+  const idx = groups.findIndex((g) => g.id === groupId);
+  if (idx < 0) return doc;
+  // Normalize: visible=true → undefined (drop the key) so re-marshal
+  // matches the back-compat shape; visible=false → explicit false.
+  const current = groups[idx].visible;
+  const wantFlag = visible ? undefined : false;
+  if (current === wantFlag) return doc;
+  // Treat undefined === undefined (the same-value short-circuit) so
+  // toggling visible=true on an unset flag is a no-op (no spurious
+  // undo entry).
+  if (current === undefined && wantFlag === undefined) return doc;
+  const next = groups.slice();
+  const replacement: Group = { ...next[idx] };
+  if (wantFlag === undefined) {
+    delete replacement.visible;
+  } else {
+    replacement.visible = wantFlag;
+  }
+  next[idx] = replacement;
+  return { ...doc, groups: next };
+}
+
+// setGroupLocked toggles the click-protect `locked` flag on one
+// group (Tier 3 #33c). No-op for missing groupId. Locked is a
+// plain bool (no "default-true" pointer trick — false is the
+// natural default for a fresh group), so we just write the value
+// through and drop the key when it's the zero value to keep
+// re-marshal clean.
+export function setGroupLocked(
+  doc: DesignDoc,
+  groupId: string,
+  locked: boolean,
+): DesignDoc {
+  if (!groupId) return doc;
+  const groups = doc.groups ?? [];
+  const idx = groups.findIndex((g) => g.id === groupId);
+  if (idx < 0) return doc;
+  const current = !!groups[idx].locked;
+  if (current === locked) return doc;
+  const next = groups.slice();
+  const replacement: Group = { ...next[idx] };
+  if (locked) {
+    replacement.locked = true;
+  } else {
+    delete replacement.locked;
+  }
+  next[idx] = replacement;
+  return { ...doc, groups: next };
+}
