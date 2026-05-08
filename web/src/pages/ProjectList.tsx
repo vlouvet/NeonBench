@@ -2,14 +2,30 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api, type Project, type TubeSpec } from '../api';
 import { isOverdue } from '../lib/dueDate';
+import BundlePreviewModal from '../components/BundlePreviewModal';
+import {
+  DEFAULT_FILTERS,
+  filtersToSearchParams,
+  resolveInitialFilters,
+  saveStoredFilters,
+  type ListFilters,
+  type SortMode,
+} from '../lib/listFilters';
 
-// SortMode controls the order of the rendered project list.
-//   'updated' — server's natural recency order (descending updated_at).
-//   'due'     — ascending due_date with empty/invalid dates pushed to the
-//               end; ties break by recency so two same-day jobs still
-//               surface the most-recently-touched one first.
-//   'name'    — case-insensitive ascending by display name.
-type SortMode = 'updated' | 'due' | 'name';
+// Search-debounce window for URL + localStorage writes. Matches the
+// "type, pause briefly, then commit" feel users get from native search
+// fields. The state itself updates on every keystroke (so filtering
+// stays live); only the persisted copy is debounced.
+const SEARCH_PERSIST_DEBOUNCE_MS = 250;
+
+// "Hide completed" checkbox is deferred. Tier 3 #38c originally
+// asked for one alongside the sort/search persistence, but the
+// Project type (web/src/api.ts) has no is_completed / completed_at
+// flag yet, and CLAUDE.md routes new schema columns through the
+// user. Once a flag exists, wire it through listFilters.ts (add
+// ?completed=hide and a corresponding storage field) and add the
+// checkbox here. Until then the URL/localStorage shape only carries
+// sort + q, so future readers can extend without a migration.
 
 // parseDueKey turns a project's due_date into a sortable number. Empty /
 // unparseable values map to +Infinity so they sink to the end of the
@@ -44,12 +60,24 @@ export default function ProjectList() {
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   const [dragActive, setDragActive] = useState(false);
-  // Tier 3 #23: client-side sort + search state. No URL/localStorage
-  // persistence in V1 — the list is small enough that re-typing on each
-  // page load is fine, and skipping persistence keeps the surface area
-  // tight. Promoting either to a stored preference is a follow-up.
-  const [query, setQuery] = useState('');
-  const [sortMode, setSortMode] = useState<SortMode>('updated');
+  // Tier 3 #38c: client-side sort + search state, persisted to URL +
+  // localStorage. Initial values are resolved on first render: URL >
+  // localStorage > defaults. SSR-safe initialiser (window guards for
+  // `typeof`) so vitest / Node imports don't crash. Computed once on
+  // mount; subsequent navigations stay in-tab because we never
+  // unmount this page within a session, so we don't track
+  // window.location.search as a dep (the same reason useState's lazy
+  // initialiser would be appropriate here).
+  const initialFilters = useMemo<ListFilters>(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_FILTERS };
+    return resolveInitialFilters(window.location.search, window.localStorage);
+  }, []);
+  const [query, setQuery] = useState(initialFilters.q);
+  const [sortMode, setSortMode] = useState<SortMode>(initialFilters.sort);
+  // Pre-import preview file. Set when a drop / file-picker hands us a
+  // bundle; the modal owns the Cancel/Confirm handoff. Importing only
+  // starts when the user clicks Import in the modal.
+  const [pendingBundle, setPendingBundle] = useState<File | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   // dragenter fires on the parent AND on each child as the cursor
   // crosses it; without a counter, dragleave from the parent flips
@@ -66,6 +94,35 @@ export default function ProjectList() {
       })
       .catch((e: Error) => setError(e.message));
   }, []);
+
+  // Persist filter state. URL updates immediately on sort change but
+  // is debounced for query keystrokes — otherwise every character
+  // would push a new history entry (or, with replaceState, thrash the
+  // History API). LocalStorage is written on the same cadence so the
+  // two stay in lockstep.
+  //
+  // The dependency array intentionally lists `query` and `sortMode`
+  // (not `initialFilters`) because we want this to run on every user
+  // edit, not just on mount.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const filters: ListFilters = { sort: sortMode, q: query };
+    const handle = window.setTimeout(() => {
+      const params = filtersToSearchParams(filters);
+      const search = params.toString();
+      // Use replaceState so the browser back-button still walks
+      // between PROJECTS the user actually visited, not every typed
+      // character of a search query. Path stays put (no hash either),
+      // so deep-linking from elsewhere keeps working.
+      const next = search ? `${window.location.pathname}?${search}` : window.location.pathname;
+      const current = `${window.location.pathname}${window.location.search}`;
+      if (next !== current) {
+        window.history.replaceState(null, '', next);
+      }
+      saveStoredFilters(window.localStorage, filters);
+    }, SEARCH_PERSIST_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [query, sortMode]);
 
   async function handleDelete(p: Project) {
     const ok = window.confirm(
@@ -103,13 +160,16 @@ export default function ProjectList() {
     }
   }
 
-  async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     // Reset the input straight away so picking the same file twice in a
     // row still fires onChange. Otherwise React drops the second pick.
     e.target.value = '';
     if (!file) return;
-    await runImport(file);
+    // Route through the preview modal — same path as the drop handler
+    // — so both entry points get the cancel-before-import gate.
+    setError(null);
+    setPendingBundle(file);
   }
 
   function onDragEnter(e: React.DragEvent<HTMLElement>) {
@@ -158,7 +218,11 @@ export default function ProjectList() {
       setError(`Drop a .neonbench file. That looked like a ${ext || file.type || 'non-bundle file'}.`);
       return;
     }
-    void runImport(file);
+    // Hand off to the preview modal; the actual POST waits for the
+    // user to confirm. Cancel disposes the file (a fresh drop
+    // re-opens the modal with the new selection).
+    setError(null);
+    setPendingBundle(file);
   }
 
   // Tier 3 #23: derive the visible list. Filter first, then sort. The
@@ -324,6 +388,19 @@ export default function ProjectList() {
           onCreated={(p) => {
             setCreating(false);
             setProjects((prev) => (prev ? [p, ...prev] : [p]));
+          }}
+        />
+      )}
+      {pendingBundle && (
+        <BundlePreviewModal
+          file={pendingBundle}
+          onCancel={() => setPendingBundle(null)}
+          onConfirm={(file) => {
+            // Drop the modal first so the importing-state spinner on
+            // the page is visible — the modal would otherwise sit on
+            // top of it while the POST runs.
+            setPendingBundle(null);
+            void runImport(file);
           }}
         />
       )}
