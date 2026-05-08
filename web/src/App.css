@@ -966,12 +966,55 @@
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
 }
+.vp-auto-rotate-alt {
+  white-space: nowrap;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+}
 .vp-auto-rotate-hint {
   display: block;
   margin-top: 0.25rem;
   font-size: 0.75rem;
   color: var(--muted);
   font-style: italic;
+}
+/* Tier 3 #39 — sticky auto-rotate confidence badge. Persists past the
+   transient hint timeout so the user can re-summon the cached suggestion
+   long after the toast fades. Click to re-apply. */
+.vp-auto-rotate-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.7rem;
+  font-family: inherit;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.vp-auto-rotate-badge:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* Tier 3 #39 — per-channel RGB luminance weight sliders. Visible only
+   for raster sources (the panel skips this whole block for SVGs). */
+.vp-rgb-mix {
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  padding: 0.5rem 0.75rem;
+  margin-top: 0.5rem;
+}
+.vp-rgb-mix legend {
+  font-size: 0.8rem;
+  color: var(--muted);
+  padding: 0 0.25rem;
+}
+.vp-rgb-reset {
+  margin-top: 0.5rem;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
 }
 
 /* Tier 3 #23 — job-tracking polish (project-list controls, overdue
