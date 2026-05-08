@@ -180,7 +180,7 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
-| Neon Design Tools | 11 | 1 | 11 | 0 |
+| Neon Design Tools | 11 | 1 | 7 | 4 |
 | Fonts & Text | 0 | 3 | 15 | 0 |
 | Design Tools | 5 | 4 | 30 | 3 |
 | Effects | 0 | 0 | 13 | 0 |
@@ -189,34 +189,34 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Cutting/Plotting/Printing | 5 | 1 | 3 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **32** | **13** | **88** | **15** |
+| **Totals** | **32** | **13** | **84** | **19** |
 
-Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡 (whole-design preview ships; per-group scoping waits on the multi-select/groups model in Tier 3 #33). Cumulative ✅ has gone **30 → 31 → 32** since the Tier 2 close-out; 🟡 nudged to 13.
+Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡. The post-Phase 3 Neon Design Tools audit (Tier 3 #60–#63 spec drafts) reclassified four rows ❌ → 🚫 (Tier 4) — **#121 Mounting Holes**, **#134 Switch Drop / Flat Blend**, **#136 Tube Support Holes**, **#137 Auto Tube Count**, **#138 Auto Spacing** — as either out of NeonBench's scope or already covered by shipped functionality (Neonize / "support" annotations). Cumulative ✅ has gone **30 → 31 → 32** since the Tier 2 close-out; 🟡 sits at 13; 🚫 grew **15 → 19**.
 
 ### Neon Design Tools (the core — 23 features)
 
 | # | NeonWizard feature | Status | NeonBench equivalent |
 |---|---|---|---|
 | 119 | Add Blockouts | ✅ | blockout marking, dashed render, `data-kind="blockout"` |
-| 120 | Add Common Housings | ❌ | electrodes placed, no housing geometry |
-| 121 | Add Mounting Holes | ❌ | |
+| 120 | Add Common Housings | ❌ | spec drafted (Tier 3 #62, NW #120 + #126 combined): adds Electrode.HousingType + bore + elevation + 15-shell/19-shell stock library |
+| 121 | Add Mounting Holes | 🚫 | Tier 4 — substrate-fastening hardware, not neon-production. Move to graphic-design tooling if a shop ever asks |
 | 122 | Add Tube Supports | ✅ | click-to-place support markers |
 | 123 | Auto Tube Layout | ✅ | Neonize sidebar action emits inside + outside parallel offsets at user-set spacing (PR #26) |
 | 124 | Change Neon Tube Diameter Only | ✅ | per-run diameter override, scales bend-radius validation |
-| 125 | Connect Tubes | ❌ | |
-| 126 | Create Custom Housings | ❌ | |
+| 125 | Connect Tubes | ❌ | spec drafted (Tier 3 #60): jumper-run polylines between two electrode endpoints, dashed render, JUMPER label, kind="jumper" flag |
+| 126 | Create Custom Housings | ❌ | covered by Tier 3 #62 spec alongside #120 — same data model, custom tab in housing picker modal |
 | 127 | Current Tube / Total Length | ✅ | live status badge in editor header |
 | 128 | Insert Doublebacks | ✅ | "Insert DB" tool splices 4 vertices for a hairpin U at click point; default 1.5× ø depth + 1.0× ø gap (PR #18) |
 | 129 | Maximum Tube Length | ✅ | validation rule + arc-midpoint flag |
-| 130 | Move Opening / Break Tube Open | ❌ | path split/join is on Phase 2 todo |
+| 130 | Move Opening / Break Tube Open | ❌ | spec drafted (Tier 3 #61): breakOpen + moveOpening docOps + canvas tool; reuses live-arc-relative index invariants from PR #44 |
 | 131 | Neonize (outline → tube path) | ✅ | Closed-polyline angle-bisector offset with miter clamp; default spacing 2× tube diameter (PR #26) |
 | 132 | Neon Summary | ✅ | bend-list PDF page per run |
-| 133 | Raceway Support | ❌ | |
-| 134 | Switch Drop / Flat Blend | ❌ | |
+| 133 | Raceway Support | ❌ | deferred — NW's intent is ambiguous (validation rule vs. hardware spec model). Revisit after gathering more trade context from a shop using NW today |
+| 134 | Switch Drop / Flat Blend | 🚫 | Tier 4 — terminology not in any source PDF (Miller / Strattman / Saving Neon / Blazek). May be a NW-specific 3D bend-mode that NeonBench's 2D pattern model doesn't need |
 | 135 | Tube End Gap | ✅ | Per-project optional setting, default 6.35mm; stored, displayed, in PDF footer (PR #19) |
-| 136 | Tube Support Holes | ❌ | |
-| 137 | Neon Auto Tube Count | ❌ | |
-| 138 | Neon Auto Spacing | ❌ | |
+| 136 | Tube Support Holes | 🚫 | Tier 4 — already-shipped "support" annotations (NW #122 ✅) cover the location need; per-hole hardware geometry is graphic-design polish, not production-blocking |
+| 137 | Neon Auto Tube Count | 🚫 | Tier 4 — single vs. double-stroke is a design choice, not auto-detected. Trade docs are silent. Revisit if a shop specifically requests bitmap-inferred layout |
+| 138 | Neon Auto Spacing | 🚫 | Tier 4 — already covered by Neonize's 2× ø default (PR #26). NW's auto-spacing likely a per-diameter table; revisit only if Neonize defaults prove insufficient |
 | 139 | Neon Preview (glow) | ✅ | three.js + react-three-fiber preview route renders extruded tubes with emissive gas materials, bloom post-processing, electrode caps, blockout sleeves, orbit camera with preset views, scene chrome + screenshot export (PRs #57–63) |
 | 140 | Neon Preview for Groups | 🟡 | whole-design preview ships in PRs #57–63; per-group scoped preview waits on multi-select / groups model (Tier 3 #33) |
 | 141 | Parallel Tube Layout | ✅ | Same op as Neonize — emits inside + outside runs from a closed source (PR #26) |
@@ -349,6 +349,10 @@ This list collapses todo.md gaps + NW parity findings into a single shop-readine
 57. **Phase 3 follow-up — code-splitting the preview route** *(follow-up from #1)*. The four three-stack packages weigh ~310 KB gzipped on the main bundle; users who never visit the preview pay that cost. Wrap `PreviewPage` in `React.lazy(() => import('./preview/PreviewPage'))` with a `<Suspense>` boundary. Recoups the ~217 KB gzipped delta from #57 and reduces initial paint cost meaningfully.
 58. **Phase 3 follow-up — animated warm-up flicker + per-gas intensity tuning** *(follow-up from #3 + #4)*. Optional cosmetic enhancements: 1.5–3 s warm-up flicker on initial load using a `useFrame` time-driven `emissiveIntensity` modulation; per-gas intensity tweaks now that bloom amplifies brightness inconsistently (warm whites overpower cool whites at the spec's uniform 1.5 intensity). Minor; ship as a single small PR after live tuning sessions surface specifics.
 59. **Phase 3 follow-up — closed-loop seam continuity at blockout boundaries** *(follow-up from #6)*. When a blockout straddles index 0 of a closed polyline, the segment-split helper opens the loop into two arcs; the visual seam at index 0 is correct but the geometric closure isn't restored. Edge case affects pure decorative loops with mid-loop blockouts; rare in production designs.
+60. **Connect Tubes — jumper runs** (NW #125). Spec drafted at `specs/active/tier3-60-connect-tubes.md`. Adds `Run.Kind` (`""` | `"jumper"`) + `connectTubes(doc, fromRunId, fromElectrodeIdx, toRunId, toElectrodeIdx)` operation + `'connect'` editor tool with hot-key `C` + dashed jumper rendering on the print PDF + thinner / dimmer jumper rendering in the 3D preview. JSON-blob storage means no migration. V1 is 2-vertex jumpers only; multi-vertex routed jumpers + per-jumper diameter override deferred.
+61. **Move Opening / Break Tube Open** (NW #130). Spec drafted at `specs/active/tier3-61-move-opening-break-tube.md`. Two new docOps — `breakOpen(doc, runId, vertexIndex)` converts a closed polyline to open with electrodes at the chosen vertex; `moveOpening(doc, runId, newStartVertexIndex)` rotates an open run's polyline so the gap lands at a new vertex. Live-arc index invariants from PR #44 keep blockouts / annotations / bends consistent across both ops. New `'break-open'` canvas tool, hot-key `O`, dispatches based on run's `closed` flag.
+62. **Common + Custom electrode housings** (NW #120 + #126, combined). Spec drafted at `specs/active/tier3-62-housings-common-and-custom.md`. Extends `Electrode` with `HousingType` / `BoreDiameterMM` / `ElevationMM` (all optional, JSON-blob storage so no migration). Stock library covers Strattman 15-shell + 19-shell; custom tab in the housing-picker modal accepts any positive bore. Right-click affordance on electrode pins; bend-list PDF gets a "Housings" subsection per run; 3D preview renders housing cylinders at the bore size with porcelain-like material.
+63. **Neon Preview for Groups** (NW #140) — **BLOCKED on Tier 3 #33 (multi-select / groups model).** Spec drafted at `specs/active/tier3-63-preview-for-groups.md`. Once `Run.GroupID` exists, adds `?groupId=<id>` URL state + "Group" `<select>` in the preview's scene controls + `selectedGroupId` filter through `<Scene>` so camera-fit / wall-plane / bbox all reframe to just the group's runs. V1 uses hide-non-selected; dim-mode + cutout-mode deferred to follow-ups.
 
 ### Tier 4 — Deliberate "no for now"
 
@@ -359,3 +363,8 @@ These are NW-the-graphic-design-suite, not NW-the-neon-tool. Skip unless a shop 
 - TWAIN / WIA (NW #58, #146)
 - Email Layout / Spell Checker / Customizable toolbar (NW #111, #114, #110)
 - Color Vectorizing (NW #59) — single-color binarize is the right model for tube production
+- **Mounting Holes (NW #121)** — substrate fastener placement is shop-assembly metadata, not pattern-production. Revisit if a shop integrates NeonBench output with a CNC back-pan cutter
+- **Switch Drop / Flat Blend (NW #134)** — terminology absent from Miller / Strattman / Saving Neon / Blazek. Likely a NW-specific 3D bend-mode tag that NeonBench's 2D pattern model doesn't represent; revisit only if a shop migrating from NW asks for it specifically
+- **Tube Support Holes (NW #136)** — already-shipped "support" annotations (NW #122 ✅) cover the location requirement; per-hole hardware geometry is graphic-design polish
+- **Auto Tube Count (NW #137)** — single vs. double-stroke is a deliberate design decision, not auto-detected from bitmap stroke width; trade docs are silent. Revisit if a shop specifically asks for bitmap-inferred layout
+- **Auto Spacing (NW #138)** — already covered by Neonize's 2× ø default spacing (PR #26). NW's auto-spacing is likely a per-tube-diameter table; revisit only if Neonize's defaults prove insufficient in production
