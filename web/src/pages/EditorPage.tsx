@@ -37,7 +37,51 @@ export default function EditorPage() {
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setToolRaw] = useState<EditorTool>('select');
-  const [selected, setSelected] = useState<string | null>(null);
+  // Tier 3 #33a — multi-select. The selection is editor state (not
+  // persisted in the design doc). Click replaces; Shift/Cmd-click
+  // toggles; Cmd-A selects every run; Esc clears. The "primary"
+  // selected run for the run-detail panel is the LAST entry (the
+  // most recently clicked) — that mirrors macOS Finder's "last item
+  // wins" pattern when sidebar fields show one-run-at-a-time data.
+  const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
+  // Selection helpers. setSelectedToOne is the common case (click,
+  // post-op auto-select). selectMany / clearSelection are for the
+  // Cmd-A and Esc paths. The toggle helper drives Shift/Cmd-click.
+  function setSelectedToOne(id: string) {
+    setSelectedRunIds([id]);
+  }
+  function clearSelection() {
+    setSelectedRunIds([]);
+  }
+  function toggleSelection(id: string) {
+    setSelectedRunIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+  function selectAllRuns() {
+    setSelectedRunIds((prev) => {
+      const everyId = (doc?.runs ?? []).map((r) => r.id);
+      // No-op if already-everything selected so we don't churn renders.
+      if (everyId.length === prev.length && everyId.every((id) => prev.includes(id))) {
+        return prev;
+      }
+      return everyId;
+    });
+  }
+  // Canvas click handler: routes to replace-or-toggle based on the
+  // modifier keys (Shift/Cmd-Ctrl). Passed in to EditorCanvas which
+  // owns the click-on-run / click-background events.
+  function handleSelectRun(id: string | null, opts?: { additive?: boolean }) {
+    if (id === null) {
+      clearSelection();
+      return;
+    }
+    if (opts?.additive) {
+      toggleSelection(id);
+    } else {
+      setSelectedToOne(id);
+    }
+  }
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -284,19 +328,65 @@ export default function EditorPage() {
   // other in-progress drawing tools). Tool-change disarm is handled in
   // the tool-button click sites so we don't have to setState in an
   // effect.
+  //
+  // Tier 3 #33a — Esc also clears multi-select; Cmd-A / Ctrl-A selects
+  // every run; Delete / Backspace deletes the selection. All of these
+  // skip when the user is typing into an input so the keys keep their
+  // text-editing meaning inside form fields.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== 'Escape') return;
       const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
-      if (joinArm) {
+      const isFormField =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+      if (isFormField) return;
+      if (e.key === 'Escape') {
+        if (joinArm) {
+          e.preventDefault();
+          setJoinArm(null);
+        } else if (selectedRunIds.length > 0) {
+          // Esc with no in-progress join: drop the selection. Drawing
+          // tools own their own Esc handler in EditorCanvas (returns
+          // before this fires, since that handler doesn't preventDefault
+          // for empty in-progress shapes — but the no-op is harmless).
+          e.preventDefault();
+          clearSelection();
+        }
+        return;
+      }
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
+        // Cmd-A / Ctrl-A — select every run. Skipped while editing a
+        // form field so OS-level "Select All Text" still works.
         e.preventDefault();
-        setJoinArm(null);
+        selectAllRuns();
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedRunIds.length > 0) {
+        // Delete / Backspace removes every selected run. Skipped if no
+        // selection so a stray keypress doesn't fire a no-op editDoc
+        // (would mark the doc dirty for nothing). Inlined here (rather
+        // than calling out to a hoisted helper) so the lint checker's
+        // "function used before declaration" rule stays happy without
+        // having to rearrange the whole component.
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        e.preventDefault();
+        const ids = new Set(selectedRunIds);
+        editDoc((prev) => ({
+          ...prev,
+          runs: prev.runs.filter((r) => !ids.has(r.id)),
+        }));
+        clearSelection();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [joinArm]);
+    // selectAllRuns / deleteSelected close over `doc` and selection
+    // state; relisting the deps keeps the closures fresh as those change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joinArm, selectedRunIds, doc]);
 
   // Tier 3 #47 — list of GLOBAL indices (into `report.issues`) of the
   // issues that pass the severity filter. j/k keyboard nav cycles
@@ -369,7 +459,7 @@ export default function EditorPage() {
       epoch: (prev?.epoch ?? 0) + 1,
     }));
     const id = nearestRunForPoint([x as number, y as number]);
-    if (id) setSelected(id);
+    if (id) setSelectedToOne(id);
   }
 
   // Keyboard nav: j / ] = next, k / [ = prev. Cycles through the
@@ -431,7 +521,7 @@ export default function EditorPage() {
   function placeElectrode(runId: string, pointIndex: number) {
     if (!doc) return;
     editDoc((prev) => ops.placeElectrode(prev, runId, pointIndex));
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function flipDirection(runId: string) {
@@ -443,8 +533,17 @@ export default function EditorPage() {
   }
 
   function clearElectrodesOnSelected() {
-    if (!selected) return;
-    editDoc((prev) => ops.clearElectrodes(prev, selected));
+    if (selectedRunIds.length === 0) return;
+    // Tier 3 #33a — loop over every selected run. Order: array order
+    // (most-recently-toggled last). Each call returns a new doc; we
+    // chain them inside one editDoc so undo collapses to a single step.
+    editDoc((prev) => {
+      let next = prev;
+      for (const id of selectedRunIds) {
+        next = ops.clearElectrodes(next, id);
+      }
+      return next;
+    });
   }
 
   // Tier 3 #62 — surfaced as a right-click on an electrode pin in the
@@ -453,12 +552,12 @@ export default function EditorPage() {
   // editDoc so the change goes through the normal undo/dirty plumbing.
   function openHousingPicker(runId: string, electrodeIndex: number) {
     setHousingTarget({ runId, electrodeIndex });
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function placeBlockout(runId: string, startLiveIndex: number, endLiveIndex: number) {
     editDoc((prev) => ops.placeBlockout(prev, runId, startLiveIndex, endLiveIndex));
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function deleteBlockout(runId: string, blockoutIndex: number) {
@@ -466,20 +565,34 @@ export default function EditorPage() {
   }
 
   function clearBlockoutsOnSelected() {
-    if (!selected) return;
+    if (selectedRunIds.length === 0) return;
+    const ids = new Set(selectedRunIds);
     editDoc((prev) => ({
       ...prev,
-      runs: prev.runs.map((r) => (r.id === selected ? { ...r, blockouts: [] } : r)),
+      runs: prev.runs.map((r) => (ids.has(r.id) ? { ...r, blockouts: [] } : r)),
     }));
   }
 
   function setRunColor(runId: string, color: string) {
+    // Tier 3 #33a — when len > 1, apply the new color to every selected
+    // run; the picker UI sits on the primary run's swatch, but the
+    // operator's intent reads as "color the selection".
+    if (selectedRunIds.length > 1 && selectedRunIds.includes(runId)) {
+      editDoc((prev) => {
+        let next = prev;
+        for (const id of selectedRunIds) {
+          next = ops.setRunColor(next, id, color);
+        }
+        return next;
+      });
+      return;
+    }
     editDoc((prev) => ops.setRunColor(prev, runId, color));
   }
 
   function placeAnnotation(runId: string, kind: 'jump' | 'support' | 'doubleback', liveIndex: number) {
     editDoc((prev) => ops.placeAnnotation(prev, runId, kind, liveIndex));
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function deleteAnnotation(runId: string, annotationIndex: number) {
@@ -487,16 +600,17 @@ export default function EditorPage() {
   }
 
   function clearAnnotationsOnSelected() {
-    if (!selected) return;
+    if (selectedRunIds.length === 0) return;
+    const ids = new Set(selectedRunIds);
     editDoc((prev) => ({
       ...prev,
-      runs: prev.runs.map((r) => (r.id === selected ? { ...r, annotations: [] } : r)),
+      runs: prev.runs.map((r) => (ids.has(r.id) ? { ...r, annotations: [] } : r)),
     }));
   }
 
   function placeBend(runId: string, liveIndex: number) {
     editDoc((prev) => ops.placeBend(prev, runId, liveIndex, projDiam));
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function deleteBend(runId: string, bendIndex: number) {
@@ -504,8 +618,14 @@ export default function EditorPage() {
   }
 
   function resetBendsOnSelected() {
-    if (!selected) return;
-    editDoc((prev) => ops.resetBends(prev, selected));
+    if (selectedRunIds.length === 0) return;
+    editDoc((prev) => {
+      let next = prev;
+      for (const id of selectedRunIds) {
+        next = ops.resetBends(next, id);
+      }
+      return next;
+    });
   }
 
   function placeLabel(x: number, y: number) {
@@ -538,14 +658,14 @@ export default function EditorPage() {
 
   function insertVertex(runId: string, segmentIndex: number, t: number) {
     editDoc((prev) => ops.insertVertex(prev, runId, segmentIndex, t));
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   function splitRun(runId: string, pointIndex: number) {
     editDoc((prev) => ops.splitRun(prev, runId, pointIndex));
     // After split, the original id no longer exists. Select the first
     // half so the user keeps a meaningful selection.
-    setSelected(`${runId}-a`);
+    setSelectedToOne(`${runId}-a`);
     setJoinArm(null);
   }
 
@@ -558,7 +678,7 @@ export default function EditorPage() {
     const a = joinArm;
     setJoinArm(null);
     editDoc((prev) => ops.joinRuns(prev, a.runId, a.endpoint, runId, endpoint));
-    setSelected(a.runId);
+    setSelectedToOne(a.runId);
   }
 
 
@@ -573,7 +693,7 @@ export default function EditorPage() {
     editDoc((prev) =>
       ops.insertDoubleback(prev, runId, segmentIndex, t, depth, gap, side),
     );
-    setSelected(runId);
+    setSelectedToOne(runId);
   }
 
   // Tier 3 #61 (NW #130) — break-open / move-opening dispatchers.
@@ -587,7 +707,7 @@ export default function EditorPage() {
   function breakOpenOnRun(runId: string, vertexIndex: number) {
     try {
       editDoc((prev) => ops.breakOpen(prev, runId, vertexIndex));
-      setSelected(runId);
+      setSelectedToOne(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -596,7 +716,7 @@ export default function EditorPage() {
   function moveOpeningOnRun(runId: string, newStartVertexIndex: number) {
     try {
       editDoc((prev) => ops.moveOpening(prev, runId, newStartVertexIndex));
-      setSelected(runId);
+      setSelectedToOne(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -629,7 +749,7 @@ export default function EditorPage() {
         nextRunId = created?.id ?? null;
         return next;
       });
-      if (nextRunId) setSelected(nextRunId);
+      if (nextRunId) setSelectedToOne(nextRunId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -640,6 +760,19 @@ export default function EditorPage() {
   }
 
   function setRunDiameter(runId: string, diameterMM: number | null) {
+    // Tier 3 #33a — broadcast across the multi-selection so the operator
+    // can apply a per-run diameter override to a whole face's worth of
+    // runs in one input. Single-select keeps the existing behavior.
+    if (selectedRunIds.length > 1 && selectedRunIds.includes(runId)) {
+      editDoc((prev) => {
+        let next = prev;
+        for (const id of selectedRunIds) {
+          next = ops.setRunDiameter(next, id, diameterMM);
+        }
+        return next;
+      });
+      return;
+    }
     editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
   }
 
@@ -672,13 +805,29 @@ export default function EditorPage() {
   }
 
   function simplifySelected(epsilonMM: number) {
-    if (!selected) return;
-    editDoc((prev) => ops.simplifyRun(prev, selected, epsilonMM));
+    if (selectedRunIds.length === 0) return;
+    // Tier 3 #33a — apply Douglas-Peucker to each selected run in
+    // selection-order (most-recently-toggled last). Each pass operates on
+    // the post-previous-pass doc so the chain stays internally
+    // consistent. Coalesces into one undo step.
+    editDoc((prev) => {
+      let next = prev;
+      for (const id of selectedRunIds) {
+        next = ops.simplifyRun(next, id, epsilonMM);
+      }
+      return next;
+    });
   }
 
   function reverseSelected() {
-    if (!selected) return;
-    editDoc((prev) => ops.reverseRun(prev, selected));
+    if (selectedRunIds.length === 0) return;
+    editDoc((prev) => {
+      let next = prev;
+      for (const id of selectedRunIds) {
+        next = ops.reverseRun(next, id);
+      }
+      return next;
+    });
   }
 
   // Neonize replaces the selected run with parallel offset run(s) — the
@@ -696,13 +845,22 @@ export default function EditorPage() {
   //   - Per-corner cap-style overrides flow through the docOps API but
   //     have no UI in this PR — see Tier 3 follow-ups.
   function neonizeSelected(opts: { stitch: boolean }) {
-    if (!selected) return;
+    if (selectedRunIds.length === 0) return;
     if (!doc) return;
-    const run = doc.runs.find((r) => r.id === selected);
-    if (!run) return;
-    const defaultSpacing = 2 * (run.tube_diameter_mm ?? projDiam);
+    // Tier 3 #33a — multi-run neonize. Spacing prompt seeds from the
+    // primary run's diameter; the same value is reused for every run
+    // in the selection (asking once per run would be hostile). Apply
+    // sequentially over a running doc so each call sees the previous
+    // call's output. Selection-order = array order. Warnings from any
+    // run surface as a combined hint.
+    const primary = selectedRunIds[selectedRunIds.length - 1];
+    const primaryRun = doc.runs.find((r) => r.id === primary);
+    if (!primaryRun) return;
+    const defaultSpacing = 2 * (primaryRun.tube_diameter_mm ?? projDiam);
     const spacingStr = window.prompt(
-      'Spacing between the two parallel tubes (mm). Tip: stroke width = 2 × tube diameter + spacing.',
+      selectedRunIds.length > 1
+        ? `Spacing between the two parallel tubes (mm). Applied to every selected run (${selectedRunIds.length}).`
+        : 'Spacing between the two parallel tubes (mm). Tip: stroke width = 2 × tube diameter + spacing.',
       String(defaultSpacing),
     );
     if (spacingStr === null) return;
@@ -711,14 +869,27 @@ export default function EditorPage() {
       setError('Neonize spacing must be a positive number.');
       return;
     }
-    const result = ops.neonize(doc, selected, spacing, { stitch: opts.stitch });
-    if (result.warning) setError(result.warning);
+    let next = doc;
+    const warnings: string[] = [];
+    for (const id of selectedRunIds) {
+      // Skip ids that vanished mid-loop (defensive — should never
+      // happen since neonize replaces by id, but a previous iteration's
+      // result might have already destroyed this id when group ops
+      // arrive in 33b).
+      if (!next.runs.some((r) => r.id === id)) continue;
+      const result = ops.neonize(next, id, spacing, { stitch: opts.stitch });
+      if (result.warning) warnings.push(`${id}: ${result.warning}`);
+      next = result.doc;
+    }
+    if (warnings.length > 0) setError(warnings.join(' · '));
     else setError(null);
-    if (result.doc !== doc) {
-      editDoc(() => result.doc);
-      // The selected run was destroyed; pick the new run so the user
-      // keeps a sensible selection rather than losing focus.
-      setSelected(opts.stitch ? `${selected}-stitched` : `${selected}-outer`);
+    if (next !== doc) {
+      editDoc(() => next);
+      // The selected runs were destroyed and replaced. Pick the new
+      // ids so the user keeps a sensible selection. Outer-or-stitched
+      // depending on the toggle.
+      const suffix = opts.stitch ? '-stitched' : '-outer';
+      setSelectedRunIds(selectedRunIds.map((id) => `${id}${suffix}`));
     }
   }
 
@@ -815,7 +986,17 @@ export default function EditorPage() {
     }
   }
 
-  const selectedRun = doc.runs.find((r) => r.id === selected) ?? null;
+  // Tier 3 #33a — primary run for the run-detail panel = LAST selected
+  // (most recently clicked or toggled-in). When the operator multi-selects
+  // ten runs, the panel still shows one run's fields, but operations
+  // dispatched from those fields broadcast across the selection (see
+  // setRunColor / setRunDiameter). Single-select keeps the existing UX.
+  const primaryRunId = selectedRunIds.length > 0
+    ? selectedRunIds[selectedRunIds.length - 1]
+    : null;
+  const selectedRun = primaryRunId
+    ? (doc.runs.find((r) => r.id === primaryRunId) ?? null)
+    : null;
   const totalElectrodes = doc.runs.reduce((acc, r) => acc + (r.electrodes?.length ?? 0), 0);
 
   return (
@@ -1022,9 +1203,9 @@ export default function EditorPage() {
         <EditorCanvas
           doc={doc}
           tool={tool}
-          selectedRunId={selected}
+          selectedRunIds={selectedRunIds}
           projectDiameterMM={tubeSpec?.diameter_mm ?? 10}
-          onSelectRun={setSelected}
+          onSelectRun={handleSelectRun}
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
           onElectrodeContextMenu={openHousingPicker}
@@ -1092,8 +1273,17 @@ export default function EditorPage() {
               return (
                 <li
                   key={run.id}
-                  className={`run-row ${run.id === selected ? 'active' : ''}`}
-                  onClick={() => setSelected(run.id)}
+                  className={`run-row ${selectedRunIds.includes(run.id) ? 'active' : ''}`}
+                  onClick={(e) => {
+                    // Tier 3 #33a — sidebar click mirrors canvas click.
+                    // Shift / Cmd-Ctrl toggles the run in the selection;
+                    // plain click replaces. Letting the operator pick
+                    // multiple runs from the sidebar (without first
+                    // chasing them on the canvas) matches what they'd
+                    // expect from any list view.
+                    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+                    handleSelectRun(run.id, { additive });
+                  }}
                 >
                   <div className="run-row-head">
                     <span
@@ -1120,7 +1310,21 @@ export default function EditorPage() {
           </ul>
           {selectedRun && (
             <div className="run-detail">
-              <h4>{selectedRun.id}</h4>
+              <div className="run-detail-head">
+                <h4>{selectedRun.id}</h4>
+                {/* Tier 3 #33a — multi-select badge. The h4 still shows
+                    the primary (most-recently-clicked) run id; the badge
+                    flags that operations dispatched from the panel below
+                    will broadcast across the whole selection. */}
+                {selectedRunIds.length >= 2 && (
+                  <span
+                    className="selection-count"
+                    title="Color, diameter, and path-ops below apply to every selected run."
+                  >
+                    {selectedRunIds.length} selected
+                  </span>
+                )}
+              </div>
               <p className="meta">
                 {selectedRun.polyline.points.length} pts ·{' '}
                 {selectedRun.polyline.closed ? 'closed' : 'open'} ·{' '}

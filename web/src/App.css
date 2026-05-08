@@ -621,6 +621,50 @@
   gap: 0.5rem;
 }
 
+/* Tier 3 #33a — multi-select count badge in the run-detail panel.
+   Sits inline next to the primary run id (h4) so the operator sees
+   "r1 [3 selected]" when they've extended the selection beyond one
+   run. The pill matches the channel-letter run-badge styling so the
+   visual language stays consistent. */
+.run-detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.run-detail-head h4 {
+  margin: 0;
+}
+.selection-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: white;
+  letter-spacing: 0.02em;
+}
+
+/* Tier 3 #33a — drag-drop image upload overlay on ProjectDetail.
+   Mirrors the .drop-overlay treatment from Tier 3 #22's bundle drop
+   on the project list, but uses .project-detail-section as the
+   anchor so the dashed border hugs the project page's content
+   rather than the full viewport. */
+.project-detail-section {
+  position: relative;
+}
+.project-detail-section.drag-active {
+  background: rgba(255, 59, 107, 0.04);
+}
+.upload-toast {
+  display: inline-block;
+  padding: 0.4rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: 6px;
+  background: rgba(60, 200, 120, 0.12);
+  border: 1px solid rgba(60, 200, 120, 0.4);
+  color: var(--text);
+}
+
 .editor-toolbar {
   display: flex;
   flex-wrap: wrap;
