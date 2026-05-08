@@ -3712,3 +3712,325 @@ func TestPatchTubeSpecLeadInFanoutRevalidates(t *testing.T) {
 		t.Errorf("expected >=1 version's report to flag min_lead_in after fan-out; got 0")
 	}
 }
+
+// newTubeSpecCRUDServer is the boilerplate-killer for the Tier 3 #51
+// CRUD tests: open a temp DB, run migrations, register the API, and
+// return the http.Server URL plus a teardown-registered client. Mirrors
+// the pattern the existing fan-out tests use without forcing a
+// helpers.go split.
+func newTubeSpecCRUDServer(t *testing.T) (*sql.DB, string, *http.Client) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return db, srv.URL, srv.Client()
+}
+
+// TestCreateTubeSpec exercises the happy path of POST /api/tube_specs.
+// Tier 3 #51: shops with custom diameters / unusual glass shouldn't
+// have to hand-write SQL or fork the binary to add a spec.
+func TestCreateTubeSpec(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	body := map[string]any{
+		"name":                  "9mm test",
+		"diameter_mm":           9.0,
+		"min_bend_radius_mm":    20.0,
+		"max_segment_length_mm": 2500.0,
+		"min_spacing_mm":        11.0,
+	}
+	buf, _ := json.Marshal(body)
+	resp, err := client.Post(base+"/api/tube_specs", "application/json", bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST status %d: %s", resp.StatusCode, out)
+	}
+	var created storage.TubeSpec
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.ID == 0 {
+		t.Errorf("expected server-assigned id, got 0")
+	}
+	if created.Name != "9mm test" {
+		t.Errorf("name: got %q want %q", created.Name, "9mm test")
+	}
+	if created.DiameterMM != 9.0 {
+		t.Errorf("diameter: got %g want 9", created.DiameterMM)
+	}
+
+	// The list endpoint should now contain it.
+	var specs []storage.TubeSpec
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var found bool
+	for _, s := range specs {
+		if s.ID == created.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("created spec not present in list response")
+	}
+}
+
+// TestCreateTubeSpecRejectsDuplicateName proves the case-insensitive
+// uniqueness gate: "12mm clear" is seeded; "12MM Clear" must collide.
+// Without the case-folding pre-flight the SQLite UNIQUE constraint
+// would only catch the exact-case match (modernc.org/sqlite default
+// collation is BINARY) and two visually-indistinguishable specs would
+// land in the dropdown.
+func TestCreateTubeSpecRejectsDuplicateName(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	body := map[string]any{
+		"name":                  "12MM Clear",
+		"diameter_mm":           12.0,
+		"min_bend_radius_mm":    27.0,
+		"max_segment_length_mm": 2500.0,
+		"min_spacing_mm":        14.0,
+	}
+	buf, _ := json.Marshal(body)
+	resp, err := client.Post(base+"/api/tube_specs", "application/json", bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST status: got %d, want 409 (%s)", resp.StatusCode, out)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(out, []byte("12mm clear")) {
+		t.Errorf("conflict message should reference the existing seeded name, got %s", out)
+	}
+}
+
+// TestCreateTubeSpecRejectsBadDiameter pins the dimensional bounds:
+// a 0.5 mm tube isn't a real product (capillary at best) and would
+// blow through every downstream sanity check; reject at the door.
+func TestCreateTubeSpecRejectsBadDiameter(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	body := map[string]any{
+		"name":                  "tiny",
+		"diameter_mm":           0.5,
+		"min_bend_radius_mm":    20.0,
+		"max_segment_length_mm": 2500.0,
+		"min_spacing_mm":        11.0,
+	}
+	buf, _ := json.Marshal(body)
+	resp, err := client.Post(base+"/api/tube_specs", "application/json", bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("POST status: got %d, want 400 (%s)", resp.StatusCode, out)
+	}
+}
+
+// TestDeleteTubeSpecUnused is the happy path: a freshly-created spec
+// with no project references can be deleted; subsequent GET returns
+// 404.
+func TestDeleteTubeSpecUnused(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	// Create a fresh spec so we don't have to worry about the seeded
+	// rows being referenced by anything implicit.
+	var created storage.TubeSpec
+	postJSON(t, client, base+"/api/tube_specs", map[string]any{
+		"name":                  "delete-me",
+		"diameter_mm":           14.0,
+		"min_bend_radius_mm":    30.0,
+		"max_segment_length_mm": 3000.0,
+		"min_spacing_mm":        16.0,
+	}, &created)
+
+	req, err := http.NewRequest("DELETE", base+"/api/tube_specs/"+itoa(created.ID), nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("DELETE status: got %d, want 204 (%s)", resp.StatusCode, out)
+	}
+
+	// The list endpoint should no longer contain it.
+	var specs []storage.TubeSpec
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	for _, s := range specs {
+		if s.ID == created.ID {
+			t.Errorf("deleted spec still present in list")
+		}
+	}
+}
+
+// TestDeleteTubeSpecReferencedReturns409 is the safety guard: if any
+// project still references the spec, the delete must refuse with 409
+// and the response body must list the project names so the UI can
+// tell the user which ones to migrate first.
+func TestDeleteTubeSpecReferencedReturns409(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	// Use a seeded spec so the project's tube_spec_id resolves.
+	var specs []storage.TubeSpec
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	var seededID int64
+	var seededName string
+	for _, s := range specs {
+		if s.Name == "12mm clear" {
+			seededID = s.ID
+			seededName = s.Name
+		}
+	}
+	if seededID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+
+	var p map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "anchored-to-spec",
+		"tube_spec_id": seededID,
+	}, &p)
+
+	req, err := http.NewRequest("DELETE", base+"/api/tube_specs/"+itoa(seededID), nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("DELETE status: got %d, want 409 (%s)", resp.StatusCode, out)
+	}
+	out, _ := io.ReadAll(resp.Body)
+	if !bytes.Contains(out, []byte("anchored-to-spec")) {
+		t.Errorf("conflict body should mention the referencing project name, got %s", out)
+	}
+	var conflict map[string]any
+	if err := json.Unmarshal(out, &conflict); err != nil {
+		t.Fatalf("unmarshal conflict: %v", err)
+	}
+	if pc, _ := conflict["project_count"].(float64); int(pc) != 1 {
+		t.Errorf("project_count: got %v, want 1", conflict["project_count"])
+	}
+
+	// And the spec must still be in the list — refusal didn't half-delete.
+	var post []storage.TubeSpec
+	getJSON(t, client, base+"/api/tube_specs", &post)
+	var found bool
+	for _, s := range post {
+		if s.ID == seededID && s.Name == seededName {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("seeded %q vanished after refused DELETE", seededName)
+	}
+}
+
+// TestTubeSpecCRUDRoundTrip exercises every verb in sequence: create →
+// patch → delete → re-create with the same name. The re-create only
+// works if the prior delete actually removed the row (otherwise the
+// uniqueness gate fires). Catches the "delete reports 204 but row
+// stays" failure mode in a way the unit-level test can't.
+func TestTubeSpecCRUDRoundTrip(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	// Create.
+	var created storage.TubeSpec
+	postJSON(t, client, base+"/api/tube_specs", map[string]any{
+		"name":                  "round-trip",
+		"diameter_mm":           10.0,
+		"min_bend_radius_mm":    22.0,
+		"max_segment_length_mm": 2500.0,
+		"min_spacing_mm":        12.0,
+	}, &created)
+	if created.ID == 0 {
+		t.Fatal("create returned zero id")
+	}
+
+	// Patch via existing PATCH plumbing — proves the storage extraction
+	// didn't break the previously-inlined UPDATE path.
+	status, body := patchTubeSpecRaw(t, client, base, created.ID,
+		`{"max_segment_length_mm": 3000}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+
+	// Delete.
+	req, err := http.NewRequest("DELETE", base+"/api/tube_specs/"+itoa(created.ID), nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("DELETE status: got %d, want 204", resp.StatusCode)
+	}
+
+	// Re-create with the same name. If the prior delete left the row
+	// in place this would 409.
+	var recreated storage.TubeSpec
+	postJSON(t, client, base+"/api/tube_specs", map[string]any{
+		"name":                  "round-trip",
+		"diameter_mm":           10.0,
+		"min_bend_radius_mm":    22.0,
+		"max_segment_length_mm": 2500.0,
+		"min_spacing_mm":        12.0,
+	}, &recreated)
+	if recreated.ID == 0 {
+		t.Errorf("re-create after delete returned zero id")
+	}
+	if recreated.ID == created.ID {
+		t.Errorf("re-created spec reused the deleted id (%d) — autoincrement should advance",
+			created.ID)
+	}
+}
+
+// TestDeleteTubeSpec404 covers the not-found path: deleting a non-
+// existent id should surface as 404, not as a misleading 204.
+func TestDeleteTubeSpec404(t *testing.T) {
+	_, base, client := newTubeSpecCRUDServer(t)
+
+	req, err := http.NewRequest("DELETE", base+"/api/tube_specs/9999", nil)
+	if err != nil {
+		t.Fatalf("build DELETE: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		out, _ := io.ReadAll(resp.Body)
+		t.Fatalf("DELETE status: got %d, want 404 (%s)", resp.StatusCode, out)
+	}
+}

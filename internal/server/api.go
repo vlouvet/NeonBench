@@ -18,7 +18,9 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	})
 
 	mux.HandleFunc("GET /api/tube_specs", s.handleListTubeSpecs)
+	mux.HandleFunc("POST /api/tube_specs", s.handleCreateTubeSpec)
 	mux.HandleFunc("PATCH /api/tube_specs/{id}", s.handleUpdateTubeSpec)
+	mux.HandleFunc("DELETE /api/tube_specs/{id}", s.handleDeleteTubeSpec)
 
 	mux.HandleFunc("GET /api/projects", s.handleListProjects)
 	mux.HandleFunc("POST /api/projects", s.handleCreateProject)

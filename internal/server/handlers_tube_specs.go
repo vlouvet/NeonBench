@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/vlouvet/neonbench/internal/storage"
@@ -186,15 +187,14 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := updateTubeSpecRow(r.Context(), s.db, id, merged); err != nil {
-		writeStorageError(w, err)
-		return
-	}
-
-	// Re-load so we hand the client a fresh row (and so the timestamps
-	// returned in the response match what's actually persisted).
-	updatedSpec, err := storage.GetTubeSpec(r.Context(), s.db, id)
+	updatedSpec, err := storage.UpdateTubeSpec(r.Context(), s.db, id, merged)
 	if err != nil {
+		// Surface UNIQUE name collisions as a 400 so the frontend can
+		// show the trimmed message instead of a generic 500. Tier 3 #51.
+		if errors.Is(err, storage.ErrTubeSpecNameTaken) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeStorageError(w, err)
 		return
 	}
@@ -208,6 +208,239 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 			FailedCount:  failedCount,
 		},
 	})
+}
+
+// createTubeSpecReq is the POST body for /api/tube_specs. Same field
+// vocabulary as the PATCH body but with the four primary dimensional
+// fields required (no pointer / omitted semantics). The four optional
+// override columns are nilable; explicit nulls are equivalent to
+// omission for create — the column simply stays NULL.
+type createTubeSpecReq struct {
+	Name               string   `json:"name"`
+	DiameterMM         float64  `json:"diameter_mm"`
+	MinBendRadiusMM    float64  `json:"min_bend_radius_mm"`
+	MaxSegmentLengthMM float64  `json:"max_segment_length_mm"`
+	MinSpacingMM       float64  `json:"min_spacing_mm"`
+	WallThicknessMM    *float64 `json:"wall_thickness_mm,omitempty"`
+	BendTechnique      *string  `json:"bend_technique,omitempty"`
+	MinLeadInMM        *float64 `json:"min_lead_in_mm,omitempty"`
+	SharpBendAngleDeg  *float64 `json:"sharp_bend_angle_deg,omitempty"`
+}
+
+// handleCreateTubeSpec inserts a new tube spec row. Tier 3 #51: shops
+// with a custom diameter or different glass had to fork the binary or
+// hand-write SQL to add a new spec — this endpoint surfaces it through
+// the API. We validate the same bounds as PATCH, plus a case-insensitive
+// uniqueness check on `name` so a user-friendly 409 takes priority over
+// the bare SQLite UNIQUE-constraint error (which would otherwise surface
+// as a 400 via the storage layer's collision mapping).
+//
+// No fan-out on create: a brand-new spec has no design versions
+// referencing it yet, so there's nothing to re-validate.
+func (s *apiServer) handleCreateTubeSpec(w http.ResponseWriter, r *http.Request) {
+	var req createTubeSpecReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if len(name) > 100 {
+		writeError(w, http.StatusBadRequest, "name must be at most 100 characters")
+		return
+	}
+	if req.DiameterMM < 5 || req.DiameterMM > 30 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("diameter_mm must be between 5 and 30 (got %g)", req.DiameterMM))
+		return
+	}
+	if req.MinBendRadiusMM < 1 || req.MinBendRadiusMM > 200 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("min_bend_radius_mm must be between 1 and 200 (got %g)", req.MinBendRadiusMM))
+		return
+	}
+	if req.MaxSegmentLengthMM < 100 || req.MaxSegmentLengthMM > 5000 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("max_segment_length_mm must be between 100 and 5000 (got %g)", req.MaxSegmentLengthMM))
+		return
+	}
+	if req.MinSpacingMM < 1 || req.MinSpacingMM > 100 {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("min_spacing_mm must be between 1 and 100 (got %g)", req.MinSpacingMM))
+		return
+	}
+	if req.MinBendRadiusMM < req.DiameterMM {
+		writeError(w, http.StatusBadRequest,
+			fmt.Sprintf("min_bend_radius_mm (%g) must be >= diameter_mm (%g)",
+				req.MinBendRadiusMM, req.DiameterMM))
+		return
+	}
+	// Optional-column range / whitelist checks reuse the bounds the
+	// PATCH validator enforces — out-of-range values surface as 422
+	// (semantic mismatch on a syntactically valid body), in line with
+	// the existing PATCH behaviour.
+	if req.WallThicknessMM != nil {
+		if *req.WallThicknessMM < minWallThicknessMM || *req.WallThicknessMM > maxWallThicknessMM {
+			writeError(w, http.StatusUnprocessableEntity,
+				fmt.Sprintf("wall_thickness_mm must be between %g and %g (got %g)",
+					minWallThicknessMM, maxWallThicknessMM, *req.WallThicknessMM))
+			return
+		}
+	}
+	if req.BendTechnique != nil {
+		if _, ok := validBendTechniques[*req.BendTechnique]; !ok {
+			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf(
+				"bend_technique must be one of \"ribbon\", \"crossfire\", \"hand_torch\" (got %q)",
+				*req.BendTechnique))
+			return
+		}
+	}
+	if req.MinLeadInMM != nil {
+		if *req.MinLeadInMM < minLeadInMM || *req.MinLeadInMM > maxLeadInMM {
+			writeError(w, http.StatusUnprocessableEntity,
+				fmt.Sprintf("min_lead_in_mm must be between %g and %g (got %g)",
+					minLeadInMM, maxLeadInMM, *req.MinLeadInMM))
+			return
+		}
+	}
+	if req.SharpBendAngleDeg != nil {
+		if *req.SharpBendAngleDeg < minSharpBendAngleDeg || *req.SharpBendAngleDeg > maxSharpBendAngleDeg {
+			writeError(w, http.StatusUnprocessableEntity,
+				fmt.Sprintf("sharp_bend_angle_deg must be between %g and %g (got %g)",
+					minSharpBendAngleDeg, maxSharpBendAngleDeg, *req.SharpBendAngleDeg))
+			return
+		}
+	}
+	// Case-insensitive uniqueness pre-flight. The `name` column carries
+	// a UNIQUE constraint that is case-sensitive in SQLite by default,
+	// so without this check we would happily accept "12mm Clear" next
+	// to the seeded "12mm clear". Two specs that differ only by case
+	// confuse the dropdown and the DXF/PDF footer; matching by lowered
+	// name across the existing list keeps the visual identifier set
+	// stable. The caller learns about the conflict via 409 + a clear
+	// message rather than a generic 500. The check races with parallel
+	// inserts; we rely on the storage-layer ErrTubeSpecNameTaken check
+	// (case-sensitive) as the final gate so the worst case is a 400
+	// instead of a 409 — acceptable for an admin-only surface.
+	existing, err := storage.ListTubeSpecs(r.Context(), s.db)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	lname := strings.ToLower(name)
+	for _, t := range existing {
+		if strings.ToLower(t.Name) == lname {
+			writeError(w, http.StatusConflict,
+				fmt.Sprintf("tube_spec name %q already exists (case-insensitive match against %q)",
+					name, t.Name))
+			return
+		}
+	}
+
+	created, err := storage.CreateTubeSpec(r.Context(), s.db, storage.CreateTubeSpecParams{
+		Name:               name,
+		DiameterMM:         req.DiameterMM,
+		MinBendRadiusMM:    req.MinBendRadiusMM,
+		MaxSegmentLengthMM: req.MaxSegmentLengthMM,
+		MinSpacingMM:       req.MinSpacingMM,
+		WallThicknessMM:    req.WallThicknessMM,
+		BendTechnique:      req.BendTechnique,
+		MinLeadInMM:        req.MinLeadInMM,
+		SharpBendAngleDeg:  req.SharpBendAngleDeg,
+	})
+	if err != nil {
+		if errors.Is(err, storage.ErrTubeSpecNameTaken) {
+			// Lost the race against another insert — surface as 409
+			// so the frontend can retry with a different name.
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, created)
+}
+
+// deleteTubeSpecConflict is the 409 response body returned when the
+// caller tries to delete a spec that one or more projects still
+// reference. Surfaces both the count and the human-readable names so
+// the UI can list the projects the operator must migrate first instead
+// of asking them to spelunk through the project list. Tier 3 #51.
+type deleteTubeSpecConflict struct {
+	Error        string                          `json:"error"`
+	ProjectCount int                             `json:"project_count"`
+	Projects     []deleteTubeSpecConflictProject `json:"projects"`
+}
+
+type deleteTubeSpecConflictProject struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// handleDeleteTubeSpec removes a tube spec row by id, refusing with 409
+// if any project still references the spec. The pre-flight projects-by-
+// spec query both gives us the count we need for the response body and
+// avoids relying on the SQLite FOREIGN KEY error message (which the
+// modernc driver doesn't surface as a typed constraint error). Tier 3
+// #51.
+func (s *apiServer) handleDeleteTubeSpec(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	if _, err := storage.GetTubeSpec(r.Context(), s.db, id); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	refs, err := projectsReferencingTubeSpec(r.Context(), s.db, id)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if len(refs) > 0 {
+		// Sort by name for a stable, human-readable response — the
+		// frontend renders this list verbatim in the "switch these
+		// projects first" tooltip.
+		sort.Slice(refs, func(i, j int) bool { return refs[i].Name < refs[j].Name })
+		writeJSON(w, http.StatusConflict, deleteTubeSpecConflict{
+			Error: fmt.Sprintf("tube_spec is in use by %d project(s); reassign them before deleting",
+				len(refs)),
+			ProjectCount: len(refs),
+			Projects:     refs,
+		})
+		return
+	}
+	if err := storage.DeleteTubeSpec(r.Context(), s.db, id); err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// projectsReferencingTubeSpec returns id+name for every project whose
+// tube_spec_id matches the given id. Used by handleDeleteTubeSpec to
+// build the 409 conflict body. Sort happens at the call site so the
+// SELECT itself stays primary-key-ordered (cheapest plan; the conflict
+// list is tiny so the post-fetch sort is free).
+func projectsReferencingTubeSpec(ctx context.Context, db *sql.DB, tubeSpecID int64) ([]deleteTubeSpecConflictProject, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, name FROM projects WHERE tube_spec_id = ? ORDER BY id`, tubeSpecID)
+	if err != nil {
+		return nil, fmt.Errorf("query projects by tube_spec: %w", err)
+	}
+	defer rows.Close()
+	var out []deleteTubeSpecConflictProject
+	for rows.Next() {
+		var p deleteTubeSpecConflictProject
+		if err := rows.Scan(&p.ID, &p.Name); err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // validateTubeSpecPatch enforces the dimensional bounds on a PATCH body.
@@ -279,55 +512,6 @@ func validateMergedTubeSpec(t storage.TubeSpec) string {
 			t.MinBendRadiusMM, t.DiameterMM)
 	}
 	return ""
-}
-
-// updateTubeSpecRow writes the merged row back to SQLite. We keep the SQL
-// inline here (rather than adding a new storage.UpdateTubeSpec) so this
-// PR's scope stays inside the handler layer; handlers_export.go already
-// follows the same pattern for tube_specs INSERTs. min_lead_in_mm and
-// sharp_bend_angle_deg (Tier 3 #29) flow through the PATCH surface added
-// in Tier 3 #41 alongside wall_thickness_mm + bend_technique (Tier 3
-// #43); all four optional columns share the same three-state semantics.
-func updateTubeSpecRow(ctx context.Context, db *sql.DB, id int64, t storage.TubeSpec) error {
-	wall := nullableFloat(t.WallThicknessMM)
-	tech := nullableString(t.BendTechnique)
-	leadIn := nullableFloat(t.MinLeadInMM)
-	sharpBend := nullableFloat(t.SharpBendAngleDeg)
-	res, err := db.ExecContext(ctx, `
-		UPDATE tube_specs
-		   SET name                  = ?,
-		       diameter_mm           = ?,
-		       min_bend_radius_mm    = ?,
-		       max_segment_length_mm = ?,
-		       min_spacing_mm        = ?,
-		       wall_thickness_mm     = ?,
-		       bend_technique        = ?,
-		       min_lead_in_mm        = ?,
-		       sharp_bend_angle_deg  = ?
-		 WHERE id = ?`,
-		t.Name, t.DiameterMM, t.MinBendRadiusMM, t.MaxSegmentLengthMM, t.MinSpacingMM,
-		wall, tech, leadIn, sharpBend, id)
-	if err != nil {
-		// Surface UNIQUE name collisions as a 400-friendly error so the
-		// frontend can show the trimmed message instead of a 500.
-		if isUniqueConstraintErr(err) {
-			return fmt.Errorf("tube_spec name already in use")
-		}
-		return fmt.Errorf("update tube_spec: %w", err)
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return storage.ErrNotFound
-	}
-	return nil
-}
-
-// isUniqueConstraintErr does a string-match on the SQLite error text
-// because modernc.org/sqlite does not expose typed constraint errors.
-// "UNIQUE constraint failed" is the canonical message; we match the
-// substring rather than equality so we tolerate the column-name suffix.
-func isUniqueConstraintErr(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 // revalidateAllForTubeSpec fans the post-edit revalidation out across
@@ -469,25 +653,6 @@ func parseBendTechniquePatch(raw json.RawMessage) (*string, bool, string) {
 			"bend_technique must be one of \"ribbon\", \"crossfire\", \"hand_torch\" (got %q)", s)
 	}
 	return &s, true, ""
-}
-
-// nullableFloat converts an optional pointer to a value suitable for
-// database/sql interpolation: nil → SQL NULL, otherwise the underlying
-// float. modernc.org/sqlite's driver accepts both nil and concrete values
-// in the same arg slot via the empty-interface boundary.
-func nullableFloat(v *float64) any {
-	if v == nil {
-		return nil
-	}
-	return *v
-}
-
-// nullableString mirrors nullableFloat for TEXT columns.
-func nullableString(v *string) any {
-	if v == nil {
-		return nil
-	}
-	return *v
 }
 
 // projectsForTubeSpec returns the IDs of every project that references
