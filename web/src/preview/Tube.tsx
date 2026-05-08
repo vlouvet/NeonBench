@@ -7,6 +7,7 @@ import { splitRunBySegments, type RunSegment } from './segment-split';
 import {
   DEFAULT_TUBE_DIAMETER_MM,
   TUBE_RADIAL_SEGMENTS,
+  liftPointsAtJumps,
   polylineToCurve,
   tubeSegmentCount,
 } from './tube-geom';
@@ -109,7 +110,14 @@ function TubeSegment({
 }) {
   const geometry = useMemo(() => {
     if (segment.points.length < 2) return null;
-    const curve = polylineToCurve(segment.points, segment.closed);
+    // Tier 3 #68 — lift the polyline at jump points before feeding to
+    // the curve so the tube physically arcs out of plane there.
+    const lifted = liftPointsAtJumps(
+      segment.points,
+      segment.jumpPolylineIndices,
+      radius * 2,
+    );
+    const curve = polylineToCurve(lifted, segment.closed);
     const segCount = tubeSegmentCount(segment.points);
     return new THREE.TubeGeometry(
       curve,
@@ -118,7 +126,7 @@ function TubeSegment({
       TUBE_RADIAL_SEGMENTS,
       segment.closed,
     );
-  }, [segment.points, segment.closed, radius]);
+  }, [segment.points, segment.closed, segment.jumpPolylineIndices, radius]);
 
   if (!geometry) return null;
 
