@@ -1,0 +1,62 @@
+/* Phase 3 #1 — preview-page styling.
+ *
+ * The preview canvas wants the entire viewport below the app header. We
+ * keep the existing Layout/header chrome and just stretch the canvas
+ * container to fill the remaining height. A dark background underneath
+ * matches the Canvas clear color so any (very brief) gap during scene
+ * setup doesn't flash white.
+ */
+
+.preview-page {
+  display: flex;
+  flex-direction: column;
+  /* Header sits at the top of the page; the rest is for the canvas.
+   * The Layout component keeps padding around <main>, so we use a
+   * small min-height instead of a fixed 100vh; this lets the page
+   * still scroll if we ever add chrome below. */
+  min-height: 70vh;
+  background: #0a0a0a;
+  color: #ddd;
+}
+
+.preview-page__topbar {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.5rem 0.75rem;
+  background: #111;
+  border-bottom: 1px solid #222;
+}
+
+.preview-page__topbar a {
+  color: #6cf;
+}
+
+.preview-page__topbar h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+}
+
+.preview-page__canvas {
+  flex: 1 1 auto;
+  /* Reserve a sensible minimum height so the canvas always has room to
+   * paint even if the parent flexbox can't compute a free height (which
+   * happens in some print-style layouts). 70vh is generous on a typical
+   * laptop and the Canvas will grow if more space is available. */
+  min-height: 70vh;
+  position: relative;
+  background: #0a0a0a;
+}
+
+.preview-page__status {
+  padding: 0.75rem;
+  font-size: 0.95rem;
+  color: #aaa;
+}
+
+.preview-page__error {
+  padding: 0.75rem;
+  font-size: 0.95rem;
+  color: #f88;
+}
