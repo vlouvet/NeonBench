@@ -11,25 +11,27 @@ web UI.
 > (editor, per-run color/diameter/notes, blockouts, bend planning,
 > double-back hairpins, channel-letter return strips with raceway
 > grouping, Hershey single-stroke text in three faces, polygon-offset
-> Neonize with stitched single-tube output, undo/redo, validation
-> marker overlay with severity-filter + j/k keyboard nav +
-> sidebar↔canvas hover linking, full-spec-driven validation including
-> derived bend radius from wall thickness + technique, click-to-edit
-> tube-spec fields with fan-out re-validation, OS print dialog with
+> Neonize with stitched single-tube output, multi-select + drag-drop
+> image upload, snap-to-angle / snap-to-geometry on every drawing tool,
+> common + custom electrode housings, connect-tubes (jumper runs),
+> move-opening / break-tube-open, undo/redo, validation marker overlay
+> with severity-filter + j/k keyboard nav + sidebar↔canvas hover
+> linking, full-spec-driven validation including derived bend radius
+> from wall thickness + technique, click-to-edit tube-spec fields with
+> fan-out re-validation, full tube-spec CRUD, OS print dialog with
 > strips-only filter), and **Phase 3** (read-only 3D preview via
 > three.js + react-three-fiber: extruded tubes from polylines, emissive
-> gas-color materials with bloom, electrode caps, per-segment blockout
-> sleeves, orbit camera with Front/Iso/Top/Side preset views,
-> auto-fit-on-mount, scene chrome controls + PNG screenshot export) all
-> ship today. **20 of ~35 Tier 3 polish items shipped** across 28 PRs,
-> plus the full **Phase 3 implementation across PRs #57–63**. NeonWizard
-> parity is **32 ✅ / 13 🟡** of 148 advertised features (15
+> gas-color materials with bloom + per-gas intensity tuning, electrode
+> caps, per-segment blockout sleeves, jump-annotation tube lifts, orbit
+> camera with Front/Iso/Top/Side preset views, auto-fit-on-mount, scene
+> chrome controls + bloom-aware PNG screenshot export) all ship today.
+> NeonWizard parity is **36 ✅ / 13 🟡** of 148 advertised features (19
 > deliberately out of scope as Tier 4 graphic-design-suite features
 > that don't help neon production). Remaining Tier 3 items focus on
-> editor productivity (multi-select / groups / Bezier handles /
-> snap-to-angle) and a small handful of Phase 3 follow-ups (project
-> tube-spec wired into preview, bloom-aware screenshot bridge, scene
-> control persistence, code-splitting the preview route).
+> groups + layers (33b/c — multi-select half landed in 33a) and a small
+> handful of Phase 3 follow-ups (bloom intensity sliders, scene control
+> persistence, code-splitting the preview route, optional warm-up
+> flicker animation).
 
 ## Why
 
