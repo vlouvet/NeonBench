@@ -280,6 +280,52 @@ export type UpdateTubeSpecResponse = {
   };
 };
 
+// Body for POST /api/tube_specs (Tier 3 #51). The four primary
+// dimensional fields are required; the four optional override columns
+// are nilable. Server enforces the same bounds as the PATCH validator
+// (diameter 5..30, bend radius 1..200, segment 100..5000, spacing
+// 1..100, plus the cross-field rule min_bend_radius_mm >= diameter_mm)
+// and adds a case-insensitive uniqueness check on `name` so visually-
+// indistinguishable specs ("12mm clear" vs "12MM Clear") cannot land
+// side-by-side in the dropdown.
+export type CreateTubeSpecBody = {
+  name: string;
+  diameter_mm: number;
+  min_bend_radius_mm: number;
+  max_segment_length_mm: number;
+  min_spacing_mm: number;
+  wall_thickness_mm?: number | null;
+  bend_technique?: BendTechnique | null;
+  min_lead_in_mm?: number | null;
+  sharp_bend_angle_deg?: number | null;
+};
+
+// Response shape for DELETE /api/tube_specs/{id} when the spec is in
+// use by one or more projects (Tier 3 #51). The frontend renders the
+// project list verbatim so the operator knows which projects to
+// migrate first.
+export type DeleteTubeSpecConflict = {
+  error: string;
+  project_count: number;
+  projects: { id: number; name: string }[];
+};
+
+// TubeSpecInUseError is thrown by api.deleteTubeSpec when the server
+// refuses with 409 because one or more projects still reference the
+// spec. Carries the conflict body so callers can render the project
+// list (rather than asking the user to spelunk through the project
+// list themselves). instanceof is the discriminator — the caller
+// catches `Error`, narrows to TubeSpecInUseError, and falls back to
+// `error.message` for everything else.
+export class TubeSpecInUseError extends Error {
+  readonly conflict: DeleteTubeSpecConflict;
+  constructor(conflict: DeleteTubeSpecConflict) {
+    super(conflict.error);
+    this.name = 'TubeSpecInUseError';
+    this.conflict = conflict;
+  }
+}
+
 export type UpdateTubeSpecBody = {
   name?: string;
   diameter_mm?: number;
@@ -338,6 +384,42 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listTubeSpecs: () => req<TubeSpec[]>('/api/tube_specs'),
+  // POST a new tube spec (Tier 3 #51). Server returns the persisted row
+  // with its assigned id; uniqueness collisions surface as a thrown
+  // Error with the server's "...already exists..." message.
+  createTubeSpec: (body: CreateTubeSpecBody) =>
+    req<TubeSpec>('/api/tube_specs', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  // DELETE a tube spec (Tier 3 #51). Resolves to undefined on success
+  // (204). When the spec is still referenced by one or more projects
+  // the server responds with 409 + a conflict body; we surface that
+  // by rejecting with a TubeSpecInUseError so the caller can render
+  // the project list inline rather than trying to JSON-parse a generic
+  // Error message.
+  deleteTubeSpec: async (id: number): Promise<void> => {
+    const res = await fetch(`/api/tube_specs/${id}`, { method: 'DELETE' });
+    if (res.status === 204) return;
+    if (res.status === 409) {
+      try {
+        const body = (await res.json()) as DeleteTubeSpecConflict;
+        throw new TubeSpecInUseError(body);
+      } catch (err) {
+        if (err instanceof TubeSpecInUseError) throw err;
+        throw new Error(`409 ${res.statusText}`, { cause: err });
+      }
+    }
+    let msg = res.statusText;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) msg = body.error;
+    } catch {
+      // fall through with statusText
+    }
+    throw new Error(`${res.status} ${msg}`);
+  },
   // PATCH the tube spec's dimensional fields (Tier 3 #18). The
   // response carries the updated row plus a fan-out summary; the
   // caller surfaces a transient toast when version_count > 0.
