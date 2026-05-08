@@ -76,6 +76,11 @@ type createProjectReq struct {
 	// default of 12.7 mm (½ in)" when drawing the shear line on the
 	// unfolded return-strip page.
 	StripOverlapMM *float64 `json:"strip_overlap_mm,omitempty"`
+	// FacePerimeterStrictMode (Tier 3 #46): when true, the validator
+	// escalates RuleFacePerimeterExceedsBlank from warning to error.
+	// Pointer so omission leaves the new project at the schema-default
+	// false ("warning-level"); a non-nil value writes that boolean.
+	FacePerimeterStrictMode *bool `json:"face_perimeter_strict_mode,omitempty"`
 }
 
 func (s *apiServer) handleListProjects(w http.ResponseWriter, r *http.Request) {
@@ -132,17 +137,22 @@ func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	strictMode := false
+	if req.FacePerimeterStrictMode != nil {
+		strictMode = *req.FacePerimeterStrictMode
+	}
 	p, err := storage.CreateProject(r.Context(), s.db, storage.CreateProjectParams{
-		Name:                 strings.TrimSpace(req.Name),
-		TubeSpecID:           req.TubeSpecID,
-		Units:                req.Units,
-		Customer:             customer,
-		Designer:             designer,
-		DueDate:              dueDate,
-		JobNumber:            jobNumber,
-		TubeEndGapMM:         req.TubeEndGapMM,
-		ChannelLetterDepthMM: req.ChannelLetterDepthMM,
-		StripOverlapMM:       req.StripOverlapMM,
+		Name:                    strings.TrimSpace(req.Name),
+		TubeSpecID:              req.TubeSpecID,
+		Units:                   req.Units,
+		Customer:                customer,
+		Designer:                designer,
+		DueDate:                 dueDate,
+		JobNumber:               jobNumber,
+		TubeEndGapMM:            req.TubeEndGapMM,
+		ChannelLetterDepthMM:    req.ChannelLetterDepthMM,
+		StripOverlapMM:          req.StripOverlapMM,
+		FacePerimeterStrictMode: strictMode,
 	})
 	if err != nil {
 		writeStorageError(w, err)
@@ -182,6 +192,12 @@ type updateProjectReq struct {
 	// StripOverlapMM uses the same omitted/null/value PATCH semantics
 	// as the two fields above. Tier 3 #26.
 	StripOverlapMM json.RawMessage `json:"strip_overlap_mm,omitempty"`
+	// FacePerimeterStrictMode is a two-state PATCH field (Tier 3 #46):
+	// omitted → leave the column alone; bare boolean → write that
+	// value. There's no "clear → fall back" semantic because the
+	// column is NOT NULL DEFAULT 0; sending null is rejected as a
+	// mis-typed body to keep the contract tight.
+	FacePerimeterStrictMode *bool `json:"face_perimeter_strict_mode,omitempty"`
 }
 
 func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
@@ -264,16 +280,17 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 		overlapField = &overlap
 	}
 	out, err := storage.UpdateProject(r.Context(), s.db, id, storage.UpdateProjectParams{
-		Name:                 req.Name,
-		TubeSpecID:           req.TubeSpecID,
-		Units:                req.Units,
-		Customer:             req.Customer,
-		Designer:             req.Designer,
-		DueDate:              req.DueDate,
-		JobNumber:            req.JobNumber,
-		TubeEndGapMM:         endGapField,
-		ChannelLetterDepthMM: depthField,
-		StripOverlapMM:       overlapField,
+		Name:                    req.Name,
+		TubeSpecID:              req.TubeSpecID,
+		Units:                   req.Units,
+		Customer:                req.Customer,
+		Designer:                req.Designer,
+		DueDate:                 req.DueDate,
+		JobNumber:               req.JobNumber,
+		TubeEndGapMM:            endGapField,
+		ChannelLetterDepthMM:    depthField,
+		StripOverlapMM:          overlapField,
+		FacePerimeterStrictMode: req.FacePerimeterStrictMode,
 	})
 	if err != nil {
 		writeStorageError(w, err)

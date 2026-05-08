@@ -226,23 +226,28 @@ func (s *apiServer) generateDesignDoc(r *http.Request, projectID int64, svg []by
 // returns the report as JSON. Errors are logged but not surfaced — a missing
 // report on a design version is non-fatal (the user can re-run validation).
 //
-// AUDIT CHECKLIST (Tier 3 #44): every field on validate.Limits MUST be
-// forwarded from the tube spec here. The validator's optional rules
-// (min_lead_in, sharp_bend_angle, derived bend radius from wall +
-// technique) silently fall back to diameter-derived defaults when their
-// fields are zero — a forgotten copy here means the user's spec value is
-// dropped on the floor with no error. When a new field is added to
+// AUDIT CHECKLIST (Tier 3 #44 / #46): every field on validate.Limits
+// MUST be forwarded from the tube spec OR the project here. The
+// validator's optional rules (min_lead_in, sharp_bend_angle, derived
+// bend radius from wall + technique, face-perimeter strict mode)
+// silently fall back to defaults when their fields are zero — a
+// forgotten copy here means the user's spec/project value is dropped
+// on the floor with no error. When a new field is added to
 // validate.Limits, update BOTH this construction site AND the parallel
 // one in handlers_designdoc.go's handleValidateDoc. Run the audit with:
 //
 //	grep -rn 'validate.Limits{' internal/server/
 //
-// Today's full set: DiameterMM, MinBendRadiusMM, MaxSegmentLengthMM,
-// MinSpacingMM, MinLeadInMM, SharpBendAngleDeg, WallThicknessMM,
-// BendTechnique. The four pointer-typed columns on storage.TubeSpec
-// (MinLeadInMM, SharpBendAngleDeg, WallThicknessMM, BendTechnique) flow
-// through as zero values when nil, which is the documented "use derived
-// default" sentinel — see internal/validate/types.go Limits doc-comment.
+// Today's full set (9 fields): DiameterMM, MinBendRadiusMM,
+// MaxSegmentLengthMM, MinSpacingMM, MinLeadInMM, SharpBendAngleDeg,
+// WallThicknessMM, BendTechnique, FacePerimeterStrict. The four
+// pointer-typed columns on storage.TubeSpec (MinLeadInMM,
+// SharpBendAngleDeg, WallThicknessMM, BendTechnique) flow through as
+// zero values when nil, which is the documented "use derived default"
+// sentinel — see internal/validate/types.go Limits doc-comment.
+// FacePerimeterStrict comes from the project (Tier 3 #46), not the
+// tube spec — strict mode is a per-project policy, not a tube-spec
+// dimensional input.
 func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte) string {
 	project, err := storage.GetProject(r.Context(), s.db, projectID)
 	if err != nil {
@@ -255,10 +260,11 @@ func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte) 
 		return ""
 	}
 	limits := validate.Limits{
-		DiameterMM:         spec.DiameterMM,
-		MinBendRadiusMM:    spec.MinBendRadiusMM,
-		MaxSegmentLengthMM: spec.MaxSegmentLengthMM,
-		MinSpacingMM:       spec.MinSpacingMM,
+		DiameterMM:          spec.DiameterMM,
+		MinBendRadiusMM:     spec.MinBendRadiusMM,
+		MaxSegmentLengthMM:  spec.MaxSegmentLengthMM,
+		MinSpacingMM:        spec.MinSpacingMM,
+		FacePerimeterStrict: project.FacePerimeterStrictMode,
 	}
 	if spec.MinLeadInMM != nil {
 		limits.MinLeadInMM = *spec.MinLeadInMM

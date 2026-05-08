@@ -90,6 +90,13 @@ export type Project = {
   // doubled-back seam. Server omits the field when NULL; renderers
   // fall back to the 12.7 mm (½ in) shop default.
   strip_overlap_mm?: number;
+  // When true, the validator escalates RuleFacePerimeterExceedsBlank
+  // from severity "warning" to severity "error" — Tier 3 #46. The
+  // column is NOT NULL DEFAULT 0 on the server; the field is always
+  // present (boolean, never undefined). Default false matches the
+  // historical behaviour so warnings stay warnings unless the shop
+  // opts in.
+  face_perimeter_strict_mode: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -337,6 +344,7 @@ export const api = {
     tube_end_gap_mm?: number;
     channel_letter_depth_mm?: number;
     strip_overlap_mm?: number;
+    face_perimeter_strict_mode?: boolean;
   }) =>
     req<Project>('/api/projects', {
       method: 'POST',
@@ -361,6 +369,10 @@ export const api = {
       channel_letter_depth_mm?: number | null;
       // Same three-state semantics as the two above (Tier 3 #26).
       strip_overlap_mm?: number | null;
+      // Two-state PATCH (Tier 3 #46): omit to leave the column alone,
+      // boolean to write the value. The column is NOT NULL DEFAULT 0
+      // server-side, so there's no `null` "clear → default" semantic.
+      face_perimeter_strict_mode?: boolean;
     },
   ) =>
     req<Project>(`/api/projects/${id}`, {

@@ -33,14 +33,19 @@ type CreateProjectParams struct {
 	// default (12.7 mm = ½ in) when drawing the shear line on the
 	// unfolded return strip.
 	StripOverlapMM *float64
+	// FacePerimeterStrictMode escalates the face-perimeter validation
+	// rule from warning to error when true (Tier 3 #46). Defaults to
+	// false; create requests that omit the field land in the
+	// warning-level mode that matches pre-migration behaviour.
+	FacePerimeterStrictMode bool
 }
 
 func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Project, error) {
 	if p.Units == "" {
 		p.Units = "mm"
 	}
-	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm)
-	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	const q = `INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, face_perimeter_strict_mode)
+	           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	res, err := db.ExecContext(ctx, q,
 		p.Name,
 		p.TubeSpecID,
@@ -52,6 +57,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 		nullableFloat(p.TubeEndGapMM),
 		nullableFloat(p.ChannelLetterDepthMM),
 		nullableFloat(p.StripOverlapMM),
+		boolToInt(p.FacePerimeterStrictMode),
 	)
 	if err != nil {
 		return Project{}, fmt.Errorf("insert project: %w", err)
@@ -64,7 +70,7 @@ func CreateProject(ctx context.Context, db *sql.DB, p CreateProjectParams) (Proj
 }
 
 func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, face_perimeter_strict_mode, created_at, updated_at
 	           FROM projects ORDER BY updated_at DESC`
 	rows, err := db.QueryContext(ctx, q)
 	if err != nil {
@@ -84,7 +90,7 @@ func ListProjects(ctx context.Context, db *sql.DB) ([]Project, error) {
 }
 
 func GetProject(ctx context.Context, db *sql.DB, id int64) (Project, error) {
-	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, created_at, updated_at
+	const q = `SELECT id, name, tube_spec_id, units, customer, designer, due_date, job_number, tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, face_perimeter_strict_mode, created_at, updated_at
 	           FROM projects WHERE id = ?`
 	row := db.QueryRowContext(ctx, q, id)
 	p, err := scanProject(row)
@@ -122,13 +128,19 @@ type UpdateProjectParams struct {
 	// StripOverlapMM uses the same three-state pattern as
 	// ChannelLetterDepthMM (Tier 3 #26).
 	StripOverlapMM **float64
+	// FacePerimeterStrictMode is a two-state pointer (Tier 3 #46): nil
+	// = "field omitted, leave column alone"; non-nil = "write that
+	// boolean". The column itself is NOT NULL DEFAULT 0 so there's no
+	// "clear → fall back" semantic — the value is always definite.
+	FacePerimeterStrictMode *bool
 }
 
 // UpdateProject applies a partial update and bumps updated_at.
 func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectParams) (Project, error) {
 	if p.Name == nil && p.TubeSpecID == nil && p.Units == nil &&
 		p.Customer == nil && p.Designer == nil && p.DueDate == nil && p.JobNumber == nil &&
-		p.TubeEndGapMM == nil && p.ChannelLetterDepthMM == nil && p.StripOverlapMM == nil {
+		p.TubeEndGapMM == nil && p.ChannelLetterDepthMM == nil && p.StripOverlapMM == nil &&
+		p.FacePerimeterStrictMode == nil {
 		return GetProject(ctx, db, id)
 	}
 	sets := []string{}
@@ -172,6 +184,10 @@ func UpdateProject(ctx context.Context, db *sql.DB, id int64, p UpdateProjectPar
 	if p.StripOverlapMM != nil {
 		sets = append(sets, "strip_overlap_mm = ?")
 		args = append(args, nullableFloat(*p.StripOverlapMM))
+	}
+	if p.FacePerimeterStrictMode != nil {
+		sets = append(sets, "face_perimeter_strict_mode = ?")
+		args = append(args, boolToInt(*p.FacePerimeterStrictMode))
 	}
 	sets = append(sets, `updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
 	q := `UPDATE projects SET ` + strings.Join(sets, ", ") + ` WHERE id = ?`
@@ -235,12 +251,14 @@ func scanProject(r scanRow) (Project, error) {
 	var p Project
 	var customer, designer, dueDate, jobNumber sql.NullString
 	var tubeEndGapMM, channelLetterDepthMM, stripOverlapMM sql.NullFloat64
+	var strictMode int64
 	if err := r.Scan(
 		&p.ID, &p.Name, &p.TubeSpecID, &p.Units,
 		&customer, &designer, &dueDate, &jobNumber,
 		&tubeEndGapMM,
 		&channelLetterDepthMM,
 		&stripOverlapMM,
+		&strictMode,
 		&p.CreatedAt, &p.UpdatedAt,
 	); err != nil {
 		return Project{}, err
@@ -261,5 +279,16 @@ func scanProject(r scanRow) (Project, error) {
 		v := stripOverlapMM.Float64
 		p.StripOverlapMM = &v
 	}
+	p.FacePerimeterStrictMode = strictMode != 0
 	return p, nil
+}
+
+// boolToInt maps Go booleans to the SQLite 0/1 integer convention used
+// across the projects schema. Kept tiny and local so callers don't have
+// to inline the ternary at every Exec site.
+func boolToInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
