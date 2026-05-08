@@ -1,5 +1,6 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DesignVersion, type VectorizeRequest } from '../api';
+import { cacheToFullRes } from '../lib/cropCoords';
 import { estimateSkewDegrees } from '../lib/hough';
 
 // Max dimension we'll render the preview at. Source images larger than this
@@ -23,6 +24,11 @@ type SourceState =
       // Display dimensions for the preview canvases (capped to PREVIEW_MAX_DIM).
       displayWidth: number;
       displayHeight: number;
+      // Original (full-resolution) source dimensions, in source-image pixels.
+      // Needed at submit time to scale cache-pixel crop coords up to full-
+      // resolution coords (the units the backend interprets `crop` in).
+      originalWidth: number;
+      originalHeight: number;
     };
 
 // Adjustment parameters mirror the backend's PreprocessOptions. The client-
@@ -427,6 +433,8 @@ export default function VectorizePanel({
         height: ch,
         displayWidth: Math.max(1, Math.round(cw * displayScale)),
         displayHeight: Math.max(1, Math.round(ch * displayScale)),
+        originalWidth: srcW,
+        originalHeight: srcH,
       });
     };
     img.onerror = () => {
@@ -876,12 +884,20 @@ export default function VectorizePanel({
         Number(cx) >= 0 &&
         Number(cy) >= 0
       ) {
-        body.crop = {
-          x: Number(cx),
-          y: Number(cy),
-          w: Number(cw),
-          h: Number(ch),
-        };
+        // The crop fields above are in *cache-buffer pixel space* (the
+        // downsampled SOURCE_CACHE_MAX_DIM-capped buffer the preview is drawn
+        // from). The backend interprets `crop` in *original full-resolution
+        // pixel space*. For a >1024 px source these two spaces differ — scale
+        // up before submitting. Scale is 1.0 for already-small sources, ≥1.0
+        // otherwise. Tier 3 #36.
+        const cacheScale =
+          source.kind === 'ready' && source.width > 0
+            ? source.originalWidth / source.width
+            : 1;
+        body.crop = cacheToFullRes(
+          { x: Number(cx), y: Number(cy), w: Number(cw), h: Number(ch) },
+          cacheScale,
+        );
       }
     }
     try {
