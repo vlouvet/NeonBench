@@ -51,6 +51,32 @@ const FALLBACK_COLOR = '#fff0d0';
 const FALLBACK_INTENSITY = 0.75;
 
 /**
+ * Bridge from the editor's color-picker slugs (`web/src/lib/neonColors.ts`)
+ * to GAS_COLORS keys. The two tables grew up independently — the editor
+ * uses hyphenated kebab-case slugs (`ruby-red`); GAS_COLORS uses
+ * spaced gas-name strings (`ruby red`). Without this bridge, every
+ * editor-picked color falls through to the warm-white fallback (Tier 1 #67).
+ *
+ * Both tables hold uncalibrated hex approximations of "what a lit
+ * tube of this gas looks like"; the editor stroke and the preview
+ * emissive may differ slightly per color. Reconciling them is a
+ * Phase 3 follow-up — for now we keep GAS_COLORS authoritative for
+ * the preview's emissive material.
+ */
+const EDITOR_COLOR_TO_GAS: Record<string, string> = {
+  'classic-red': 'neon (red)',
+  'ruby-red': 'ruby red',
+  'hot-pink': 'rose pink',
+  'orange': 'neon orange',
+  'yellow': 'lemon yellow',
+  'green': 'lime green',
+  'aqua': 'turquoise',
+  'blue': 'cobalt blue',
+  'purple': 'royal purple',
+  'white': 'white',
+};
+
+/**
  * V1 emissive intensity for every known gas. Per-gas tuning (some
  * phosphors visually punch harder than others) is a deliberate
  * Phase 3 follow-up; uniform 1.5 was chosen because it reads as
@@ -86,6 +112,15 @@ export function gasToEmissiveColor(gasName: string | undefined | null): Emissive
   const normalized = (gasName ?? '').trim().toLowerCase();
   if (normalized === '') {
     return { color: FALLBACK_COLOR, intensity: FALLBACK_INTENSITY };
+  }
+  // Editor-slug bridge: translate `ruby-red` etc. to the gas-name
+  // vocabulary GAS_COLORS keys off. See EDITOR_COLOR_TO_GAS above.
+  const bridged = EDITOR_COLOR_TO_GAS[normalized];
+  if (bridged !== undefined) {
+    const hex = GAS_COLORS[bridged];
+    if (hex !== undefined) {
+      return { color: hex, intensity: DEFAULT_INTENSITY };
+    }
   }
   const direct = GAS_COLORS[normalized];
   if (direct !== undefined) {

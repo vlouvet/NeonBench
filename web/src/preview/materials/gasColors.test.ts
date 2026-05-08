@@ -96,6 +96,40 @@ describe('gasToEmissiveColor', () => {
       });
     }
   });
+
+  // Tier 1 #67 — every editor-picker slug must resolve to a non-fallback
+  // emissive. Without the EDITOR_COLOR_TO_GAS bridge these fell through
+  // to warm-white at 0.75 intensity and the preview was useless for
+  // anything but white tubes.
+  describe('editor color slug bridge', () => {
+    const editorSlugToExpectedHex: Record<string, string> = {
+      'classic-red': '#ff5520', // → "neon (red)"
+      'ruby-red':    '#ff2233', // → "ruby red"
+      'hot-pink':    '#ff80a0', // → "rose pink"
+      'orange':      '#ff7733', // → "neon orange"
+      'yellow':      '#ffe040', // → "lemon yellow"
+      'green':       '#7fff00', // → "lime green"
+      'aqua':        '#33ddcc', // → "turquoise"
+      'blue':        '#3355ff', // → "cobalt blue"
+      'purple':      '#7733ff', // → "royal purple"
+      'white':       '#eeeeee', // → "white"
+    };
+
+    for (const [slug, hex] of Object.entries(editorSlugToExpectedHex)) {
+      it(`bridges editor slug "${slug}" to a calibrated emissive hex`, () => {
+        expect(gasToEmissiveColor(slug)).toEqual({
+          color: hex,
+          intensity: 1.5,
+        });
+      });
+    }
+
+    it('regression: ruby-red must NOT resolve to the warm-white fallback', () => {
+      const result = gasToEmissiveColor('ruby-red');
+      expect(result.color).not.toBe('#fff0d0');
+      expect(result.intensity).toBe(1.5);
+    });
+  });
 });
 
 describe('isBlockoutColor', () => {
