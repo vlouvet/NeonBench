@@ -167,6 +167,43 @@ func splitByBlockouts(liveIndices []int, blockouts []Blockout, closed bool) []pa
 	if len(cur.Indices) > 0 {
 		out = append(out, cur)
 	}
+	// Tier 3 #59 — closed-loop seam continuity. When a blockout
+	// straddles index 0 of a closed live arc, the loop above emits
+	// two separate blockout segments (one starting at index 0, one
+	// ending at index n-1) that conceptually represent ONE continuous
+	// painted arc through the wrap edge. Merge them so downstream
+	// consumers (ToSVG above, RenderableSegments for the printpdf
+	// pipeline, the 3D preview's segment-split via the JS mirror)
+	// emit one continuous dashed sleeve instead of two.
+	//
+	// Guard: only fire on closed loops AND only when BOTH end
+	// segments are blockouts. Open arcs never wrap (short-circuit).
+	// Closed loops with mid-loop blockouts (first/last both live)
+	// are left unchanged to preserve the identity invariant — those
+	// rendered correctly pre-fix because two adjacent live tubes
+	// meet at the seam-share point even though the wrap edge is
+	// technically missing. Don't change segment counts for docs
+	// that were already rendering correctly.
+	//
+	// Merge formula: append first.Indices to last.Indices, no slice.
+	// Pre-merge `last` ends at polyline index n-1 (no trailing seam-
+	// share — j=n-1 was the loop's final iteration) and `first`
+	// starts at polyline index 0 (no leading seam-share — j=0 was
+	// the loop's first iteration). On a closed loop those two
+	// indices are adjacent via the wrap edge n-1 -> 0, so we
+	// concatenate WITHOUT dropping a duplicate.
+	if closed && len(out) >= 2 {
+		first := out[0]
+		last := out[len(out)-1]
+		if first.IsBlockout && last.IsBlockout {
+			merged := pathSegment{
+				IsBlockout: true,
+				Indices:    append(append([]int{}, last.Indices...), first.Indices...),
+			}
+			tail := append([]pathSegment{merged}, out[1:len(out)-1]...)
+			out = tail
+		}
+	}
 	if closed && len(out) == 1 && !out[0].IsBlockout {
 		out[0].Closed = true
 	}
