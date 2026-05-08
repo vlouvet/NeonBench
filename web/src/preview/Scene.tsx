@@ -398,7 +398,13 @@ export default function Scene({
         enableDamping
         dampingFactor={0.1}
         minDistance={50}
-        maxDistance={5000}
+        // 5000 mm clamps preset framing for any sign whose
+        // bbox-diagonal × 1.5 exceeds 5 m — the orbit controls
+        // silently snap the camera back inside the cap, fighting
+        // with the preset animation. 50 m is "every realistic neon
+        // sign plus headroom" without letting the user wander into
+        // the void.
+        maxDistance={50_000}
         enablePan
         panSpeed={1.0}
         rotateSpeed={0.7}

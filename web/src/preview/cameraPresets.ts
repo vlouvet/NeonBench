@@ -42,6 +42,19 @@ export interface CameraFraming {
 // iso view tighter than the orthographic-ish front view.
 export const PRESET_DISTANCE_FACTOR = 1.5;
 
+// Initial camera config for the preview Canvas. Tier 1 #66 — three.js's
+// PerspectiveCamera defaults (near=0.1, far=1000) silently clip any
+// sign whose camera-distance exceeds ~1 m, and the preset framing
+// parks the camera at bbox.diagonal × 1.5 mm. Widen the frustum to
+// mm-realistic values; the wall plane sits 50 mm behind the tubes so
+// there's no near-camera contention to worry about with `near=1`.
+export const PREVIEW_CAMERA_CONFIG = {
+  position: [0, 0, 1500] as [number, number, number],
+  fov: 50,
+  near: 1,
+  far: 1_000_000,
+};
+
 // Fallback half-extent in millimeters when the doc is empty (no runs,
 // or all runs are degenerate). Picked to match a small-letter sign so
 // the camera distance lands in a "looks like something is here" range

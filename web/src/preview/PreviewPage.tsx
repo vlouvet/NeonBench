@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { Canvas } from '@react-three/fiber';
 import { api, parseDoc, type DesignDoc, type DesignVersion, type Project } from '../api';
 import Scene, { type CaptureContext, type PresetRequest } from './Scene';
-import type { CameraPreset } from './cameraPresets';
+import { PREVIEW_CAMERA_CONFIG, type CameraPreset } from './cameraPresets';
 import SceneControls, {
   DEFAULT_SCENE_CONTROLS,
   type SceneControlsState,
@@ -186,7 +186,7 @@ export default function PreviewPage() {
           />
           <Canvas
             dpr={[1, 2]}
-            camera={{ position: [0, 0, 1500], fov: 50 }}
+            camera={PREVIEW_CAMERA_CONFIG}
             // CSS background is just a paint-flash guard — the real
             // background is `<color attach="background">` inside
             // Scene, which the screenshot path reads.
