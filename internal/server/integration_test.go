@@ -3370,3 +3370,345 @@ func TestPatchTubeSpecAcceptsAllValidTechniques(t *testing.T) {
 		})
 	}
 }
+
+// TestPatchTubeSpecLeadInOmitted pins the three-state PATCH preserve
+// semantics for the lead-in / sharp-bend columns added in Tier 3 #41.
+// A body that mentions only an unrelated field must leave both
+// optional columns untouched. The columns are NULL on every seeded
+// spec, so we pre-seed them via direct SQL to exercise the
+// preserve-from-set-value path (rather than preserve-from-NULL, which
+// is degenerate). Without this guard a future refactor that always
+// overwrites the columns would silently blank operator-set overrides.
+func TestPatchTubeSpecLeadInOmitted(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+	// Seed both columns directly — the seed migrations leave them
+	// NULL by design, so we have to write them in order to exercise
+	// the preserve-from-set-value path.
+	if _, err := db.Exec(
+		`UPDATE tube_specs SET min_lead_in_mm = ?, sharp_bend_angle_deg = ? WHERE id = ?`,
+		18.0, 80.0, specID); err != nil {
+		t.Fatalf("seed lead-in / sharp-bend: %v", err)
+	}
+	pre := fetchTubeSpecRow(t, db, specID)
+	if pre.MinLeadInMM == nil || *pre.MinLeadInMM != 18.0 {
+		t.Fatalf("baseline min_lead_in_mm: want 18.0, got %v", pre.MinLeadInMM)
+	}
+	if pre.SharpBendAngleDeg == nil || *pre.SharpBendAngleDeg != 80.0 {
+		t.Fatalf("baseline sharp_bend_angle_deg: want 80.0, got %v", pre.SharpBendAngleDeg)
+	}
+
+	status, body := patchTubeSpecRaw(t, client, srv.URL, specID, `{"name":"12mm clear renamed"}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.MinLeadInMM == nil || *post.MinLeadInMM != 18.0 {
+		t.Errorf("min_lead_in_mm dirtied by name-only PATCH: want 18.0, got %v", post.MinLeadInMM)
+	}
+	if post.SharpBendAngleDeg == nil || *post.SharpBendAngleDeg != 80.0 {
+		t.Errorf("sharp_bend_angle_deg dirtied by name-only PATCH: want 80.0, got %v", post.SharpBendAngleDeg)
+	}
+}
+
+// TestPatchTubeSpecLeadInClears proves explicit `null` in the PATCH
+// body clears the lead-in / sharp-bend columns to SQL NULL — the
+// third state in the three-state semantics that distinguishes "leave
+// alone" (omit) from "wipe this" (null). Tier 3 #41.
+func TestPatchTubeSpecLeadInClears(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+
+	// Pre-seed lead-in=10 directly so the clear path has something to
+	// observe (the seed leaves both columns NULL).
+	if _, err := db.Exec(
+		`UPDATE tube_specs SET min_lead_in_mm = ?, sharp_bend_angle_deg = ? WHERE id = ?`,
+		10.0, 75.0, specID); err != nil {
+		t.Fatalf("seed lead-in / sharp-bend: %v", err)
+	}
+	pre := fetchTubeSpecRow(t, db, specID)
+	if pre.MinLeadInMM == nil {
+		t.Fatal("baseline min_lead_in_mm is already NULL; can't exercise clear path")
+	}
+
+	status, body := patchTubeSpecRaw(t, client, srv.URL, specID,
+		`{"min_lead_in_mm":null,"sharp_bend_angle_deg":null}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.MinLeadInMM != nil {
+		t.Errorf("min_lead_in_mm not cleared: got %v", *post.MinLeadInMM)
+	}
+	if post.SharpBendAngleDeg != nil {
+		t.Errorf("sharp_bend_angle_deg not cleared: got %v", *post.SharpBendAngleDeg)
+	}
+}
+
+// TestPatchTubeSpecSharpBendBoundsValidate rejects out-of-range
+// values on both new fields with a 422 and proves the row is left
+// untouched. Mirrors the wall-thickness bounds-validation pattern;
+// covers both the negative bound (-5) and the over-90° bound (95)
+// for sharp_bend_angle_deg, plus the over-50 mm and negative bounds
+// for min_lead_in_mm. Tier 3 #41.
+func TestPatchTubeSpecSharpBendBoundsValidate(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+
+	var specs []map[string]any
+	getJSON(t, client, srv.URL+"/api/tube_specs", &specs)
+	var specID int64
+	for _, s := range specs {
+		if s["name"].(string) == "12mm clear" {
+			specID = int64(s["id"].(float64))
+		}
+	}
+	if specID == 0 {
+		t.Fatal("expected seeded 12mm clear spec")
+	}
+	// Seed an in-range value on both columns so we can detect leaks
+	// after each rejected PATCH.
+	if _, err := db.Exec(
+		`UPDATE tube_specs SET min_lead_in_mm = ?, sharp_bend_angle_deg = ? WHERE id = ?`,
+		15.0, 85.0, specID); err != nil {
+		t.Fatalf("seed lead-in / sharp-bend: %v", err)
+	}
+	pre := fetchTubeSpecRow(t, db, specID)
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"sharp_bend negative", `{"sharp_bend_angle_deg":-5}`},
+		{"sharp_bend over 90", `{"sharp_bend_angle_deg":95}`},
+		{"min_lead_in negative", `{"min_lead_in_mm":-1}`},
+		{"min_lead_in over 50", `{"min_lead_in_mm":75}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := patchTubeSpecRaw(t, client, srv.URL, specID, tc.body)
+			if status != http.StatusUnprocessableEntity {
+				t.Errorf("status = %d, want 422 (body=%s)", status, body)
+			}
+		})
+	}
+	post := fetchTubeSpecRow(t, db, specID)
+	if post.MinLeadInMM == nil || pre.MinLeadInMM == nil ||
+		*post.MinLeadInMM != *pre.MinLeadInMM {
+		t.Errorf("rejected PATCH leaked: min_lead_in_mm pre=%v post=%v",
+			pre.MinLeadInMM, post.MinLeadInMM)
+	}
+	if post.SharpBendAngleDeg == nil || pre.SharpBendAngleDeg == nil ||
+		*post.SharpBendAngleDeg != *pre.SharpBendAngleDeg {
+		t.Errorf("rejected PATCH leaked: sharp_bend_angle_deg pre=%v post=%v",
+			pre.SharpBendAngleDeg, post.SharpBendAngleDeg)
+	}
+}
+
+// TestPatchTubeSpecLeadInFanoutRevalidates asserts the PR #18 fan-out
+// path runs on lead-in edits: every design version referencing the
+// spec must get a fresh report after the column moves, and the report
+// must reflect the new override. We seed a spec at 5 mm diameter so
+// the diameter-derived lead-in default (2 × 5 = 10 mm) does NOT flag a
+// 12 mm leg, then PATCH min_lead_in_mm=20 and assert at least one
+// version's report flags a previously-clean run as min_lead_in. Tier
+// 3 #41.
+func TestPatchTubeSpecLeadInFanoutRevalidates(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Insert a custom 5 mm spec so the diameter-derived lead-in
+	// default is 10 mm — well below our test geometry's 12 mm leg —
+	// so the baseline run is clean and the override surfaces a fresh
+	// issue.
+	res, err := db.Exec(`
+		INSERT INTO tube_specs (
+			name, diameter_mm, min_bend_radius_mm,
+			max_segment_length_mm, min_spacing_mm,
+			is_default
+		) VALUES (?, ?, ?, ?, ?, 0)`,
+		"tier3-41-fanout-fixture", 5.0, 12.0, 1000.0, 5.0)
+	if err != nil {
+		t.Fatalf("insert tube spec: %v", err)
+	}
+	tubeSpecID, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "lead-in fanout project",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	pid := int64(project["id"].(float64))
+
+	// Open polyline with a 12 mm first leg + 90° corner. The 12 mm
+	// lead-in passes the diameter-derived default (10 mm) but fails
+	// the post-PATCH 20 mm override. Two versions so the fan-out has
+	// more than one row to refresh.
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 100, 100},
+		Runs: []designdoc.Run{{
+			ID: "lead-in-fanout",
+			Polyline: designdoc.Polyline{
+				Points: [][2]float64{{0, 0}, {12, 0}, {12, 40}},
+				Closed: false,
+			},
+			Electrodes: []designdoc.Electrode{{PointIndex: 0}, {PointIndex: 2}},
+		}},
+	}
+	for v := 0; v < 2; v++ {
+		var version map[string]any
+		postJSON(t, client, base+"/api/projects/"+itoa(pid)+"/design_versions",
+			map[string]any{
+				"label":      fmt.Sprintf("v%d", v+1),
+				"design_doc": doc,
+			}, &version)
+		// Sanity: baseline run is clean — no min_lead_in issue at the
+		// 10 mm diameter-derived default.
+		report, _ := version["validation_report_json"].(string)
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(report), &parsed); err != nil {
+			t.Fatalf("decode baseline report: %v", err)
+		}
+		issues, _ := parsed["issues"].([]any)
+		for _, raw := range issues {
+			iss, _ := raw.(map[string]any)
+			if iss["rule"] == "min_lead_in" {
+				t.Fatalf("baseline already flags min_lead_in; fixture is wrong")
+			}
+		}
+	}
+	waitForClockTick()
+
+	// PATCH lead-in to 20 mm: now the 12 mm leg fails. Fan-out should
+	// re-run validation across both versions and the response must
+	// report version_count > 0.
+	status, body := patchTubeSpecRaw(t, client, base, tubeSpecID,
+		`{"min_lead_in_mm":20}`)
+	if status/100 != 2 {
+		t.Fatalf("PATCH status %d: %s", status, body)
+	}
+	var out struct {
+		TubeSpec    storage.TubeSpec   `json:"tube_spec"`
+		Revalidated revalidatedSummary `json:"revalidated"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("decode PATCH response: %v", err)
+	}
+	if out.Revalidated.VersionCount == 0 {
+		t.Errorf("fan-out skipped: version_count = 0; want > 0 (%+v)", out.Revalidated)
+	}
+	if out.TubeSpec.MinLeadInMM == nil || *out.TubeSpec.MinLeadInMM != 20.0 {
+		t.Errorf("response min_lead_in_mm = %v, want 20.0", out.TubeSpec.MinLeadInMM)
+	}
+
+	// Now read back the stored report on at least one version and
+	// confirm it flags the previously-clean run.
+	var versions []map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(pid)+"/design_versions", &versions)
+	if len(versions) == 0 {
+		t.Fatal("no design versions returned")
+	}
+	var flagged int
+	for _, v := range versions {
+		report, _ := v["validation_report_json"].(string)
+		if report == "" {
+			continue
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(report), &parsed); err != nil {
+			t.Fatalf("unmarshal post-fanout report: %v", err)
+		}
+		issues, _ := parsed["issues"].([]any)
+		for _, raw := range issues {
+			iss, _ := raw.(map[string]any)
+			if iss["rule"] == "min_lead_in" {
+				flagged++
+				break
+			}
+		}
+	}
+	if flagged == 0 {
+		t.Errorf("expected >=1 version's report to flag min_lead_in after fan-out; got 0")
+	}
+}

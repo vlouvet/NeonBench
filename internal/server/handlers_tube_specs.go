@@ -35,6 +35,21 @@ const (
 	maxWallThicknessMM = 10.0
 )
 
+// Lead-in / sharp-bend bounds for the PATCH validator (Tier 3 #41).
+// MinLeadIn upper bound (50 mm) covers the upper Miller p.124 trade
+// envelope (2..10 in straight lead-in = 50..254 mm) with margin; values
+// past 50 mm rarely fit a sign even with double-back exemption, so the
+// gate catches typos like "100" vs "10". SharpBend bounds [0, 90]: a
+// vertex more open than 90° is by definition a gentle bend, not a sharp
+// concentrator, so allowing higher thresholds would just cause every
+// vertex on a slightly-noisy polyline to flag.
+const (
+	minLeadInMM          = 0.0
+	maxLeadInMM          = 50.0
+	minSharpBendAngleDeg = 0.0
+	maxSharpBendAngleDeg = 90.0
+)
+
 func (s *apiServer) handleListTubeSpecs(w http.ResponseWriter, r *http.Request) {
 	specs, err := storage.ListTubeSpecs(r.Context(), s.db)
 	if err != nil {
@@ -68,6 +83,13 @@ type updateTubeSpecReq struct {
 	// "absent" and "null" into the same nil. Tier 3 #43.
 	WallThicknessMM json.RawMessage `json:"wall_thickness_mm,omitempty"`
 	BendTechnique   json.RawMessage `json:"bend_technique,omitempty"`
+	// MinLeadInMM and SharpBendAngleDeg use the same three-state
+	// json.RawMessage encoding as WallThicknessMM (Tier 3 #41). The
+	// columns were added in migration 0009 and the validator already
+	// consults them; this PATCH surface lets operators edit the
+	// per-spec overrides through the UI instead of raw SQL.
+	MinLeadInMM       json.RawMessage `json:"min_lead_in_mm,omitempty"`
+	SharpBendAngleDeg json.RawMessage `json:"sharp_bend_angle_deg,omitempty"`
 }
 
 // updateTubeSpecResponse wraps the updated row plus a fan-out summary so
@@ -128,6 +150,18 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusUnprocessableEntity, msg)
 		return
 	}
+	leadIn, leadInSet, msg := parseFloatRangePatch(req.MinLeadInMM,
+		"min_lead_in_mm", minLeadInMM, maxLeadInMM)
+	if msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
+	sharpBend, sharpBendSet, msg := parseFloatRangePatch(req.SharpBendAngleDeg,
+		"sharp_bend_angle_deg", minSharpBendAngleDeg, maxSharpBendAngleDeg)
+	if msg != "" {
+		writeError(w, http.StatusUnprocessableEntity, msg)
+		return
+	}
 
 	cur, err := storage.GetTubeSpec(r.Context(), s.db, id)
 	if err != nil {
@@ -140,6 +174,12 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 	}
 	if techSet {
 		merged.BendTechnique = tech
+	}
+	if leadInSet {
+		merged.MinLeadInMM = leadIn
+	}
+	if sharpBendSet {
+		merged.SharpBendAngleDeg = sharpBend
 	}
 	if msg := validateMergedTubeSpec(merged); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
@@ -245,12 +285,14 @@ func validateMergedTubeSpec(t storage.TubeSpec) string {
 // inline here (rather than adding a new storage.UpdateTubeSpec) so this
 // PR's scope stays inside the handler layer; handlers_export.go already
 // follows the same pattern for tube_specs INSERTs. min_lead_in_mm and
-// sharp_bend_angle_deg (Tier 3 #29) are intentionally untouched — the
-// PATCH surface in this handler only exposes the four primary dimensional
-// fields plus wall_thickness_mm + bend_technique (Tier 3 #43).
+// sharp_bend_angle_deg (Tier 3 #29) flow through the PATCH surface added
+// in Tier 3 #41 alongside wall_thickness_mm + bend_technique (Tier 3
+// #43); all four optional columns share the same three-state semantics.
 func updateTubeSpecRow(ctx context.Context, db *sql.DB, id int64, t storage.TubeSpec) error {
 	wall := nullableFloat(t.WallThicknessMM)
 	tech := nullableString(t.BendTechnique)
+	leadIn := nullableFloat(t.MinLeadInMM)
+	sharpBend := nullableFloat(t.SharpBendAngleDeg)
 	res, err := db.ExecContext(ctx, `
 		UPDATE tube_specs
 		   SET name                  = ?,
@@ -259,10 +301,12 @@ func updateTubeSpecRow(ctx context.Context, db *sql.DB, id int64, t storage.Tube
 		       max_segment_length_mm = ?,
 		       min_spacing_mm        = ?,
 		       wall_thickness_mm     = ?,
-		       bend_technique        = ?
+		       bend_technique        = ?,
+		       min_lead_in_mm        = ?,
+		       sharp_bend_angle_deg  = ?
 		 WHERE id = ?`,
 		t.Name, t.DiameterMM, t.MinBendRadiusMM, t.MaxSegmentLengthMM, t.MinSpacingMM,
-		wall, tech, id)
+		wall, tech, leadIn, sharpBend, id)
 	if err != nil {
 		// Surface UNIQUE name collisions as a 400-friendly error so the
 		// frontend can show the trimmed message instead of a 500.
@@ -358,6 +402,36 @@ func parseWallThicknessPatch(raw json.RawMessage) (*float64, bool, string) {
 	return &v, true, ""
 }
 
+// parseFloatRangePatch is the generic three-state PATCH parser for an
+// optional REAL column with an inclusive [min, max] range. Returns the
+// same (value, set, errMsg) triple as parseWallThicknessPatch:
+//   - (nil, false, "") when the field was omitted entirely;
+//   - (nil, true,  "") when the field was explicitly `null` (clear it);
+//   - (&v,  true,  "") when the field was a valid number in range;
+//   - (nil, false, "<msg>") on any parse / validation failure.
+//
+// Used for min_lead_in_mm and sharp_bend_angle_deg (Tier 3 #41); both
+// reuse the same shape as wall_thickness_mm — three-state nullable
+// numeric — so a shared helper avoids open-coding the same JSON
+// branching three times.
+func parseFloatRangePatch(raw json.RawMessage, field string, min, max float64) (*float64, bool, string) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, false, ""
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, true, ""
+	}
+	var v float64
+	if err := json.Unmarshal(trimmed, &v); err != nil {
+		return nil, false, fmt.Sprintf("%s must be a number or null", field)
+	}
+	if v < min || v > max {
+		return nil, false, fmt.Sprintf("%s must be between %g and %g (got %g)", field, min, max, v)
+	}
+	return &v, true, ""
+}
+
 // parseBendTechniquePatch interprets the raw JSON for bend_technique in
 // a PATCH body. Three-state plus an explicit empty-string clear, since
 // the column is TEXT not REAL:
@@ -439,4 +513,3 @@ func projectsForTubeSpec(ctx context.Context, db *sql.DB, tubeSpecID int64) ([]i
 	}
 	return out, rows.Err()
 }
-
