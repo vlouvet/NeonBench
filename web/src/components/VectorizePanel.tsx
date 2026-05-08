@@ -1,7 +1,8 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type DesignVersion, type VectorizeRequest } from '../api';
+import { DEFAULT_LUMA_R, DEFAULT_LUMA_G, DEFAULT_LUMA_B } from '../lib/binarize';
 import { cacheToFullRes } from '../lib/cropCoords';
-import { estimateSkewDegrees } from '../lib/hough';
+import { houghPeaks } from '../lib/hough';
 
 // Max dimension we'll render the preview at. Source images larger than this
 // are downsampled before being binarized — this is a UI hint, not the actual
@@ -42,6 +43,15 @@ type Adjustments = {
   cropY: number | '';
   cropW: number | '';
   cropH: number | '';
+  // Per-channel luminance weights used by the preview's binarize pass.
+  // Default to Rec. 601 (0.299 / 0.587 / 0.114). Sliders are only shown
+  // for raster sources (JPEG/PNG); SVGs skip the binarize pipeline.
+  // NB: this is preview-only state — the backend recomputes luminance
+  // with its own (Rec. 601) weights, so we don't ship these in the
+  // vectorize request.
+  lumaR: number;
+  lumaG: number;
+  lumaB: number;
 };
 
 const DEFAULT_ADJUSTMENTS: Adjustments = {
@@ -52,6 +62,9 @@ const DEFAULT_ADJUSTMENTS: Adjustments = {
   cropY: '',
   cropW: '',
   cropH: '',
+  lumaR: DEFAULT_LUMA_R,
+  lumaG: DEFAULT_LUMA_G,
+  lumaB: DEFAULT_LUMA_B,
 };
 
 // Adjusted buffer: pixel data + dimensions after rotate/crop/brightness/
@@ -254,8 +267,11 @@ type CropDragMode =
       // drag, two corners share an axis with the anchor and don't move on
       // that axis; we encode this via `axis`:
       //   'both' = corner drag (free X and Y)
-      //   'x'    = vertical edge drag (free X only — Y locked)
-      //   'y'    = horizontal edge drag (free Y only — X locked)
+      //   'x'    = vertical edge drag (left/right) — X follows pointer,
+      //            both Y sides locked at anchorY (one corner) and
+      //            lockedOppositeY (the other).
+      //   'y'    = horizontal edge drag (top/bottom) — Y follows pointer,
+      //            both X sides locked at anchorX and lockedOppositeX.
       anchorCacheX: number;
       anchorCacheY: number;
       // For edge drags, the OPPOSITE-side coordinate that must stay fixed
@@ -479,8 +495,10 @@ export default function VectorizePanel({
 
   // Re-binarize whenever the deferred threshold or the adjusted buffer
   // change. Backend convention: luminance < threshold → foreground (black).
-  // We use Rec. 601 luma; the source is composited onto white above so
-  // transparent pixels don't surprise us.
+  // We use Rec. 601 luma by default (0.299 / 0.587 / 0.114) — the user can
+  // tilt this via the per-channel sliders below for tinted source photos.
+  // The source is composited onto white above so transparent pixels don't
+  // surprise us.
   useEffect(() => {
     if (!adjustedBuffer) return;
     const canvas = binCanvasRef.current;
@@ -492,8 +510,11 @@ export default function VectorizePanel({
     const px = adjustedBuffer.pixels;
     const out = new Uint8ClampedArray(px.length);
     const t = deferredThreshold;
+    const wr = deferredAdjustments.lumaR;
+    const wg = deferredAdjustments.lumaG;
+    const wb = deferredAdjustments.lumaB;
     for (let i = 0; i < px.length; i += 4) {
-      const lum = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+      const lum = wr * px[i] + wg * px[i + 1] + wb * px[i + 2];
       const v = lum < t ? 0 : 255;
       out[i] = v;
       out[i + 1] = v;
@@ -505,7 +526,7 @@ export default function VectorizePanel({
       0,
       0,
     );
-  }, [adjustedBuffer, deferredThreshold]);
+  }, [adjustedBuffer, deferredThreshold, deferredAdjustments.lumaR, deferredAdjustments.lumaG, deferredAdjustments.lumaB]);
 
   // Display dimensions for the preview canvases — keep the aspect ratio of
   // the *adjusted* buffer (rotation grows it, crop shrinks it).
@@ -535,8 +556,40 @@ export default function VectorizePanel({
   // pointermove handlers run on the window and don't need to re-render.
   const cropDragRef = useRef<CropDragMode>({ kind: 'none' });
   const overlayRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-rotate badge state. Two layers:
+  //
+  //   - `autoRotateHint`: transient toast under the slider that summarises
+  //     the most recent run ("Detected −1.7° skew → +1.7°"). Auto-clears
+  //     after 4 s.
+  //   - `autoRotateBadge`: sticky pill near the rotation row that survives
+  //     the timer and slider drags. Records the primary peak (and an
+  //     optional alternate within 0.5× of its confidence). Clicking the
+  //     primary half re-applies the cached rotation; clicking the alternate
+  //     applies the ±90° folded variant ("Try ±90°"). Reset when the
+  //     source asset changes; persists across slider edits otherwise so
+  //     the suggestion is recoverable long after the toast fades.
+  type AutoRotateBadge = {
+    primaryAngleDeg: number;
+    primaryConfidence: number;
+    alternateAngleDeg: number | null;
+    alternateConfidence: number | null;
+  };
   const [autoRotateHint, setAutoRotateHint] = useState<string | null>(null);
+  const [autoRotateBadge, setAutoRotateBadge] = useState<AutoRotateBadge | null>(null);
   const autoRotateTimerRef = useRef<number | null>(null);
+
+  // Reset the badge whenever the source asset changes — the previous
+  // suggestion is meaningless against a different image. We piggyback on
+  // the existing `sourceKey` render-time-reset pattern (above) rather than
+  // using an effect, because effects that synchronously call setState are
+  // flagged by `react-hooks/set-state-in-effect`.
+  const [autoRotateAssetKey, setAutoRotateAssetKey] = useState<string>(currentKey);
+  if (autoRotateAssetKey !== currentKey) {
+    setAutoRotateAssetKey(currentKey);
+    setAutoRotateBadge(null);
+    setAutoRotateHint(null);
+  }
 
   // Resolve the current crop rectangle from `adjustments`. Returns null when
   // any of the four fields is unset — the overlay then renders the rubber-
@@ -635,25 +688,58 @@ export default function VectorizePanel({
       // its drag-start size via lockedOppositeX/Y.
       let oppX = drag.axis === 'y' ? drag.lockedOppositeX : cur.x;
       let oppY = drag.axis === 'x' ? drag.lockedOppositeY : cur.y;
-      // Aspect-ratio lock with Shift on a true corner drag. For edge drags
-      // Shift has no effect — there's only one free dimension.
-      if (e.shiftKey && drag.axis === 'both' && drag.startAspect > 0) {
-        const dx = oppX - drag.anchorCacheX;
-        const dy = oppY - drag.anchorCacheY;
-        const absDx = Math.abs(dx);
-        const absDy = Math.abs(dy);
-        if (absDx >= absDy) {
-          const sign = dy < 0 ? -1 : 1;
-          oppY = drag.anchorCacheY + sign * (absDx / drag.startAspect);
-        } else {
-          const sign = dx < 0 ? -1 : 1;
-          oppX = drag.anchorCacheX + sign * absDy * drag.startAspect;
+      let anchorX = drag.anchorCacheX;
+      let anchorY = drag.anchorCacheY;
+      // Aspect-ratio lock with Shift.
+      //
+      // Corner drag (axis='both'): clamp the dragged corner so the
+      // resulting rectangle preserves startAspect (W/H). The dominant
+      // axis (by absolute pointer delta) wins and the other axis is
+      // computed.
+      //
+      // Edge drag (axis='x' or 'y'): the dragged edge sets one
+      // dimension; the locked dimension expands SYMMETRICALLY around
+      // the rectangle's center so the rectangle grows as a whole rather
+      // than shifting sideways. We override anchor/oppX/oppY for the
+      // locked axis to achieve this — the per-axis "anchor stays put"
+      // semantics only applies when Shift is OFF.
+      if (e.shiftKey && drag.startAspect > 0) {
+        if (drag.axis === 'both') {
+          const dx = oppX - drag.anchorCacheX;
+          const dy = oppY - drag.anchorCacheY;
+          const absDx = Math.abs(dx);
+          const absDy = Math.abs(dy);
+          if (absDx >= absDy) {
+            const sign = dy < 0 ? -1 : 1;
+            oppY = drag.anchorCacheY + sign * (absDx / drag.startAspect);
+          } else {
+            const sign = dx < 0 ? -1 : 1;
+            oppX = drag.anchorCacheX + sign * absDy * drag.startAspect;
+          }
+        } else if (drag.axis === 'y') {
+          // Top/bottom edge dragged: free dimension is height. Compute
+          // the new width = |newHeight| * startAspect, distributed
+          // symmetrically around the rectangle's X center.
+          const newH = Math.abs(cur.y - drag.anchorCacheY);
+          const newW = newH * drag.startAspect;
+          const xCenter = (drag.anchorCacheX + drag.lockedOppositeX) / 2;
+          anchorX = xCenter - newW / 2;
+          oppX = xCenter + newW / 2;
+          oppY = cur.y;
+        } else if (drag.axis === 'x') {
+          // Left/right edge dragged: free dimension is width.
+          const newW = Math.abs(cur.x - drag.anchorCacheX);
+          const newH = newW / drag.startAspect;
+          const yCenter = (drag.anchorCacheY + drag.lockedOppositeY) / 2;
+          anchorY = yCenter - newH / 2;
+          oppY = yCenter + newH / 2;
+          oppX = cur.x;
         }
       }
-      const x = Math.min(drag.anchorCacheX, oppX);
-      const y = Math.min(drag.anchorCacheY, oppY);
-      const w = Math.max(MIN_CROP_PX, Math.abs(oppX - drag.anchorCacheX));
-      const h = Math.max(MIN_CROP_PX, Math.abs(oppY - drag.anchorCacheY));
+      const x = Math.min(anchorX, oppX);
+      const y = Math.min(anchorY, oppY);
+      const w = Math.max(MIN_CROP_PX, Math.abs(oppX - anchorX));
+      const h = Math.max(MIN_CROP_PX, Math.abs(oppY - anchorY));
       commitCropRect({ x, y, w, h });
     }
     function onUp() {
@@ -749,28 +835,28 @@ export default function VectorizePanel({
           anchorY = y;
           break;
         case 't': // top edge: Y follows pointer, both X sides locked
-          anchorX = x + w;
+          anchorX = x;
           anchorY = y + h;
-          lockedOppositeX = x;
-          axis = 'x';
+          lockedOppositeX = x + w;
+          axis = 'y';
           break;
-        case 'b': // bottom edge
-          anchorX = x + w;
+        case 'b': // bottom edge: Y follows pointer, both X sides locked
+          anchorX = x;
           anchorY = y;
-          lockedOppositeX = x;
-          axis = 'x';
+          lockedOppositeX = x + w;
+          axis = 'y';
           break;
         case 'l': // left edge: X follows pointer, both Y sides locked
           anchorX = x + w;
-          anchorY = y + h;
-          lockedOppositeY = y;
-          axis = 'y';
+          anchorY = y;
+          lockedOppositeY = y + h;
+          axis = 'x';
           break;
-        case 'r': // right edge
+        case 'r': // right edge: X follows pointer, both Y sides locked
           anchorX = x;
-          anchorY = y + h;
-          lockedOppositeY = y;
-          axis = 'y';
+          anchorY = y;
+          lockedOppositeY = y + h;
+          axis = 'x';
           break;
       }
       cropDragRef.current = {
@@ -791,39 +877,82 @@ export default function VectorizePanel({
     [adjustedBuffer, cropRect, pointerToCache],
   );
 
+  // Apply a previously-detected angle to the rotation slider. Negates the
+  // detected skew because we want the rotation that UNDOES the detected
+  // tilt. Rounded to one decimal to match the slider step.
+  const applyRotationFromDetected = useCallback((detectedDeg: number) => {
+    const target = Math.round(-detectedDeg * 10) / 10;
+    setAdjustments((a) => ({ ...a, rotationDeg: target }));
+  }, []);
+
   // Auto-rotate. Runs synchronously — the Hough estimator on a 1024×768
   // cache buffer takes < 30 ms in dev, well under the 500 ms budget.
+  // We ask for the top 2 peaks: when a grid has both strong horizontal AND
+  // vertical features, the second peak surfaces the alternate orientation
+  // as a "Try ±90°" affordance.
   const onAutoRotate = useCallback(() => {
     if (!adjustedBuffer) return;
-    const result = estimateSkewDegrees(
+    const peaks = houghPeaks(
       adjustedBuffer.pixels,
       adjustedBuffer.width,
       adjustedBuffer.height,
-      { searchRangeDeg: 15 },
+      { searchRangeDeg: 15, k: 2 },
     );
     if (autoRotateTimerRef.current !== null) {
       window.clearTimeout(autoRotateTimerRef.current);
       autoRotateTimerRef.current = null;
     }
-    if (!result) {
+    if (peaks.length === 0) {
       setAutoRotateHint('No clear skew detected (try cropping first).');
+      // Don't clear an existing badge — the user might still want to
+      // re-summon a previous suggestion. They can use "Reset all
+      // adjustments" if they want a fresh start.
     } else {
-      // Negate: we want to apply the rotation that UNDOES the detected skew.
-      const target = Math.round(-result.angleDeg * 10) / 10;
-      setAdjustments((a) => ({ ...a, rotationDeg: target }));
-      const sign = result.angleDeg >= 0 ? '' : '−';
-      const absSkew = Math.abs(result.angleDeg).toFixed(1);
+      const primary = peaks[0];
+      applyRotationFromDetected(primary.angleDeg);
+      const target = Math.round(-primary.angleDeg * 10) / 10;
+      const sign = primary.angleDeg >= 0 ? '' : '−';
+      const absSkew = Math.abs(primary.angleDeg).toFixed(1);
       const targetSign = target >= 0 ? '+' : '−';
       const absTarget = Math.abs(target).toFixed(1);
       setAutoRotateHint(
         `Detected ${sign}${absSkew}° skew → ${targetSign}${absTarget}°`,
       );
+      // Surface the second candidate iff its confidence is within 0.5× of
+      // the primary's — i.e. it's plausibly the "right" answer too. This
+      // is the "Try ±90°" affordance: when both horizontal AND vertical
+      // strong features compete, the dominant peak is sometimes off by
+      // 90° from the user's mental model.
+      const alt = peaks[1];
+      const altWithinHalf =
+        alt && alt.confidence >= 0.5 * primary.confidence ? alt : null;
+      setAutoRotateBadge({
+        primaryAngleDeg: primary.angleDeg,
+        primaryConfidence: primary.confidence,
+        alternateAngleDeg: altWithinHalf ? altWithinHalf.angleDeg : null,
+        alternateConfidence: altWithinHalf ? altWithinHalf.confidence : null,
+      });
     }
     autoRotateTimerRef.current = window.setTimeout(() => {
       setAutoRotateHint(null);
       autoRotateTimerRef.current = null;
     }, 4000);
-  }, [adjustedBuffer]);
+  }, [adjustedBuffer, applyRotationFromDetected]);
+
+  // Click the sticky badge to re-apply the cached primary suggestion (e.g.
+  // after the user nudged the slider and wants the suggestion back).
+  const onBadgePrimaryClick = useCallback(() => {
+    if (!autoRotateBadge) return;
+    applyRotationFromDetected(autoRotateBadge.primaryAngleDeg);
+  }, [autoRotateBadge, applyRotationFromDetected]);
+
+  // Click the alternate ("Try ±90°") to apply the ±90° folded variant of
+  // the primary. The Hough estimator already folds peaks into (-45,+45], so
+  // the alternate IS the ±90° variant — just apply it directly.
+  const onBadgeAlternateClick = useCallback(() => {
+    if (!autoRotateBadge || autoRotateBadge.alternateAngleDeg === null) return;
+    applyRotationFromDetected(autoRotateBadge.alternateAngleDeg);
+  }, [autoRotateBadge, applyRotationFromDetected]);
 
   useEffect(() => {
     return () => {
@@ -1120,7 +1249,34 @@ export default function VectorizePanel({
                 >
                   Auto-rotate
                 </button>
+                {autoRotateBadge?.alternateAngleDeg !== null &&
+                  autoRotateBadge?.alternateAngleDeg !== undefined && (
+                    <button
+                      type="button"
+                      className="vp-auto-rotate-alt"
+                      onClick={onBadgeAlternateClick}
+                      disabled={source.kind !== 'ready'}
+                      title={`The Hough estimator found a near-equal candidate ${
+                        autoRotateBadge.alternateAngleDeg >= 0 ? '+' : ''
+                      }${autoRotateBadge.alternateAngleDeg.toFixed(1)}° away — try it if the dominant peak picked the wrong axis.`}
+                    >
+                      Try ±90°
+                    </button>
+                  )}
               </div>
+              {autoRotateBadge && (
+                <button
+                  type="button"
+                  className="vp-auto-rotate-badge"
+                  onClick={onBadgePrimaryClick}
+                  title="Re-apply the cached auto-rotate suggestion. Stays visible until you load a different image."
+                >
+                  Last:{' '}
+                  {autoRotateBadge.primaryAngleDeg >= 0 ? '+' : '−'}
+                  {Math.abs(autoRotateBadge.primaryAngleDeg).toFixed(1)}° (conf{' '}
+                  {autoRotateBadge.primaryConfidence.toFixed(1)}×)
+                </button>
+              )}
               {autoRotateHint && (
                 <span className="vp-auto-rotate-hint">{autoRotateHint}</span>
               )}
@@ -1159,6 +1315,77 @@ export default function VectorizePanel({
               />
             </label>
           </div>
+          <fieldset className="vp-rgb-mix">
+            <legend
+              title="Per-channel weights used to compute luminance for the binarize preview. Defaults to Rec. 601 (0.299 / 0.587 / 0.114). Tilt toward a channel for tinted source photos — e.g. lower G + B if the design's lines are bluish on a beige background. Preview-only: the backend recomputes luminance with its own Rec. 601 weights."
+            >
+              RGB luminance mix
+            </legend>
+            <div className="vp-grid">
+              <label title="Red weight (default 0.299).">
+                R ({adjustments.lumaR.toFixed(2)})
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={adjustments.lumaR}
+                  onChange={(e) =>
+                    setAdjustments((a) => ({
+                      ...a,
+                      lumaR: Number(e.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label title="Green weight (default 0.587).">
+                G ({adjustments.lumaG.toFixed(2)})
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={adjustments.lumaG}
+                  onChange={(e) =>
+                    setAdjustments((a) => ({
+                      ...a,
+                      lumaG: Number(e.target.value),
+                    }))
+                  }
+                />
+              </label>
+              <label title="Blue weight (default 0.114).">
+                B ({adjustments.lumaB.toFixed(2)})
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={adjustments.lumaB}
+                  onChange={(e) =>
+                    setAdjustments((a) => ({
+                      ...a,
+                      lumaB: Number(e.target.value),
+                    }))
+                  }
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              className="vp-rgb-reset"
+              onClick={() =>
+                setAdjustments((a) => ({
+                  ...a,
+                  lumaR: DEFAULT_LUMA_R,
+                  lumaG: DEFAULT_LUMA_G,
+                  lumaB: DEFAULT_LUMA_B,
+                }))
+              }
+            >
+              Reset to Rec. 601
+            </button>
+          </fieldset>
           <fieldset className="vp-crop">
             <legend>Crop (source pixels)</legend>
             <div className="vp-grid">

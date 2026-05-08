@@ -50,9 +50,26 @@ export type EstimateSkewOptions = {
   confidenceThreshold?: number;
 };
 
+// Per-peak ranked variant. Each entry's `confidence` is computed against the
+// same global median floor so the values are directly comparable; `angleDeg`
+// is the folded-into-(-45,+45] rotation that would level that peak's lines.
+export type SkewPeak = SkewEstimate;
+
+export type HoughPeaksOptions = EstimateSkewOptions & {
+  // Maximum number of peaks to return (default 2). Peaks within the same
+  // sub-window are suppressed via a small theta-bin window so a single broad
+  // ridge doesn't masquerade as two answers.
+  k?: number;
+  // Half-width (in theta bins) of the non-maximum-suppression window applied
+  // around each accepted peak before searching for the next. Tunable for
+  // tests; default 4 (≈ 1° at the default 0.25° step).
+  nmsHalfWidthBins?: number;
+};
+
 const DEFAULT_SEARCH_RANGE_DEG = 15;
 const DEFAULT_THETA_STEP_DEG = 0.25;
 const DEFAULT_CONFIDENCE_THRESHOLD = 3.0;
+const DEFAULT_NMS_HALF_WIDTH_BINS = 4;
 const MAX_WORKING_SIDE_PX = 512;
 const EDGE_KEEP_FRACTION = 0.2;
 
@@ -62,13 +79,36 @@ export function estimateSkewDegrees(
   height: number,
   opts: EstimateSkewOptions = {},
 ): SkewEstimate | null {
+  const peaks = houghPeaks(pixels, width, height, { ...opts, k: 1 });
+  return peaks.length > 0 ? peaks[0] : null;
+}
+
+// Multi-peak variant: returns up to `k` orientations sorted by confidence
+// (descending). Each peak is gated by the same confidence threshold as
+// estimateSkewDegrees, and peaks within the configured NMS window of an
+// already-accepted peak are suppressed so a single dominant ridge can't
+// fill the result list. Returns [] for degenerate input (no edges, low
+// confidence, peaks pinned to the search-range edge, etc.) — callers
+// should treat an empty array the same as estimateSkewDegrees returning
+// null.
+export function houghPeaks(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  opts: HoughPeaksOptions = {},
+): SkewPeak[] {
+  const k = Math.max(1, Math.floor(opts.k ?? 2));
   const searchRangeDeg = opts.searchRangeDeg ?? DEFAULT_SEARCH_RANGE_DEG;
   const thetaStepDeg = opts.thetaStepDeg ?? DEFAULT_THETA_STEP_DEG;
   const confidenceThreshold =
     opts.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
+  const nmsHalfWidth = Math.max(
+    0,
+    Math.floor(opts.nmsHalfWidthBins ?? DEFAULT_NMS_HALF_WIDTH_BINS),
+  );
 
-  if (width < 8 || height < 8) return null;
-  if (pixels.length !== width * height * 4) return null;
+  if (width < 8 || height < 8) return [];
+  if (pixels.length !== width * height * 4) return [];
 
   // Step 1: greyscale + downsample.
   const { gray, w, h } = greyscaleDownsample(pixels, width, height);
@@ -76,7 +116,7 @@ export function estimateSkewDegrees(
   // Step 2: Sobel magnitude + histogram-thresholded edge mask.
   const { mag, threshold } = sobelMagnitude(gray, w, h);
   const edges = collectEdgePixels(mag, w, h, threshold);
-  if (edges.length < 32) return null;
+  if (edges.length < 32) return [];
 
   // Step 3: Hough accumulator.
   //
@@ -123,10 +163,9 @@ export function estimateSkewDegrees(
     }
   }
 
-  // Step 4: peak detection. For each theta bin, take the max-rho cell.
+  // Step 4: per-theta-bin score = max-rho cell. Used by both the global
+  // median (the confidence floor) and the iterated peak search below.
   const binMax = new Uint32Array(nThetas);
-  let peakBin = 0;
-  let peakValue = 0;
   for (let t = 0; t < nThetas; t++) {
     let m = 0;
     const rowStart = t * nRhos;
@@ -135,57 +174,91 @@ export function estimateSkewDegrees(
       if (v > m) m = v;
     }
     binMax[t] = m;
-    if (m > peakValue) {
-      peakValue = m;
-      peakBin = t;
-    }
   }
-  if (peakValue === 0) return null;
 
   const sorted = Array.from(binMax).sort((a, b) => a - b);
   const median = sorted[Math.floor(sorted.length / 2)];
-  const confidence = peakValue / (median + 1);
 
-  if (confidence < confidenceThreshold) return null;
+  // Iterate up to k peaks. After accepting a peak we zero out its NMS
+  // window in `available` so the next-strongest peak comes from a
+  // different ridge. We never zero `binMax` itself — sub-bin refinement
+  // still reads the original bin scores.
+  const available = new Uint8Array(nThetas);
+  available.fill(1);
+  // Don't allow peaks at the edge of either sub-window; the final-guard
+  // logic below already declines them, and eliding them up front avoids
+  // wasted iterations when the strongest cell happens to be on the rail.
+  available[0] = 0;
+  available[subRangeLen - 1] = 0;
+  available[subRangeLen] = 0;
+  available[2 * subRangeLen - 1] = 0;
 
-  // Sub-bin parabolic refinement: fit a parabola through (peakBin-1, peak,
-  // peakBin+1) bin scores to nudge the angle estimate toward the true peak
-  // when it sits between bins. Only apply within a contiguous sub-range —
-  // the sweep is two disjoint [-h,+h] and [90-h,90+h] windows, so the joint
-  // between them is not a smooth neighbourhood.
-  let dominantThetaDeg = thetas[peakBin];
-  // Index within its sub-range: 0..subRangeLen-1 for the first window, then
-  // 0..subRangeLen-1 for the second.
-  const subIdx = peakBin < subRangeLen ? peakBin : peakBin - subRangeLen;
-  if (subIdx > 0 && subIdx < subRangeLen - 1) {
-    const yPrev = binMax[peakBin - 1];
-    const yPeak = binMax[peakBin];
-    const yNext = binMax[peakBin + 1];
-    const denom = yPrev - 2 * yPeak + yNext;
-    if (denom !== 0) {
-      const offset = (0.5 * (yPrev - yNext)) / denom;
-      if (offset > -1 && offset < 1) {
-        dominantThetaDeg += offset * thetaStepDeg;
+  const peaks: SkewPeak[] = [];
+  for (let pick = 0; pick < k; pick++) {
+    let peakBin = -1;
+    let peakValue = 0;
+    for (let t = 0; t < nThetas; t++) {
+      if (!available[t]) continue;
+      const v = binMax[t];
+      if (v > peakValue) {
+        peakValue = v;
+        peakBin = t;
       }
     }
+    if (peakBin < 0 || peakValue === 0) break;
+
+    const confidence = peakValue / (median + 1);
+    if (confidence < confidenceThreshold) break;
+
+    // Sub-bin parabolic refinement: fit a parabola through (peakBin-1,
+    // peak, peakBin+1) bin scores to nudge the angle estimate toward
+    // the true peak when it sits between bins. Only apply within a
+    // contiguous sub-range — the sweep is two disjoint [-h,+h] and
+    // [90-h,90+h] windows, so the joint between them is not a smooth
+    // neighbourhood.
+    let dominantThetaDeg = thetas[peakBin];
+    const subIdx = peakBin < subRangeLen ? peakBin : peakBin - subRangeLen;
+    if (subIdx > 0 && subIdx < subRangeLen - 1) {
+      const yPrev = binMax[peakBin - 1];
+      const yPeak = binMax[peakBin];
+      const yNext = binMax[peakBin + 1];
+      const denom = yPrev - 2 * yPeak + yNext;
+      if (denom !== 0) {
+        const offset = (0.5 * (yPrev - yNext)) / denom;
+        if (offset > -1 && offset < 1) {
+          dominantThetaDeg += offset * thetaStepDeg;
+        }
+      }
+    }
+
+    // Final guard: peaks at the edge of either sub-window can't be
+    // refined, and the true skew may lie outside our search range. Skip
+    // and keep iterating — but make sure the bin gets suppressed below
+    // so we don't infinite-loop on it.
+    const onSubEdge =
+      subIdx === 0 || subIdx === subRangeLen - 1;
+    if (!onSubEdge) {
+      const angleDeg = thetaToRotation(dominantThetaDeg);
+      peaks.push({
+        angleDeg: roundTo(angleDeg, 4),
+        confidence: roundTo(confidence, 4),
+      });
+    }
+
+    // Non-maximum suppression: zero a window of `nmsHalfWidth` bins on
+    // each side of the picked bin within its own sub-window. We don't
+    // suppress across the sub-window boundary; horizontal-vs-vertical
+    // ridges are exactly what the multi-peak path is meant to surface.
+    const subStart = peakBin < subRangeLen ? 0 : subRangeLen;
+    const subEnd = peakBin < subRangeLen ? subRangeLen - 1 : 2 * subRangeLen - 1;
+    const lo = Math.max(subStart, peakBin - nmsHalfWidth);
+    const hi = Math.min(subEnd, peakBin + nmsHalfWidth);
+    for (let t = lo; t <= hi; t++) available[t] = 0;
   }
 
-  // Final guard: if the peak sits on the edge of either sub-window, the
-  // true skew may exceed our range and any answer we'd return would be
-  // misleading. Treat it as "outside search range" and decline.
-  if (subIdx === 0 || subIdx === subRangeLen - 1) {
-    return null;
-  }
-
-  // Step 5: theta → rotation. Map dominantThetaDeg into (-45, +45] so we
-  // return the small rotation that levels the image, not the equivalent
-  // 90°-flipped one.
-  const angleDeg = thetaToRotation(dominantThetaDeg);
-
-  return {
-    angleDeg: roundTo(angleDeg, 4),
-    confidence: roundTo(confidence, 4),
-  };
+  // Already in confidence-descending order: each pick took the global max
+  // of the remaining `available` bins.
+  return peaks;
 }
 
 // Convert a Hough-line-normal angle (degrees) into the small rotation that
