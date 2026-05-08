@@ -3,6 +3,12 @@
   margin: 0 auto;
   padding: 1.5rem;
 }
+/* The editor needs the full viewport width — toolbar + canvas + sidebar
+ * don't fit in 960px and the canvas wants every pixel. List/detail pages
+ * stay capped because forms read better at column width. */
+.app:has(.editor-section) {
+  max-width: none;
+}
 
 .app-header {
   padding-bottom: 1rem;
@@ -617,6 +623,7 @@
 
 .editor-toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.25rem;
   align-items: center;
 }
