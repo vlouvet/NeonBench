@@ -11,13 +11,16 @@ import (
 	"github.com/vlouvet/neonbench/internal/storage"
 )
 
-// handlePrintDXF emits an AutoCAD R12 ASCII DXF for the requested design
+// handlePrintDXF emits an AutoCAD ASCII DXF for the requested design
 // version. Mirrors handlePrintPDF's shape: same path-id parsing, same
 // project/version-mismatch guard, same filename sanitizer.
 //
-// V1 scope: geometry only. The DXF is the bender feed; the PDF remains
-// the human-facing pattern. Annotations as DXF text/circle entities are
-// a Tier 3 follow-up.
+// Default dialect is R12 (AC1009), the lowest-common-denominator dialect
+// every tube-bender CAM importer accepts. A ?dialect=r2000 query param
+// switches to AC1015 for shops whose drafting front-end prefers a newer
+// dialect. Anything else (including missing/empty) is treated as R12 —
+// we don't 400 on an unknown value because the file is still valid R12,
+// and a typo'd URL shouldn't silently break a shop's print pipeline.
 //
 // Unlike the PDF handler we do NOT fall back to parsing v.SVGData if
 // design_doc_json is absent: legacy versions saved before the editor
@@ -58,8 +61,13 @@ func (s *apiServer) handlePrintDXF(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dialect := printdxf.DialectR12
+	if r.URL.Query().Get("dialect") == "r2000" {
+		dialect = printdxf.DialectR2000
+	}
+
 	var buf bytes.Buffer
-	if err := printdxf.EmitDXF(&buf, &doc); err != nil {
+	if err := printdxf.EmitDXFDialect(&buf, &doc, dialect); err != nil {
 		writeError(w, http.StatusInternalServerError, "render dxf: "+err.Error())
 		return
 	}
