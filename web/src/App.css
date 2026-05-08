@@ -1047,6 +1047,84 @@
   outline: none;
 }
 
+/* Tier 3 #52: Print popover.
+ *
+ * Anchored under the toolbar's Print button group. The wrapper that
+ * holds the Print button + caret is `position: relative` so this
+ * absolute popover renders below the button (top: 100%) without
+ * displacing toolbar layout. Width matches the field content plus a
+ * small breathing margin; the popover never gets wide enough to
+ * overflow the toolbar on its right edge in practice (paper-label
+ * strings cap at ~25ch). Animation is a simple translate-fade so the
+ * surface feels attached to the button rather than jumping in. */
+.print-toolbar-group {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+.print-popover-toggle {
+  /* Visually a continuation of the Print button — same height /
+   * border-radius family — but narrower (caret only). Sits flush
+   * to the right of the Print button so the two read as one
+   * compound control. */
+  padding: 0.4rem 0.5rem;
+  font-size: 0.875rem;
+  margin-left: -1px; /* fold the borders together */
+}
+.print-popover-toggle.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.print-popover {
+  position: absolute;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  min-width: 14rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.625rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  z-index: 20;
+  animation: print-popover-in 90ms ease-out;
+}
+@keyframes print-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.print-popover-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+.print-popover-field select {
+  color: var(--text);
+  width: 100%;
+}
+.print-popover-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8125rem;
+  color: var(--text);
+  cursor: pointer;
+}
+.print-popover-checkbox input[type='checkbox'] {
+  margin: 0;
+}
+
 /* Tier 3 #32: Print via OS dialog.
  *
  * The Print button on the editor toolbar mounts a hidden <iframe> that

@@ -15,6 +15,7 @@ import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
 import PrintHost from '../components/PrintHost';
+import PrintPopover, { type PrintPopoverValues } from '../components/PrintPopover';
 import ValidationReportView, {
   type SeverityFilter,
 } from '../components/ValidationReportView';
@@ -146,6 +147,17 @@ export default function EditorPage() {
   // We snapshot the URL so changing tube-spec / paper after clicking
   // Print doesn't yank the iframe content mid-spool.
   const [printSrc, setPrintSrc] = useState<string | null>(null);
+  // Tier 3 #52 — popover state for the Print button. Defaults match
+  // <PrintPanel> on ProjectDetail (US Letter, portrait, full pattern)
+  // so the toolbar Print and the project-page download produce the
+  // same PDF when the operator hasn't fiddled with the dropdown.
+  const [printPopoverOpen, setPrintPopoverOpen] = useState(false);
+  const [printOpts, setPrintOpts] = useState<PrintPopoverValues>({
+    paper: 'letter',
+    landscape: false,
+    stripsOnly: false,
+  });
+  const printGroupRef = useRef<HTMLDivElement | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
   // user picked (via the "Join from head/tail" sidebar buttons). The
   // second click in the canvas commits the join + clears this.
@@ -1209,25 +1221,57 @@ export default function EditorPage() {
               title="Snap grid spacing in mm"
             />
             <span className="toolbar-divider" aria-hidden />
-            <button
-              type="button"
-              className="tool-btn"
-              onClick={() => {
-                // Snapshot the URL up front: the saved version is the
-                // source of truth (live edits aren't persisted), so we
-                // print whatever was last committed under this `vid`.
-                if (dirty) return;
-                setPrintSrc(api.printPDFURL(projectId, versionId));
-              }}
-              disabled={dirty || printSrc !== null}
-              title={
-                dirty
-                  ? 'Save your edits first — Print uses the last saved version of this design.'
-                  : 'Open the OS print dialog with the 1:1 print pattern (PDF). Pick paper / printer / driver options in the dialog.'
-              }
-            >
-              {printSrc ? 'Printing…' : 'Print'}
-            </button>
+            <div className="print-toolbar-group" ref={printGroupRef}>
+              <button
+                type="button"
+                className="tool-btn"
+                onClick={() => {
+                  // Snapshot the URL up front: the saved version is the
+                  // source of truth (live edits aren't persisted), so we
+                  // print whatever was last committed under this `vid`.
+                  if (dirty) return;
+                  setPrintSrc(api.printPDFURL(projectId, versionId, printOpts));
+                }}
+                disabled={dirty || printSrc !== null}
+                title={
+                  dirty
+                    ? 'Save your edits first — Print uses the last saved version of this design.'
+                    : 'Open the OS print dialog with the 1:1 print pattern (PDF). Use the caret to pick paper / landscape / strips-only.'
+                }
+              >
+                {printSrc ? 'Printing…' : 'Print'}
+              </button>
+              <button
+                type="button"
+                className={
+                  printPopoverOpen
+                    ? 'tool-btn print-popover-toggle active'
+                    : 'tool-btn print-popover-toggle'
+                }
+                onClick={() => setPrintPopoverOpen((v) => !v)}
+                disabled={dirty || printSrc !== null}
+                aria-haspopup="dialog"
+                aria-expanded={printPopoverOpen}
+                aria-label="Print options"
+                title={
+                  dirty
+                    ? 'Save your edits first — print options are unavailable while there are unsaved changes.'
+                    : 'Print options: paper size, landscape, strips only.'
+                }
+              >
+                {/* Down-caret glyph; matches the muted-text colour
+                    pulled from var(--text). */}
+                {'▾'}
+              </button>
+              {printPopoverOpen && (
+                <PrintPopover
+                  values={printOpts}
+                  onChange={setPrintOpts}
+                  onClose={() => setPrintPopoverOpen(false)}
+                  anchorRef={printGroupRef}
+                />
+              )}
+            </div>
           </div>
         </div>
         <p className="meta">
