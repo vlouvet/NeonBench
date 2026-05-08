@@ -1,3 +1,12 @@
+// react-refresh/only-export-components flags non-component named
+// exports because Fast Refresh can't preserve their identity across
+// HMR boundaries. We export `filterVisibleRuns` (a pure helper) and
+// the bloom tuning constants alongside the `Scene` component because
+// they're tightly coupled to it. Splitting them into a separate
+// module would balloon the file scope for V1; if HMR state-keeping
+// for the scene ever becomes a real friction we can hoist them then.
+// Same disable strategy as `SceneControls.tsx`.
+/* eslint-disable react-refresh/only-export-components */
 import {
   useCallback,
   useContext,
@@ -18,8 +27,10 @@ import {
   EffectComposerContext,
 } from '@react-three/postprocessing';
 import * as THREE from 'three';
-import type { DesignDoc } from '../api';
+import type { DesignDoc, DesignRun, Group } from '../api';
+import { isGroupVisible } from '../api';
 import Tube from './Tube';
+// `isGroupVisible` is consumed inside `filterVisibleRuns` below.
 import {
   bboxOfDoc,
   cameraPositionForPreset,
@@ -141,6 +152,45 @@ export const BLOOM_LUMINANCE_THRESHOLD = 0.4;
 export const BLOOM_LUMINANCE_SMOOTHING = 0.2;
 export const BLOOM_RADIUS = 0.7;
 export const BLOOM_MIPMAP_BLUR = true;
+
+/**
+ * Pure helper — pick the runs that should render given a focused
+ * group id and the doc's group-visibility flags. Two filters compose:
+ *
+ *   1. Group visibility (Tier 3 #33c, deferred 3D-side bit picked up
+ *      in Tier 3 #63): a run whose owning group has `visible === false`
+ *      is hidden globally. `undefined` is treated as visible — the
+ *      pre-33c persisted-doc back-compat rule.
+ *   2. Group focus (Tier 3 #63): when `selectedGroupId` is set, only
+ *      runs whose `group_id` matches render; everything else is
+ *      hidden.
+ *
+ * A run with no `group_id` ("ungrouped") always passes the visibility
+ * filter (no group → no hide-state) and only passes the focus filter
+ * when no focus is active. The two filters are independent — a focused
+ * group with `visible === false` correctly returns no runs at all.
+ *
+ * Exported so the unit tests can exercise the composition without
+ * spinning up the React tree.
+ */
+export function filterVisibleRuns(
+  runs: DesignRun[],
+  groups: Group[] | undefined,
+  selectedGroupId: string | null | undefined,
+): DesignRun[] {
+  const visibilityById = new Map<string, boolean>();
+  for (const g of groups ?? []) visibilityById.set(g.id, isGroupVisible(g));
+  const focus =
+    typeof selectedGroupId === 'string' && selectedGroupId.length > 0
+      ? selectedGroupId
+      : null;
+  return runs.filter((run) => {
+    const gid = run.group_id;
+    if (gid && visibilityById.get(gid) === false) return false;
+    if (focus && gid !== focus) return false;
+    return true;
+  });
+}
 
 /**
  * Read `?nobloom` from the current URL search string. Returns true
@@ -288,13 +338,16 @@ function WallBacking({
   enabled,
   color,
   doc,
+  selectedGroupId,
 }: {
   enabled: boolean;
   color: string;
   doc: DesignDoc | null;
+  /** Tier 3 #63 — when set, the wall sizes to the group's bbox, not the doc's. */
+  selectedGroupId?: string | null;
 }) {
   if (!enabled) return null;
-  const bbox = bboxOfDoc(doc);
+  const bbox = bboxOfDoc(doc, selectedGroupId);
   const width = Math.max(bbox.size.x * WALL_SIZE_FACTOR, WALL_MIN_SIZE_MM);
   const height = Math.max(bbox.size.y * WALL_SIZE_FACTOR, WALL_MIN_SIZE_MM);
   return (
@@ -319,6 +372,7 @@ export default function Scene({
   doc,
   defaultDiameterMM,
   presetRequest,
+  selectedGroupId = null,
   backgroundColor = '#1a1a1a',
   ambientIntensity = 0.3,
   wallEnabled = false,
@@ -332,6 +386,22 @@ export default function Scene({
   defaultDiameterMM?: number;
   /** When this changes (by nonce), Scene animates the camera to the named preset. */
   presetRequest?: PresetRequest;
+  /**
+   * Tier 3 #63 — when non-null/non-empty, restrict rendered runs to
+   * those whose `group_id` matches. Camera-fit, wall-plane sizing,
+   * and bbox-fed framing all key off the filtered subset so the
+   * preview reframes to just the focal group.
+   *
+   * Composes with the group's `visible` flag (Tier 3 #33c, deferred
+   * 3D-side bit picked up here): a run renders iff its group is
+   * visible AND (no `selectedGroupId` OR `run.group_id` matches it).
+   *
+   * Unknown / stale group ids (no matching `Group` in `doc.groups`)
+   * fall back to the unfiltered behavior with a `console.warn` so a
+   * shared / bookmarked URL with a stale id doesn't show a black
+   * scene.
+   */
+  selectedGroupId?: string | null;
   /** Scene background hex (applied via `<color attach="background">`). */
   backgroundColor?: string;
   /** Ambient light intensity, 0..1. */
@@ -363,6 +433,40 @@ export default function Scene({
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const { camera } = useThree();
+
+  // Resolve `selectedGroupId` to an "effective" filter id. An empty
+  // string is normalized to null (treat `?groupId=` the same as
+  // missing). An unknown id (no matching entry in `doc.groups`) is
+  // also normalized to null with a `console.warn` so a stale /
+  // bookmarked URL doesn't render a black scene with no runs. Once
+  // normalized, this single value flows into the run filter, the
+  // initial-fit bbox, the per-preset framing bbox, and the wall
+  // plane sizing, so they all agree on what "visible" means. Tier
+  // 3 #63.
+  const effectiveGroupId = useMemo<string | null>(() => {
+    if (!selectedGroupId) return null;
+    if (!doc) return selectedGroupId; // doc still loading — keep the id, fallback path below covers it
+    const groups = doc.groups ?? [];
+    const present = groups.some((g) => g.id === selectedGroupId);
+    if (!present) {
+      // Unknown group id (e.g. shared link to a deleted group, or a
+      // typo). Warn once and behave as if no filter were set.
+      console.warn(
+        `[Preview] Unknown selectedGroupId "${selectedGroupId}"; rendering all groups.`,
+      );
+      return null;
+    }
+    return selectedGroupId;
+  }, [selectedGroupId, doc]);
+
+  // The runs that actually render — composes the visibility filter
+  // (Tier 3 #33c carried over) with the focus filter (Tier 3 #63).
+  // The pure helper above is the single source of truth for the
+  // composition rules; the unit test exercises it directly.
+  const visibleRuns = useMemo(() => {
+    if (!doc) return [];
+    return filterVisibleRuns(doc.runs, doc.groups, effectiveGroupId);
+  }, [doc, effectiveGroupId]);
 
   // Live `EffectComposer` handle. `<ComposerBridge>` (rendered inside
   // `<EffectComposer>` when bloom is active) writes into this ref;
@@ -405,7 +509,7 @@ export default function Scene({
   useEffect(() => {
     if (didInitialFitRef.current) return;
     if (!doc) return;
-    const bbox = bboxOfDoc(doc);
+    const bbox = bboxOfDoc(doc, effectiveGroupId);
     const { position, target } = cameraPositionForPreset('front', bbox);
     camera.position.copy(position);
     if (controlsRef.current) {
@@ -413,16 +517,52 @@ export default function Scene({
       controlsRef.current.update();
     }
     didInitialFitRef.current = true;
-  }, [doc, camera]);
+  }, [doc, camera, effectiveGroupId]);
+
+  // Tier 3 #63 — when the user changes the focused group (URL → prop)
+  // the camera should reframe to the new bbox. We re-use the front-
+  // preset framing for consistency with the initial-fit behavior;
+  // animating into the new bbox via the existing preset machinery
+  // keeps the transition feel identical to clicking a preset button.
+  // Skip the very first run (the initial-fit effect above already
+  // handled it) so we don't double-animate on mount.
+  const previousGroupRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    if (previousGroupRef.current === undefined) {
+      previousGroupRef.current = effectiveGroupId;
+      return;
+    }
+    if (previousGroupRef.current === effectiveGroupId) return;
+    previousGroupRef.current = effectiveGroupId;
+    if (!doc) return;
+    const bbox = bboxOfDoc(doc, effectiveGroupId);
+    const { position, target } = cameraPositionForPreset('front', bbox);
+    animationRef.current = {
+      startMs: performance.now(),
+      fromPos: camera.position.clone(),
+      toPos: position,
+      fromTarget: controlsRef.current
+        ? controlsRef.current.target.clone()
+        : new THREE.Vector3(),
+      toTarget: target,
+    };
+  }, [effectiveGroupId, doc, camera]);
 
   // When a new preset is requested, kick off an animation. We
   // capture the *current* camera position + orbit target as the
   // "from", and compute the preset framing for the current bbox as
   // the "to". Subsequent ticks of `useFrame` interpolate between
   // them with `easeInOutCubic`.
+  //
+  // `effectiveGroupId` is in the dep list because the bbox the
+  // preset frames depends on it (Tier 3 #63 — preset framing should
+  // match the focused group's bbox). Re-running on a group change
+  // here is harmless: the dedicated group-change effect below
+  // already kicks an animation, and without an active
+  // `presetRequest` the body short-circuits.
   useEffect(() => {
     if (!presetRequest) return;
-    const bbox = bboxOfDoc(doc);
+    const bbox = bboxOfDoc(doc, effectiveGroupId);
     const { position, target } = cameraPositionForPreset(
       presetRequest.preset,
       bbox,
@@ -438,7 +578,7 @@ export default function Scene({
     };
     // The animation runs in useFrame below; nothing else to do
     // here.
-  }, [presetRequest, doc, camera]);
+  }, [presetRequest, doc, camera, effectiveGroupId]);
 
   useFrame(() => {
     const anim = animationRef.current;
@@ -476,8 +616,13 @@ export default function Scene({
           basic-material tubes, but kept so Phase 3 #3+ has a stable
           rig to inherit. */}
       <directionalLight position={[100, 200, 100]} intensity={0.7} />
-      <WallBacking enabled={wallEnabled} color={wallColor} doc={doc} />
-      {doc?.runs.map((run) => (
+      <WallBacking
+        enabled={wallEnabled}
+        color={wallColor}
+        doc={doc}
+        selectedGroupId={effectiveGroupId}
+      />
+      {visibleRuns.map((run) => (
         <Tube
           key={run.id}
           run={run}

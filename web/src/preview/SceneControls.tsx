@@ -7,7 +7,9 @@
 // state-keeping for the sidebar ever becomes a real friction we can
 // hoist the constants then.
 /* eslint-disable react-refresh/only-export-components */
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { isGroupVisible, type DesignDoc, type Group } from '../api';
 import {
   BLOOM_INTENSITY,
   BLOOM_LUMINANCE_THRESHOLD,
@@ -93,6 +95,21 @@ export interface SceneControlsProps {
    * also clear localStorage so the next mount starts fresh.
    */
   onResetDefaults: () => void;
+  /**
+   * Tier 3 #63 — passed through so the panel can render one Group
+   * `<select>` row populated from `doc.groups`. The component reaches
+   * for `react-router-dom`'s `useNavigate` directly to write the
+   * `?groupId=` URL state (URL is the canonical location of the
+   * selection — see `PreviewPage` for the read side). Optional so
+   * tests / non-route consumers can mount the panel without a doc.
+   */
+  doc?: DesignDoc | null;
+  /**
+   * Currently-selected group id (mirrored from the URL by
+   * `PreviewPage`). `null` / `undefined` / empty string all mean
+   * "All groups" and the `<select>` lands on the leading option.
+   */
+  selectedGroupId?: string | null;
 }
 
 export default function SceneControls({
@@ -100,8 +117,12 @@ export default function SceneControls({
   onChange,
   onScreenshot,
   onResetDefaults,
+  doc = null,
+  selectedGroupId = null,
 }: SceneControlsProps) {
   const [expanded, setExpanded] = useState(true);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   function patch<K extends keyof SceneControlsState>(
     key: K,
@@ -109,6 +130,53 @@ export default function SceneControls({
   ) {
     onChange({ ...state, [key]: value });
   }
+
+  // One row per `Group`, plus a leading "All groups" entry. We compute
+  // the per-group run-count here (cheap O(runs)) so the `<option>`
+  // labels show "Channel A (3 runs)" — matches the spec's UX call.
+  // Hidden groups (those whose `visible === false`) are still listed
+  // but greyed out via inline style + a "(hidden)" suffix; that
+  // surfaces the connection between the editor's hide-state and the
+  // preview's filter without splitting them across two controls.
+  // Tier 3 #63.
+  const groupOptions = useMemo<
+    { id: string; name: string; runCount: number; hidden: boolean }[]
+  >(() => {
+    if (!doc) return [];
+    const groups: Group[] = doc.groups ?? [];
+    const counts = new Map<string, number>();
+    for (const r of doc.runs) {
+      if (r.group_id) counts.set(r.group_id, (counts.get(r.group_id) ?? 0) + 1);
+    }
+    return groups.map((g) => ({
+      id: g.id,
+      name: g.name,
+      runCount: counts.get(g.id) ?? 0,
+      hidden: !isGroupVisible(g),
+    }));
+  }, [doc]);
+
+  // Update the URL (preserving any other search params) on group
+  // change. URL is the canonical location of the selection so a
+  // refresh / shared link round-trips cleanly. We use `replace` to
+  // avoid bloating the back-stack with one entry per group toggle —
+  // a curious user clicking through groups doesn't want to back
+  // through every visit to return to the project page.
+  function handleGroupSelect(nextId: string) {
+    const params = new URLSearchParams(location.search);
+    if (nextId) {
+      params.set('groupId', nextId);
+    } else {
+      params.delete('groupId');
+    }
+    const search = params.toString();
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : '' },
+      { replace: true },
+    );
+  }
+
+  const groupSelectValue = selectedGroupId ?? '';
 
   return (
     <div
@@ -127,6 +195,35 @@ export default function SceneControls({
       </button>
       {expanded && (
         <div className="preview-page__scene-controls-body">
+          {/* Tier 3 #63 — group focus. Sits at the top of the panel
+              because the spec defines this as the highest-affordance
+              control: "show me only this group" reframes the entire
+              scene. Only renders when the doc actually carries
+              groups; otherwise the row would just be a permanently-
+              "All groups" `<select>` with no other options. */}
+          {groupOptions.length > 0 && (
+            <label className="preview-page__scene-control">
+              <span className="preview-page__scene-control-label">Group</span>
+              <select
+                value={groupSelectValue}
+                onChange={(e) => handleGroupSelect(e.target.value)}
+                aria-label="Focus a group"
+              >
+                <option value="">All groups (whole design)</option>
+                {groupOptions.map((g) => (
+                  <option
+                    key={g.id}
+                    value={g.id}
+                    style={g.hidden ? { color: '#666' } : undefined}
+                  >
+                    {g.name} ({g.runCount} run{g.runCount === 1 ? '' : 's'})
+                    {g.hidden ? ' — hidden' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <label className="preview-page__scene-control">
             <span className="preview-page__scene-control-label">Background</span>
             <select

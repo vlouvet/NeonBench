@@ -126,6 +126,95 @@ describe('bboxOfDoc', () => {
     expectVec3(bb.min, 0, 0, -0.5);
     expectVec3(bb.max, 200, 50, 0.5);
   });
+
+  // Tier 3 #63 — `selectedGroupId` filter restricts the bbox to runs
+  // whose `group_id` matches. A camera-fit / wall-plane that keys off
+  // the filtered bbox then reframes to just the focused group.
+  describe('selectedGroupId filter', () => {
+    function makeGroupedRun(
+      groupId: string,
+      points: [number, number][],
+    ): DesignRun {
+      return {
+        id: `run-${groupId}-${Math.random().toString(36).slice(2, 8)}`,
+        polyline: { points, closed: false },
+        group_id: groupId,
+      };
+    }
+
+    it('restricts bbox to runs whose group_id matches', () => {
+      const doc = makeDoc([
+        makeGroupedRun('A', [
+          [0, 0],
+          [100, 0],
+        ]),
+        makeGroupedRun('B', [
+          [500, 500],
+          [1000, 1000],
+        ]),
+      ]);
+      // Group A only: doc Y 0 → three Y 0.
+      const bbA = bboxOfDoc(doc, 'A');
+      expectVec3(bbA.min, 0, 0, -0.5);
+      expectVec3(bbA.max, 100, 0, 0.5);
+      // Group B only: doc Y ∈ [500, 1000] → three Y ∈ [-1000, -500].
+      const bbB = bboxOfDoc(doc, 'B');
+      expectVec3(bbB.min, 500, -1000, -0.5);
+      expectVec3(bbB.max, 1000, -500, 0.5);
+    });
+
+    it('treats null / undefined / empty string as "no filter"', () => {
+      const doc = makeDoc([
+        makeGroupedRun('A', [
+          [0, 0],
+          [100, 0],
+        ]),
+        makeGroupedRun('B', [
+          [500, 500],
+          [1000, 1000],
+        ]),
+      ]);
+      const expectedMin = { x: 0, y: -1000, z: -0.5 };
+      const expectedMax = { x: 1000, y: 0, z: 0.5 };
+      for (const filter of [undefined, null, ''] as const) {
+        const bb = bboxOfDoc(doc, filter);
+        expectVec3(bb.min, expectedMin.x, expectedMin.y, expectedMin.z);
+        expectVec3(bb.max, expectedMax.x, expectedMax.y, expectedMax.z);
+      }
+    });
+
+    it('falls back to empty-doc bbox when no run matches the filter', () => {
+      const doc = makeDoc([
+        makeGroupedRun('A', [
+          [0, 0],
+          [100, 0],
+        ]),
+      ]);
+      const bb = bboxOfDoc(doc, 'nonexistent');
+      // Empty-set bbox: same fallback as a zero-run doc — symmetric
+      // 200 mm cube centered at origin so the camera math stays sane.
+      expect(Number.isFinite(bb.min.x)).toBe(true);
+      expect(bb.size.length()).toBeGreaterThan(0);
+      expectVec3(bb.center, 0, 0, 0);
+    });
+
+    it('excludes runs without a group_id when a filter is active', () => {
+      const ungrouped = makeRun([
+        [0, 0],
+        [50, 0],
+      ]);
+      const doc = makeDoc([
+        ungrouped,
+        makeGroupedRun('A', [
+          [200, 200],
+          [300, 200],
+        ]),
+      ]);
+      const bb = bboxOfDoc(doc, 'A');
+      expectVec3(bb.min, 200, -200, -0.5);
+      expectVec3(bb.max, 300, -200, 0.5);
+    });
+  });
 });
 
 describe('cameraPositionForPreset', () => {
