@@ -1052,3 +1052,75 @@
   stroke-opacity: 1;
   fill-opacity: 1;
 }
+
+/* Tier 3 #47 — Marker pulse animation. Triggered when a marker is
+   the hovered or keyboard-selected issue (the parent toggles the
+   `validation-marker-pulse` class). We pulse `stroke-width` (a thicker
+   ring) and `stroke-opacity`, NOT radius — animating radius would
+   shift the visual centroid off the world-space coordinate and make
+   the marker feel like it's drifting. The 1.4 s loop with cubic-out
+   easing is fast enough for the operator to notice yet slow enough
+   not to fight for attention; intentionally subtler than the
+   PR #44 teal node-edit hover ring (which is bright + solid).
+
+   Note: stroke-width animation interpolates the SVG attribute, so
+   the value here is in user-space units. We push to ~3× the natural
+   1/k value and fall back via `paint-order: stroke fill` so the fill
+   stays visible underneath. */
+@keyframes validation-marker-pulse {
+  0% {
+    stroke-opacity: 0.9;
+    stroke-width: 1;
+  }
+  50% {
+    stroke-opacity: 1;
+    stroke-width: 3;
+  }
+  100% {
+    stroke-opacity: 0.9;
+    stroke-width: 1;
+  }
+}
+.validation-marker-pulse {
+  animation: validation-marker-pulse 1.4s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+  stroke-opacity: 1;
+}
+
+/* Tier 3 #47 — sidebar issue row hover/select link. The hovered row
+   matches the canvas marker pulse; the j/k-selected row gets a
+   stronger left-border accent so the operator can tell at a glance
+   which one the next keystroke advances from. Hover styling is
+   subtler than selection so the two states are visually separable. */
+.issue-hovered {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  margin: -0.125rem -0.25rem;
+  padding: 0.375rem 0.25rem !important;
+}
+.issue-selected {
+  border-left: 3px solid var(--accent);
+  padding-left: 0.5rem !important;
+}
+.issue-hovered.issue-selected {
+  background: rgba(255, 59, 107, 0.1);
+}
+
+/* Tier 3 #47 — severity filter checkboxes above the issue list. Two
+   compact inline labels so they don't crowd the chip summary above. */
+.report-severity-filter {
+  display: flex;
+  gap: 0.875rem;
+  align-items: center;
+  font-size: 0.8125rem;
+  color: var(--muted, #a8a8b3);
+  padding: 0.25rem 0;
+}
+.report-severity-filter label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+}
+.report-severity-filter input[type='checkbox'] {
+  cursor: pointer;
+}

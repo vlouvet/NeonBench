@@ -60,6 +60,10 @@ export default function EditorCanvas({
   onInsertDoubleback,
   onCommitShape,
   validationIssues,
+  issueSeverityFilter,
+  hoveredIssueIndex,
+  onIssueHover,
+  centerOnIssue,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -72,7 +76,30 @@ export default function EditorCanvas({
   // omitted (or empty), the marker layer renders nothing. The canvas
   // does not own the validation lifecycle — EditorPage threads in the
   // latest report whenever live validation refreshes.
+  //
+  // Tier 3 #47: indices are GLOBAL (into this same array). The canvas
+  // filters by severity internally so the index space stays consistent
+  // with the sidebar (which thinks in `report.issues` indices too).
   validationIssues?: ValidationIssue[];
+  // Tier 3 #47 — when provided, errors/warnings can be hidden
+  // independently. Defaults: both visible. Filtering happens during
+  // marker render — the index in the markup still maps back to the
+  // global `validationIssues` array, so hover events stay coherent.
+  issueSeverityFilter?: { errors: boolean; warnings: boolean };
+  // Tier 3 #47 — sidebar↔canvas hover linking. When set, the marker
+  // at the matching GLOBAL index in `validationIssues` is rendered
+  // with the pulse-highlight class, drawing the operator's eye to it.
+  hoveredIssueIndex?: number | null;
+  // Emitted when the cursor enters / leaves a marker. The argument is
+  // the global index INTO `validationIssues`. EditorPage mirrors it
+  // into the sidebar issue row so the hover feels bidirectional.
+  onIssueHover?: (idx: number | null) => void;
+  // Tier 3 #47 — keyboard nav target. When the epoch tick changes,
+  // the canvas animates its pan transform to center the world-space
+  // (x, y) at the viewport midpoint. Zoom is preserved (operators
+  // zoom-in to inspect a region; rescaling-to-fit on every j/k would
+  // undo that). A 200 ms cubic ease-out keeps the motion subtle.
+  centerOnIssue?: { x: number; y: number; epoch: number } | null;
   onSelectRun: (id: string | null) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
@@ -264,6 +291,61 @@ export default function EditorCanvas({
       }
     }
   }
+
+  // Tier 3 #47 — pan-zoom to a target world-space point on keyboard
+  // nav (j/k/[/]). The parent passes a stable `(x, y, epoch)` triple
+  // and bumps `epoch` for each command. We animate `transform.tx/ty`
+  // over 200 ms (cubic ease-out) to land (x, y) at the viewport
+  // center, while preserving zoom — operators frequently zoom in to
+  // inspect a region, and rescaling-to-fit on every j/k would undo
+  // that. The ref-driven loop avoids re-triggering on intermediate
+  // setTransform calls (otherwise the user's wheel-zoom mid-animation
+  // would restart the tween).
+  const animFrameRef = useRef<number | null>(null);
+  const lastEpochRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!centerOnIssue) return;
+    if (lastEpochRef.current === centerOnIssue.epoch) return;
+    lastEpochRef.current = centerOnIssue.epoch;
+    if (size.w === 0 || size.h === 0) return;
+    if (animFrameRef.current !== null) cancelAnimationFrame(animFrameRef.current);
+    // Snapshot the starting transform so each rAF tick lerps from the
+    // same baseline — reading the latest transform off state would
+    // chase a moving target as the tween itself updates state.
+    const startTx = transform.tx;
+    const startTy = transform.ty;
+    const k = transform.k;
+    const targetTx = size.w / 2 - centerOnIssue.x * k;
+    const targetTy = size.h / 2 - centerOnIssue.y * k;
+    const dur = 200;
+    const t0 = performance.now();
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3); // cubic ease-out
+    function step(now: number) {
+      const u = Math.min(1, (now - t0) / dur);
+      const e = ease(u);
+      setTransform((prev) => ({
+        k: prev.k,
+        tx: startTx + (targetTx - startTx) * e,
+        ty: startTy + (targetTy - startTy) * e,
+      }));
+      if (u < 1) {
+        animFrameRef.current = requestAnimationFrame(step);
+      } else {
+        animFrameRef.current = null;
+      }
+    }
+    animFrameRef.current = requestAnimationFrame(step);
+    return () => {
+      if (animFrameRef.current !== null) {
+        cancelAnimationFrame(animFrameRef.current);
+        animFrameRef.current = null;
+      }
+    };
+    // We deliberately depend only on `epoch` (and size, in case the
+    // viewport just measured) — re-running the tween every time the
+    // transform updates mid-tween would loop infinitely.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [centerOnIssue?.epoch, size.w, size.h]);
 
   function clientToWorld(clientX: number, clientY: number): [number, number] | null {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -645,17 +727,29 @@ export default function EditorCanvas({
     const y0 = by - 10;
     const x1 = bx + bw + 10;
     const y1 = by + bh + 10;
-    const out: { issue: ValidationIssue; x: number; y: number }[] = [];
-    for (const issue of validationIssues) {
+    const showErrors = issueSeverityFilter?.errors ?? true;
+    const showWarnings = issueSeverityFilter?.warnings ?? true;
+    // Track the GLOBAL index INTO `validationIssues` so hover events
+    // and the highlight-by-index work in the same index space the
+    // sidebar uses (i.e. indices into report.issues).
+    const out: { issue: ValidationIssue; x: number; y: number; idx: number }[] = [];
+    for (let i = 0; i < validationIssues.length; i++) {
+      const issue = validationIssues[i];
+      // Severity filter — applied here so the canvas and sidebar
+      // agree on which markers are visible without the parent having
+      // to fork the array. The index in `out[].idx` is still the
+      // global index, so hover/click stay coherent.
+      if (issue.severity === 'error' && !showErrors) continue;
+      if (issue.severity === 'warning' && !showWarnings) continue;
       const x = issue.x_mm;
       const y = issue.y_mm;
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       if ((x as number) < x0 || (x as number) > x1) continue;
       if ((y as number) < y0 || (y as number) > y1) continue;
-      out.push({ issue, x: x as number, y: y as number });
+      out.push({ issue, x: x as number, y: y as number, idx: i });
     }
     return out;
-  }, [validationIssues, doc.view_box_mm]);
+  }, [validationIssues, doc.view_box_mm, issueSeverityFilter]);
 
   // Per-issue marker radius scales with zoom but never collapses below a
   // legible 4 mm at deep zoom-out. `8 / k` mirrors the snap-handle math
@@ -1183,18 +1277,25 @@ export default function EditorCanvas({
               individually interactive (hover tooltip + click-to-select)
               and the surrounding fill is semi-transparent so the run
               path beneath remains visible. */}
-          {visibleIssues.map(({ issue, x, y }, idx) => (
+          {visibleIssues.map(({ issue, x, y, idx }) => (
             <ValidationIssueMarker
-              key={`vissue-${idx}`}
+              // Stable key tied to issue identity so React doesn't
+              // unmount/remount markers on every revalidation cycle —
+              // the pulse animation would restart every tick otherwise.
+              key={`vissue-${issue.rule}-${issue.x_mm}-${issue.y_mm}-${idx}`}
               x={x}
               y={y}
               r={issueMarkerR}
               k={transform.k}
               issue={issue}
+              highlighted={hoveredIssueIndex === idx}
               onClick={() => {
                 const id = nearestRunId([x, y]);
                 if (id) onSelectRun(id);
+                if (onIssueHover) onIssueHover(idx);
               }}
+              onHoverEnter={() => onIssueHover?.(idx)}
+              onHoverLeave={() => onIssueHover?.(null)}
             />
           ))}
         </g>
@@ -1542,24 +1643,40 @@ function AnnotationMarker({
 // for an accessible native browser tooltip carrying `rule: message`. The
 // circle is the only interactive element; the surrounding `<g>` keeps the
 // tooltip + click target unified without the extra DOM noise of a wrapper.
+//
+// Tier 3 #47 — `highlighted` adds a CSS class that triggers the pulse
+// keyframes (App.css), and the hover handlers bubble up to the parent
+// via `onHoverEnter` / `onHoverLeave` so the sidebar row can highlight
+// in lock-step. The pulse runs on stroke-width + stroke-opacity rather
+// than radius so the marker centroid stays anchored on the issue's
+// world-space coordinate (radius animation would visually drift).
 function ValidationIssueMarker({
   x,
   y,
   r,
   k,
   issue,
+  highlighted,
   onClick,
+  onHoverEnter,
+  onHoverLeave,
 }: {
   x: number;
   y: number;
   r: number;
   k: number;
   issue: ValidationIssue;
+  highlighted: boolean;
   onClick: () => void;
+  onHoverEnter: () => void;
+  onHoverLeave: () => void;
 }) {
   const isError = issue.severity === 'error';
   const stroke = isError ? 'var(--error)' : 'var(--warn)';
   const fill = isError ? 'rgba(255, 107, 107, 0.45)' : 'rgba(255, 170, 0, 0.45)';
+  const className = highlighted
+    ? 'validation-marker validation-marker-pulse'
+    : 'validation-marker';
   return (
     <circle
       cx={x}
@@ -1568,12 +1685,14 @@ function ValidationIssueMarker({
       fill={fill}
       stroke={stroke}
       strokeWidth={1 / k}
-      className="validation-marker"
+      className={className}
       style={{ cursor: 'pointer' }}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
       }}
+      onMouseEnter={onHoverEnter}
+      onMouseLeave={onHoverLeave}
     >
       <title>{`${issue.rule}: ${issue.message}`}</title>
     </circle>
