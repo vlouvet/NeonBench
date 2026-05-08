@@ -436,6 +436,16 @@ export default function ProjectDetail() {
                 Open in editor
               </Link>
             )}
+            {/* Phase 3 #1 — read-only 3D preview. Available on every
+              * version regardless of design_doc_json (the preview falls
+              * back to a placeholder if the doc fails to parse). */}
+            <Link
+              to={`/projects/${projectId}/versions/${latest.id}/preview`}
+              className="btn-secondary"
+              title="Open the read-only 3D preview for this design version"
+            >
+              3D preview
+            </Link>
           </div>
           <div
             className="svg-preview"
@@ -481,6 +491,13 @@ export default function ProjectDetail() {
                   <span>{v.label || '(no label)'}</span>
                   <span className="meta">{new Date(v.created_at).toLocaleString()}</span>
                 </button>
+                <Link
+                  to={`/projects/${projectId}/versions/${v.id}/preview`}
+                  className="btn-secondary"
+                  title={`Open the read-only 3D preview for v${v.version_no}`}
+                >
+                  3D preview
+                </Link>
                 <button
                   type="button"
                   className="btn-danger"
