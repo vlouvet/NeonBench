@@ -10,6 +10,10 @@ import {
   drawingReducer,
   initialStateForTool,
 } from '../lib/drawingState';
+import {
+  composeSnap,
+  type GeometrySnap,
+} from '../lib/snap';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -159,6 +163,16 @@ export default function EditorCanvas({
   const [penHover, setPenHover] = useState<[number, number] | null>(null);
   const [shapeCurrent, setShapeCurrent] = useState<[number, number] | null>(null);
   const [arcHover, setArcHover] = useState<[number, number] | null>(null);
+  // Tier 3 #34 — drawing-tool snap composition state. `isShiftHeld`
+  // engages angle-snap (cursor locks to nearest 15° increment from the
+  // working anchor). `geometryHover` carries the currently-snapped
+  // existing-vertex / segment-midpoint, if any, so the canvas can
+  // render a hover ring while the cursor is in range. Both are local
+  // to this component (no reducer dispatch) — they churn every
+  // pointermove/keydown and the render path already gates on the
+  // active tool, so a stale hover never paints under another tool.
+  const [isShiftHeld, setIsShiftHeld] = useState(false);
+  const [geometryHover, setGeometryHover] = useState<GeometrySnap | null>(null);
   // Insert-doubleback tool: hover-tracked nearest segment + parametric
   // position so the canvas can render a ghost preview of the hairpin
   // before the user commits.
@@ -198,6 +212,7 @@ export default function EditorCanvas({
     if (tool !== 'dimension' && stagedDim !== null) setStagedDim(null);
     if (tool !== 'insert-doubleback' && dbHover !== null) setDbHover(null);
     if (tool !== 'node' && hoveredVertex !== null) setHoveredVertex(null);
+    if (geometryHover !== null) setGeometryHover(null);
   }
 
   // Pen / arc tools: Enter commits the in-progress pen polyline (if it has
@@ -248,6 +263,31 @@ export default function EditorCanvas({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [drawing, onCommitShape]);
+
+  // Tier 3 #34 — track Shift independently of any focused element so
+  // the angle-snap engages whenever the user holds Shift over the
+  // canvas, even if the focus is in the toolbar after toggling a
+  // sidebar control. Mirroring on `keyup` and `blur` covers the
+  // alt-tab-while-held case (avoids a sticky engaged-shift state).
+  useEffect(() => {
+    function onDown(e: KeyboardEvent) {
+      if (e.key === 'Shift' && !isShiftHeld) setIsShiftHeld(true);
+    }
+    function onUp(e: KeyboardEvent) {
+      if (e.key === 'Shift' && isShiftHeld) setIsShiftHeld(false);
+    }
+    function onBlur() {
+      if (isShiftHeld) setIsShiftHeld(false);
+    }
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup', onUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup', onUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [isShiftHeld]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -363,6 +403,62 @@ export default function EditorCanvas({
     return [Math.round(w[0] / snapMM) * snapMM, Math.round(w[1] / snapMM) * snapMM];
   }
 
+  // Tier 3 #34 — drawing-tool snap composition (geometry > angle > grid).
+  //
+  // Every drawing tool that places a working point during an in-progress
+  // shape routes its cursor → world conversion through here. The three
+  // snap modes compose in priority order (see `lib/snap.ts`):
+  //
+  //   1. Geometry snap (vertex/midpoint of any existing run within the
+  //      snap radius) — wins outright; the working point IS that geom.
+  //   2. Angle snap (Shift held + an anchor available) — locks the
+  //      direction from the anchor to the cursor onto the nearest 15°
+  //      increment; cursor distance preserved.
+  //   3. Grid snap (existing snapMM quantize) — the fallback used by
+  //      `clientToWorldSnapped` for non-drawing sites.
+  //
+  // The function also updates `geometryHover` as a side effect so the
+  // render layer can paint a teal ring on the snapped vertex/midpoint.
+  // `anchor` is the per-tool fixed point (last pen vertex, rect first
+  // corner, circle center, arc first click). `null` disables angle
+  // snap — used by the pen-tool first vertex (no anchor yet) and any
+  // tool branch where the angle dimension is meaningless.
+  function drawSnap(
+    clientX: number,
+    clientY: number,
+    anchor: [number, number] | null,
+  ): [number, number] | null {
+    const w = clientToWorld(clientX, clientY);
+    if (!w) return null;
+    const result = composeSnap({
+      cursor: w,
+      anchor,
+      shiftHeld: isShiftHeld,
+      runs: doc.runs,
+      scale: transform.k,
+      snapEnabled,
+      snapMM,
+    });
+    // Update the hover-ring state only when it actually changes —
+    // otherwise React rerenders every pointermove for nothing. Cheap
+    // structural compare since the snap kind + point uniquely
+    // determine the candidate.
+    if (result.geometry === null) {
+      if (geometryHover !== null) setGeometryHover(null);
+    } else {
+      const next = result.geometry;
+      if (
+        !geometryHover ||
+        geometryHover.kind !== next.kind ||
+        geometryHover.point[0] !== next.point[0] ||
+        geometryHover.point[1] !== next.point[1]
+      ) {
+        setGeometryHover(next);
+      }
+    }
+    return result.point;
+  }
+
   function onWheel(e: React.WheelEvent<SVGSVGElement>) {
     e.preventDefault();
     const rect = containerRef.current?.getBoundingClientRect();
@@ -396,7 +492,11 @@ export default function EditorCanvas({
     // owns the anchor; the live drag-current point is local state
     // since it churns every pointermove.
     if (tool === 'rect' || tool === 'circle') {
-      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      // First corner / center — no anchor yet, so geometry-snap can
+      // still land on an existing vertex (useful for "draw a rect from
+      // this corner of the existing geometry") but angle snap has no
+      // meaning for a single point.
+      const world = drawSnap(e.clientX, e.clientY, null);
       if (!world) return;
       if (tool === 'rect') {
         dispatch({ type: 'rectFirstCorner', point: world });
@@ -422,7 +522,11 @@ export default function EditorCanvas({
     // want the cursor's world-space position regardless of whether a drag
     // is in flight.
     if (drawing.tool === 'pen' && drawing.vertices.length > 0) {
-      const w = clientToWorldSnapped(e.clientX, e.clientY);
+      // Pen anchor for angle/geometry snap: the most recently committed
+      // vertex. Shift while moving locks the in-progress segment to the
+      // nearest 15° increment from that anchor.
+      const lastVertex = drawing.vertices[drawing.vertices.length - 1];
+      const w = drawSnap(e.clientX, e.clientY, lastVertex);
       if (w) setPenHover(w);
     }
     if (drawing.tool === 'arc' && drawing.firstClick !== null) {
@@ -430,7 +534,14 @@ export default function EditorCanvas({
       // anchors): the trio (firstClick, secondClick, hover) renders
       // the candidate arc through the cursor. After arcCommit clears
       // both anchors on click 3, this condition lapses.
-      const w = clientToWorldSnapped(e.clientX, e.clientY);
+      //
+      // Angle snap anchor: the most recently placed click (so the
+      // arc-lead segment locks to a clean 15° increment when shift is
+      // held). The arc itself is reconstructed from the trio in the
+      // render path, so locking the chord direction is enough to give
+      // the user predictable arc shapes.
+      const arcAnchor = drawing.secondClick ?? drawing.firstClick;
+      const w = drawSnap(e.clientX, e.clientY, arcAnchor);
       if (w) setArcHover(w);
     }
     // Tier 3 #25 — node-edit alt-hover. When the user holds Alt over the
@@ -460,11 +571,33 @@ export default function EditorCanvas({
         setHoveredVertex(null);
       }
     }
-    if (
-      (drawing.tool === 'rect' && drawing.firstCorner !== null) ||
-      (drawing.tool === 'circle' && drawing.center !== null)
-    ) {
-      const w = clientToWorldSnapped(e.clientX, e.clientY);
+    if (drawing.tool === 'rect' && drawing.firstCorner !== null) {
+      // Rect second corner: geometry snap probes existing vertices/
+      // midpoints first; if shift is held, the working corner is
+      // post-processed to W=H (a square, sign-preserved relative to
+      // the first corner). Grid snap applies as the fallback inside
+      // `drawSnap` when neither geometry nor angle fires; for rect we
+      // skip the angle path (a "rect along an axis" doesn't have a
+      // single direction-from-anchor — squareness is the analog).
+      const raw = drawSnap(e.clientX, e.clientY, null);
+      if (raw) {
+        let w: [number, number] = raw;
+        if (isShiftHeld) {
+          const a = drawing.firstCorner;
+          const dx = raw[0] - a[0];
+          const dy = raw[1] - a[1];
+          const side = Math.max(Math.abs(dx), Math.abs(dy));
+          w = [a[0] + Math.sign(dx || 1) * side, a[1] + Math.sign(dy || 1) * side];
+        }
+        setShapeCurrent(w);
+      }
+      return;
+    }
+    if (drawing.tool === 'circle' && drawing.center !== null) {
+      // Circle radius point: anchor is the center, so Shift locks the
+      // radius vector to the nearest 15° axis. Geometry-snap still
+      // wins outright if the cursor is near an existing vertex/midpoint.
+      const w = drawSnap(e.clientX, e.clientY, drawing.center);
       if (w) setShapeCurrent(w);
       return;
     }
@@ -537,14 +670,21 @@ export default function EditorCanvas({
     if (drawing.tool === 'pen' && isBackground) {
       // Click drops a vertex; double-click is detected via React's
       // onDoubleClick handler on the SVG so we keep the dispatch local.
-      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      // Anchor for angle-snap is the previous vertex (none for the
+      // first click, in which case angle snap is silently a no-op).
+      const lastVertex =
+        drawing.vertices.length > 0 ? drawing.vertices[drawing.vertices.length - 1] : null;
+      const world = drawSnap(e.clientX, e.clientY, lastVertex);
       if (!world) return;
       dispatch({ type: 'penVertex', point: world });
       setPenHover(world);
       return;
     }
     if (drawing.tool === 'arc' && isBackground) {
-      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      // Same anchor logic as the pointermove preview: latest placed
+      // click acts as the angle-snap anchor for the next click.
+      const arcAnchor = drawing.secondClick ?? drawing.firstClick;
+      const world = drawSnap(e.clientX, e.clientY, arcAnchor);
       if (!world) return;
       if (drawing.firstClick === null) {
         // Click 1 — drop firstClick and start preview tracking.
@@ -1051,6 +1191,70 @@ export default function EditorCanvas({
               </g>
             );
           })()}
+          {/* Tier 3 #34 — angle-snap guide line. While Shift is held
+              during an in-progress drawing tool, draw a thin dashed
+              gray radial line from the active anchor through the
+              snapped cursor so the user can see the locked direction
+              live. Length extends past the cursor so the angle reads
+              as a continuous ray, not a tick mark. Subtle: 1px stroke
+              and a low-contrast color so the active shape preview
+              stays the dominant visual. */}
+          {isShiftHeld && (() => {
+            // Pick the working anchor + working point per active tool.
+            // Skipped (anchor null) when there's nothing yet to lock to.
+            let anchor: [number, number] | null = null;
+            let working: [number, number] | null = null;
+            if (drawing.tool === 'pen' && drawing.vertices.length > 0 && penHover) {
+              anchor = drawing.vertices[drawing.vertices.length - 1];
+              working = penHover;
+            } else if (drawing.tool === 'circle' && drawing.center !== null && shapeCurrent) {
+              anchor = drawing.center;
+              working = shapeCurrent;
+            } else if (drawing.tool === 'arc' && drawing.firstClick !== null && arcHover) {
+              anchor = drawing.secondClick ?? drawing.firstClick;
+              working = arcHover;
+            }
+            // Rect uses square-constraint (not radial angle-lock), so
+            // no guide line for it — the live preview already shows the
+            // square outline as feedback.
+            if (!anchor || !working) return null;
+            const dx = working[0] - anchor[0];
+            const dy = working[1] - anchor[1];
+            const len = Math.hypot(dx, dy);
+            if (!(len > 0)) return null;
+            const ux = dx / len;
+            const uy = dy / len;
+            const extend = len * 2;
+            return (
+              <line
+                x1={anchor[0]}
+                y1={anchor[1]}
+                x2={anchor[0] + ux * extend}
+                y2={anchor[1] + uy * extend}
+                stroke="#888"
+                strokeWidth={1 / transform.k}
+                strokeDasharray={`${4 / transform.k} ${3 / transform.k}`}
+                pointerEvents="none"
+              />
+            );
+          })()}
+          {/* Tier 3 #34 — geometry-snap hover ring. Same teal-on-no-fill
+              treatment as the node-edit alt-hover (Tier 3 #25) so the
+              two snap modes share a visual vocabulary. Renders during
+              ANY in-progress drawing tool when the cursor is within
+              snap range of an existing vertex or segment midpoint. */}
+          {geometryHover && (drawing.tool === 'pen' || drawing.tool === 'rect' || drawing.tool === 'circle' || drawing.tool === 'arc') && (
+            <circle
+              cx={geometryHover.point[0]}
+              cy={geometryHover.point[1]}
+              r={8 / transform.k}
+              fill="none"
+              stroke="#1aa37a"
+              strokeWidth={6 / transform.k}
+              strokeOpacity={0.75}
+              pointerEvents="none"
+            />
+          )}
           {tool === 'insert-doubleback' && dbHover && (() => {
             const run = doc.runs.find((r) => r.id === dbHover.runId);
             if (!run) return null;
@@ -1363,23 +1567,23 @@ export default function EditorCanvas({
         {tool === 'pen' && (
           <span className="meta hint">
             {drawing.tool === 'pen' && drawing.vertices.length > 0
-              ? `${drawing.vertices.length} vertex${drawing.vertices.length === 1 ? '' : 'es'} · click to add · double-click or Enter to commit · Esc to cancel`
+              ? `${drawing.vertices.length} vertex${drawing.vertices.length === 1 ? '' : 'es'} · click to add · hold Shift for 15° angle snap · double-click or Enter to commit · Esc to cancel`
               : 'Click to drop the first vertex'}
           </span>
         )}
         {tool === 'rect' && (
-          <span className="meta hint">Drag from one corner to the opposite corner</span>
+          <span className="meta hint">Drag from one corner to the opposite corner · hold Shift for a square</span>
         )}
         {tool === 'circle' && (
-          <span className="meta hint">Drag from the center out to the radius</span>
+          <span className="meta hint">Drag from the center out to the radius · hold Shift to lock the radius to a 15° axis</span>
         )}
         {tool === 'arc' && (
           <span className="meta hint">
             {drawing.tool === 'arc' && drawing.firstClick === null
               ? 'Click the start of the arc'
               : drawing.tool === 'arc' && drawing.secondClick === null
-                ? 'Click a point on the arc'
-                : 'Click the end of the arc · Esc to cancel'}
+                ? 'Click a point on the arc · hold Shift for 15° angle snap'
+                : 'Click the end of the arc · hold Shift for 15° angle snap · Esc to cancel'}
           </span>
         )}
       </div>
