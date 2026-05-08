@@ -134,7 +134,19 @@ export default function PreviewPage() {
       return;
     }
     const filename = screenshotFilename(project?.name ?? null);
-    captureCanvasToPNG(ctx.gl, ctx.scene, ctx.camera, filename);
+    // Forward the live `EffectComposer` (when bloom is active) so
+    // the PNG is captured through the post-process pipeline. When
+    // `?nobloom` is set the composer wrap is skipped inside Scene
+    // and `ctx.composer` is null/undefined; the helper then falls
+    // back to the bare `gl.render(scene, camera)` path. Tier 1 #68.
+    captureCanvasToPNG(
+      ctx.gl,
+      ctx.scene,
+      ctx.camera,
+      filename,
+      undefined,
+      ctx.composer ?? null,
+    );
   }
 
   return (

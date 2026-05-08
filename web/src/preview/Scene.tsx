@@ -1,11 +1,22 @@
-import { useEffect, useMemo, useRef } from 'react';
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 // drei's exported OrbitControls type isn't generic — pull the
 // underlying three-stdlib class so the imperative ref has the
 // `target` / `update` methods we need.
 import type { OrbitControls as OrbitControlsImpl } from 'three-stdlib';
-import { Bloom, EffectComposer } from '@react-three/postprocessing';
+import {
+  Bloom,
+  EffectComposer,
+  EffectComposerContext,
+} from '@react-three/postprocessing';
 import * as THREE from 'three';
 import type { DesignDoc } from '../api';
 import Tube from './Tube';
@@ -163,15 +174,30 @@ export interface PresetRequest {
   nonce: number;
 }
 
+/** Minimal post-process composer surface the screenshot helper needs. */
+export interface ComposerLike {
+  render(): void;
+}
+
 /** Snapshot of the live three.js objects required for an off-canvas capture. */
 export interface CaptureContext {
   gl: THREE.WebGLRenderer;
   scene: THREE.Scene;
   camera: THREE.Camera;
+  /**
+   * The live `EffectComposer` instance from `@react-three/postprocessing`,
+   * when bloom is active. When `?nobloom` short-circuits the composer wrap,
+   * this is `null` (or absent) and the screenshot helper falls back to
+   * `gl.render(scene, camera)`.
+   */
+  composer?: ComposerLike | null;
 }
 
 /** Callback registration used by `<ScreenshotBridge>` to expose live three.js refs. */
 export type OnCaptureReady = (ctx: CaptureContext | null) => void;
+
+/** Internal callback used by `<ComposerBridge>` to surface the composer instance. */
+type OnComposerReady = (composer: ComposerLike | null) => void;
 
 // Cubic ease-in-out: 0 at t=0, 1 at t=1, smooth at both ends. Looks
 // less mechanical than linear and doesn't overshoot the way a
@@ -182,23 +208,60 @@ function easeInOutCubic(t: number): number {
 }
 
 /**
- * In-canvas helper that pipes the live `gl/scene/camera` triple back
- * up to PreviewPage via a callback ref. We use `useEffect` with
- * `onCaptureReady` as a dep so the parent re-registers when the
- * renderer actually changes (context loss + restore). The cleanup
- * passes `null` so a parent that unmounts during a capture click
- * fails fast rather than calling `gl.render()` on a torn-down
- * renderer.
+ * In-canvas helper that pipes the live `gl/scene/camera` triple (and
+ * an optional post-process `composer`) back up to PreviewPage via a
+ * callback ref. We use `useEffect` with `onCaptureReady` as a dep so
+ * the parent re-registers when the renderer actually changes (context
+ * loss + restore). The cleanup passes `null` so a parent that
+ * unmounts during a capture click fails fast rather than calling
+ * `gl.render()` on a torn-down renderer.
+ *
+ * The `composer` arg comes from `<ComposerBridge>` (rendered inside
+ * `<EffectComposer>`); when `?nobloom` is active the composer wrap is
+ * skipped entirely and `composer` stays `null` so the screenshot
+ * helper falls back to the bare `gl.render(scene, camera)` path.
  *
  * No JSX rendered; this is a pure side-effect component.
  */
-function ScreenshotBridge({ onCaptureReady }: { onCaptureReady?: OnCaptureReady }) {
+function ScreenshotBridge({
+  composer,
+  onCaptureReady,
+}: {
+  composer: ComposerLike | null;
+  onCaptureReady?: OnCaptureReady;
+}) {
   const { gl, scene, camera } = useThree();
   useEffect(() => {
     if (!onCaptureReady) return;
-    onCaptureReady({ gl, scene, camera });
+    onCaptureReady({ gl, scene, camera, composer });
     return () => onCaptureReady(null);
-  }, [gl, scene, camera, onCaptureReady]);
+  }, [gl, scene, camera, composer, onCaptureReady]);
+  return null;
+}
+
+/**
+ * Reads the live `EffectComposer` instance via `EffectComposerContext`
+ * (exported by `@react-three/postprocessing`) and surfaces it through
+ * `onComposerReady`. Must be rendered as a child of `<EffectComposer>`
+ * — `useContext` returns `undefined` otherwise, in which case we
+ * report `null` so the screenshot path falls back to the bare
+ * renderer.
+ *
+ * Same churn handling as `ScreenshotBridge`: re-runs the registration
+ * when the context value (or its `composer` field) changes — e.g. on
+ * a context-loss / restore cycle the package rebuilds the composer.
+ */
+function ComposerBridge({
+  onComposerReady,
+}: {
+  onComposerReady: OnComposerReady;
+}) {
+  const ctx = useContext(EffectComposerContext);
+  const composer = ctx?.composer ?? null;
+  useEffect(() => {
+    onComposerReady(composer);
+    return () => onComposerReady(null);
+  }, [composer, onComposerReady]);
   return null;
 }
 
@@ -273,6 +336,17 @@ export default function Scene({
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const { camera } = useThree();
+
+  // Live `EffectComposer` handle. `<ComposerBridge>` (rendered inside
+  // `<EffectComposer>` when bloom is active) writes into this ref;
+  // `<ScreenshotBridge>` reads it and forwards to PreviewPage as part
+  // of the `CaptureContext`. We also keep a `useState` mirror so the
+  // bridge re-fires `onCaptureReady` when the composer instance
+  // changes (context-loss + restore swaps the underlying object).
+  const [composer, setComposer] = useState<ComposerLike | null>(null);
+  const handleComposerReady = useCallback<OnComposerReady>((c) => {
+    setComposer(c);
+  }, []);
 
   // `?nobloom` is read once at mount. We don't subscribe to URL
   // changes — the preview route doesn't navigate without unmount,
@@ -410,7 +484,7 @@ export default function Scene({
         rotateSpeed={0.7}
         zoomSpeed={1.0}
       />
-      <ScreenshotBridge onCaptureReady={onCaptureReady} />
+      <ScreenshotBridge composer={composer} onCaptureReady={onCaptureReady} />
       {/*
         Bloom post-processing (Phase 3 #4). EffectComposer takes over
         the render loop: it draws the scene into an offscreen target,
@@ -442,6 +516,16 @@ export default function Scene({
             mipmapBlur={BLOOM_MIPMAP_BLUR}
             radius={BLOOM_RADIUS}
           />
+          {/*
+            Capture the live composer instance so the screenshot path
+            can drive `composer.render()` through the bloom pipeline
+            instead of `gl.render(scene, camera)` (which would skip
+            post-processing and produce a flat-emissive PNG — Tier 1
+            #68). When `?nobloom` short-circuits this whole branch,
+            no bridge mounts and the screenshot helper falls back to
+            the bare renderer.
+          */}
+          <ComposerBridge onComposerReady={handleComposerReady} />
         </EffectComposer>
       )}
     </>
