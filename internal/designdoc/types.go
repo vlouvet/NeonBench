@@ -26,9 +26,29 @@ type Doc struct {
 // belong to one group at a time (Tier 3 #33b deliberately rejects M:N
 // — keeps the model simple; nested groups are explicitly out of scope
 // for this slice).
+//
+// Visible and Locked are display-only flags carried by the Layers panel
+// (Tier 3 #33c). Visible is a pointer-bool so a nil value (the only
+// shape possible in pre-33c persisted JSON) deserializes as "visible"
+// — the back-compat invariant. A non-nil *false hides the group's
+// runs from the canvas; a non-nil *true is functionally identical to
+// nil but lets a caller emit an explicit "visible: true" if it wants
+// to. Locked is a plain bool (zero-value false = unlocked) because
+// "unlocked" is the only sane default for a brand-new group; no
+// pointer trickery is needed there.
+//
+// Both flags are *display* filters — the validator, save path, PDF,
+// and DXF emitters all see hidden + locked runs identically to any
+// other run. Hidden ≠ deleted; locked ≠ read-only-everywhere. Lock
+// blocks click-selection on the canvas; the Layers sidebar bypasses
+// the lock on its own click handlers (sidebar entry-point is the
+// escape hatch for selecting a locked group's members so the user
+// can edit colors / delete via the explicit selection ops).
 type Group struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Visible *bool  `json:"visible,omitempty"` // nil = visible (back-compat); *false = hidden
+	Locked  bool   `json:"locked,omitempty"`  // false = unlocked (default)
 }
 
 // Label is a free-form text marker placed in mm coordinates. Used for

@@ -182,10 +182,35 @@ export type DesignDoc = {
 // is one-to-many (one group, many runs) but one-to-one in the run
 // model (a run is in zero or one groups); re-grouping replaces the
 // prior FK rather than introducing M:N membership.
+//
+// Tier 3 #33c — `visible` and `locked` are display-only Layers panel
+// flags. `visible: undefined` is interpreted as "visible" by every
+// consumer (back-compat invariant for pre-33c persisted docs that
+// have no `visible` field at all); `visible: false` hides the group's
+// runs from the canvas. `visible: true` is functionally identical to
+// `undefined` but lets a caller emit an explicit value if it wants
+// to. `locked: undefined` and `locked: false` both mean "unlocked";
+// `locked: true` blocks click-selection on canvas members (the
+// Layers sidebar bypasses the lock — clicking a row body still
+// selects the group's runs as the deliberate escape hatch). Both
+// flags are *display* filters: validation, save, PDF, DXF all see
+// every run regardless of these flags. See `Group` in
+// `internal/designdoc/types.go` for the Go-side mirror.
 export type Group = {
   id: string;
   name: string;
+  visible?: boolean;
+  locked?: boolean;
 };
+
+// isGroupVisible centralizes the "undefined → visible" interpretation
+// so consumers can ask the question once instead of duplicating the
+// `g.visible !== false` pattern at every call site. Returns true for
+// undefined / true; false only for an explicit false.
+export function isGroupVisible(group: Group | undefined | null): boolean {
+  if (!group) return true;
+  return group.visible !== false;
+}
 
 export type Blockout = {
   start_live_index: number;
