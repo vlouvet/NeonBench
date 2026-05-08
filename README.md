@@ -7,31 +7,39 @@ list — all from a single Go binary that opens your browser to a local
 web UI.
 
 > **Status:** End-to-end across all three phases (vectorize → edit → 3D glow).
-> Phase 0 + 1 (vectorize, validate, print, DXF + PDF export), Phase 2
-> (editor, per-run color/diameter/notes, blockouts, bend planning,
-> double-back hairpins, channel-letter return strips with raceway
-> grouping, Hershey single-stroke text in three faces, polygon-offset
-> Neonize with stitched single-tube output, multi-select + drag-drop
-> image upload, snap-to-angle / snap-to-geometry on every drawing tool,
-> common + custom electrode housings, connect-tubes (jumper runs),
-> move-opening / break-tube-open, undo/redo, validation marker overlay
-> with severity-filter + j/k keyboard nav + sidebar↔canvas hover
-> linking, full-spec-driven validation including derived bend radius
-> from wall thickness + technique, click-to-edit tube-spec fields with
-> fan-out re-validation, full tube-spec CRUD, OS print dialog with
-> strips-only filter), and **Phase 3** (read-only 3D preview via
-> three.js + react-three-fiber: extruded tubes from polylines, emissive
-> gas-color materials with bloom + per-gas intensity tuning, electrode
-> caps, per-segment blockout sleeves, jump-annotation tube lifts, orbit
-> camera with Front/Iso/Top/Side preset views, auto-fit-on-mount, scene
-> chrome controls + bloom-aware PNG screenshot export) all ship today.
+> Phase 0 + 1 (vectorize with Hough auto-deskew + per-channel RGB mix +
+> threshold-sweep + per-diameter regression coverage, validate, print
+> with paper / landscape / strips-only popover, DXF + PDF export with
+> annotation MARKERS + BLOCKOUTS layers + optional R2000 dialect),
+> Phase 2 (editor, per-run color/diameter/notes, blockouts, bend
+> planning, double-back hairpins, channel-letter return strips with
+> raceway grouping, Hershey single-stroke text in three faces with
+> preset + optical kerning + font thumbnails, polygon-offset Neonize
+> with stitched single-tube output, **groups** that bind runs and
+> select/transform together, multi-select + drag-drop image upload,
+> snap-to-angle / snap-to-geometry on every drawing tool, common +
+> custom electrode housings, connect-tubes (jumper runs), move-opening
+> / break-tube-open, multi-vertex select + drag + merge in node-edit
+> mode, undo/redo, validation marker overlay with severity-filter +
+> j/k keyboard nav + sidebar↔canvas hover linking, full-spec-driven
+> validation including derived bend radius from wall thickness +
+> technique, click-to-edit tube-spec fields with fan-out re-validation,
+> full tube-spec CRUD, project-list bundle preview modal + URL/storage
+> -persisted sort/search), and **Phase 3** (lazy-loaded 3D preview via
+> three.js + react-three-fiber: extruded tubes from project tube-spec
+> diameter, emissive gas-color materials with per-gas-tuned bloom,
+> bloom intensity sliders + scene-control localStorage persistence,
+> electrode caps, per-segment blockout sleeves, jump-annotation tube
+> lifts, orbit camera with Front/Iso/Top/Side preset views,
+> auto-fit-on-mount, scene chrome controls + bloom-aware PNG screenshot
+> export) all ship today. **The preview route is now lazy-loaded —
+> users who never visit it save 309 KB gzipped on first paint.**
 > NeonWizard parity is **36 ✅ / 13 🟡** of 148 advertised features (19
 > deliberately out of scope as Tier 4 graphic-design-suite features
-> that don't help neon production). Remaining Tier 3 items focus on
-> groups + layers (33b/c — multi-select half landed in 33a) and a small
-> handful of Phase 3 follow-ups (bloom intensity sliders, scene control
-> persistence, code-splitting the preview route, optional warm-up
-> flicker animation).
+> that don't help neon production). Remaining work: layers panel (33c)
+> on top of the groups model just shipped + per-group preview (#63) +
+> two Phase 3 cosmetics (warm-up flicker animation, optional bundle
+> schema v2 for round-tripping per-project metadata).
 
 ## Why
 
