@@ -18,19 +18,32 @@ import {
  * Scene is the `<Canvas>`-internal payload for the Phase 3 preview.
  *
  * Phase 3 #1 stood this up as a placeholder spinning cube; Phase 3 #2
- * replaced the cube with real tube geometry. Phase 3 #5 (this
- * revision) adds:
+ * replaced the cube with real tube geometry. Phase 3 #5 adds orbit
+ * controls and camera preset framing. Phase 3 #7 (this revision)
+ * layers in scene-chrome controls — background color, ambient
+ * intensity, and an optional wall plane — plus a "screenshot bridge"
+ * that hands the renderer/scene/camera up to PreviewPage for the PNG
+ * export.
  *
- *   1. `<OrbitControls>` from `@react-three/drei` — operators can
- *      orbit (left-drag), pan (right-drag), and zoom (wheel /
- *      pinch).
- *   2. A `presetRequest` prop that, when changed, animates the
- *      camera + orbit target to one of four preset framings (front,
- *      iso, top, side) over `PRESET_ANIMATION_MS` milliseconds.
- *   3. An on-mount fit-to-content step: the camera + target snap
- *      (no animation) to the front preset framed on the design's
- *      bbox so the first frame shows the whole sign rather than a
- *      tiny dot at `[0, 0, 1500]`.
+ * Phase 3 #5 layered orbit controls + preset framing. Phase 3 #7
+ * (this revision) adds:
+ *
+ *   1. `backgroundColor` — applied via `<color attach="background">`
+ *      so the scene clear color is reactive, not stuck on the
+ *      `<Canvas style={background}>` value.
+ *   2. `ambientIntensity` — drives `<ambientLight intensity>`. Slider
+ *      in the sidebar runs 0..1.
+ *   3. `wallEnabled` + `wallColor` — optional `<mesh>` plane behind
+ *      the design (see `WallBacking` below). 50 mm Z offset to dodge
+ *      z-fighting with the tubes.
+ *   4. `onCaptureReady` — a one-shot bridge for screenshot capture.
+ *      The capture callback (closing over `gl/scene/camera`) lives
+ *      inside the canvas; the Save PNG button lives outside it. We
+ *      use a tiny child component `<ScreenshotBridge>` that calls
+ *      `useThree()` and registers the capture function with the
+ *      parent via a callback ref. This keeps the bridge reactive
+ *      (re-registers if the renderer changes — e.g. context loss /
+ *      restore) without a stale closure.
  *
  * The preset animation is a manual `useFrame` lerp rather than a
  * dependency on framer-motion or drei's `<CameraControls>`. Reasons:
@@ -41,10 +54,6 @@ import {
  *     animation; the constraint says "no animation library".
  *   - `useFrame` is already in fiber, free, and gives us the exact
  *     ease curve we want.
- *
- * Lighting is unchanged from #2 — `meshBasicMaterial` (placeholder
- * tube material) is unlit, so the directional light is essentially
- * a no-op until Phase 3 #3 swaps in physical materials.
  */
 
 // Preset transition duration in milliseconds. 600 ms matches the
@@ -53,6 +62,27 @@ import {
 // it feels jumpy; longer and the user starts wondering if it's
 // broken.
 export const PRESET_ANIMATION_MS = 600;
+
+// How far behind the design (in -Z, mm) the wall plane sits. 50 mm
+// is far enough to dodge z-fighting with the tube surfaces (which
+// extrude along Z) and to read as a "backing" rather than co-planar,
+// but close enough that the bloom from the emissive tubes still
+// catches the wall surface. If a future spec adds tube-back geometry
+// that pokes into negative Z, revisit.
+export const WALL_Z_OFFSET_MM = 50;
+
+// Wall plane size multiplier on the bbox. 1.5× makes the wall extend
+// past the design on every side so the design looks "mounted" on a
+// panel, not pasted to the panel's exact silhouette. Smaller (1.1×)
+// looks like a die-cut backplate; bigger (2×) starts wasting frame
+// real-estate.
+export const WALL_SIZE_FACTOR = 1.5;
+
+// Minimum wall size in mm so an empty / tiny doc still renders a
+// visible plane (the bbox fallback is a 200 mm cube; without a floor
+// here, exotic edge cases could hand the plane geometry a near-zero
+// size and the user would see nothing).
+export const WALL_MIN_SIZE_MM = 100;
 
 /**
  * Preset request envelope. Each click of a preset button creates a
@@ -66,6 +96,16 @@ export interface PresetRequest {
   nonce: number;
 }
 
+/** Snapshot of the live three.js objects required for an off-canvas capture. */
+export interface CaptureContext {
+  gl: THREE.WebGLRenderer;
+  scene: THREE.Scene;
+  camera: THREE.Camera;
+}
+
+/** Callback registration used by `<ScreenshotBridge>` to expose live three.js refs. */
+export type OnCaptureReady = (ctx: CaptureContext | null) => void;
+
 // Cubic ease-in-out: 0 at t=0, 1 at t=1, smooth at both ends. Looks
 // less mechanical than linear and doesn't overshoot the way a
 // spring would (overshoot is wrong here — the camera should land
@@ -74,15 +114,95 @@ function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
+/**
+ * In-canvas helper that pipes the live `gl/scene/camera` triple back
+ * up to PreviewPage via a callback ref. We use `useEffect` with
+ * `onCaptureReady` as a dep so the parent re-registers when the
+ * renderer actually changes (context loss + restore). The cleanup
+ * passes `null` so a parent that unmounts during a capture click
+ * fails fast rather than calling `gl.render()` on a torn-down
+ * renderer.
+ *
+ * No JSX rendered; this is a pure side-effect component.
+ */
+function ScreenshotBridge({ onCaptureReady }: { onCaptureReady?: OnCaptureReady }) {
+  const { gl, scene, camera } = useThree();
+  useEffect(() => {
+    if (!onCaptureReady) return;
+    onCaptureReady({ gl, scene, camera });
+    return () => onCaptureReady(null);
+  }, [gl, scene, camera, onCaptureReady]);
+  return null;
+}
+
+/**
+ * Wall-backing plane. Rendered when `enabled` is true. Positioned 50
+ * mm behind the bbox center; sized 1.5× the bbox extent (with a
+ * safety floor) so it looks like a panel the design is mounted on.
+ *
+ * `meshStandardMaterial` is the natural fit here — it picks up the
+ * scene's ambient light + (eventually) the bloom from the emissive
+ * tubes. `roughness=0.7` keeps the surface diffuse so it doesn't
+ * mirror-bounce the tube colors and turn into a stage light.
+ *
+ * `THREE.DoubleSide` so an iso/back orbit doesn't reveal a hole — V1
+ * doesn't try to model "rear of the wall" geometry.
+ */
+function WallBacking({
+  enabled,
+  color,
+  doc,
+}: {
+  enabled: boolean;
+  color: string;
+  doc: DesignDoc | null;
+}) {
+  if (!enabled) return null;
+  const bbox = bboxOfDoc(doc);
+  const width = Math.max(bbox.size.x * WALL_SIZE_FACTOR, WALL_MIN_SIZE_MM);
+  const height = Math.max(bbox.size.y * WALL_SIZE_FACTOR, WALL_MIN_SIZE_MM);
+  return (
+    <mesh
+      position={[bbox.center.x, bbox.center.y, -WALL_Z_OFFSET_MM]}
+      // `receiveShadow` is harmless without a shadow-casting light
+      // configured (Phase 3 #4 doesn't enable shadow maps); leaving
+      // it on so a future shadow pass picks up the wall for free.
+      receiveShadow
+    >
+      <planeGeometry args={[width, height]} />
+      <meshStandardMaterial
+        color={color}
+        roughness={0.7}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
+
 export default function Scene({
   doc,
   defaultDiameterMM,
   presetRequest,
+  backgroundColor = '#1a1a1a',
+  ambientIntensity = 0.3,
+  wallEnabled = false,
+  wallColor = '#f0f0f0',
+  onCaptureReady,
 }: {
   doc: DesignDoc | null;
   defaultDiameterMM?: number;
   /** When this changes (by nonce), Scene animates the camera to the named preset. */
   presetRequest?: PresetRequest;
+  /** Scene background hex (applied via `<color attach="background">`). */
+  backgroundColor?: string;
+  /** Ambient light intensity, 0..1. */
+  ambientIntensity?: number;
+  /** When true, render the `<WallBacking>` plane behind the design. */
+  wallEnabled?: boolean;
+  /** Wall surface color (`<meshStandardMaterial color>`). */
+  wallColor?: string;
+  /** Callback invoked once the live `gl/scene/camera` are available. */
+  onCaptureReady?: OnCaptureReady;
 }) {
   const controlsRef = useRef<OrbitControlsImpl | null>(null);
   const { camera } = useThree();
@@ -168,12 +288,19 @@ export default function Scene({
 
   return (
     <>
-      {/* Soft fill so future shaded materials don't render as solid black. */}
-      <ambientLight intensity={0.3} />
+      {/* Reactive scene background. `<color attach="background">` sets
+          `scene.background`, which is what the screenshot path reads;
+          relying on the `<Canvas style>` background would leave the
+          PNG transparent / black on the off-canvas read. */}
+      <color attach="background" args={[backgroundColor]} />
+      {/* Soft fill so future shaded materials don't render as solid
+          black. Slider-driven (Phase 3 #7). */}
+      <ambientLight intensity={ambientIntensity} />
       {/* Key light from front-upper-right; effectively no-op on
-          basic-material tubes, but kept so Phase 3 #3 has a stable
+          basic-material tubes, but kept so Phase 3 #3+ has a stable
           rig to inherit. */}
       <directionalLight position={[100, 200, 100]} intensity={0.7} />
+      <WallBacking enabled={wallEnabled} color={wallColor} doc={doc} />
       {doc?.runs.map((run) => (
         <Tube
           key={run.id}
@@ -202,6 +329,7 @@ export default function Scene({
         rotateSpeed={0.7}
         zoomSpeed={1.0}
       />
+      <ScreenshotBridge onCaptureReady={onCaptureReady} />
     </>
   );
 }
