@@ -47,6 +47,62 @@
   min-height: 70vh;
   position: relative;
   background: #0a0a0a;
+  /* `position: relative` is the anchor for the absolutely-
+   * positioned preset bar (Phase 3 #5), which floats over the
+   * canvas without consuming a pixel of the rendered scene. */
+}
+
+/* Phase 3 #5 — camera preset button bar. Floats over the top-left
+ * corner of the canvas pane (absolute positioning so the canvas
+ * gets the entire pane). Sits at z-index: 1 — above the WebGL
+ * canvas, below any future overlay (e.g. the FPS HUD when Phase 3
+ * adds one). */
+.preview-page__preset-bar {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 1;
+  display: flex;
+  gap: 0.25rem;
+  /* Translucent dark pill so the buttons read against any
+   * background tube color. Matches the topbar's visual weight. */
+  padding: 0.25rem;
+  background: rgba(17, 17, 17, 0.85);
+  border: 1px solid #222;
+  border-radius: 6px;
+  /* Don't grab pointer-events outside the buttons themselves —
+   * the canvas needs the rest of the pane for orbit drag. */
+}
+
+.preview-page__preset-btn {
+  /* Compact (~2 chars wide minimum) so all four labels read on a
+   * narrow viewport without wrapping. The hover state is the
+   * primary affordance; no border in the resting state to keep
+   * the bar visually quiet. */
+  appearance: none;
+  background: transparent;
+  color: #ddd;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  /* Match the topbar link color on hover so the chrome reads as
+   * one connected control surface. */
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
+}
+
+.preview-page__preset-btn:hover,
+.preview-page__preset-btn:focus-visible {
+  background: #1a1a1a;
+  border-color: #333;
+  color: #6cf;
+  outline: none;
+}
+
+.preview-page__preset-btn:active {
+  background: #222;
 }
 
 .preview-page__status {
