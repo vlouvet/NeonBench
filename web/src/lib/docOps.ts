@@ -459,6 +459,148 @@ export function moveVertex(
   });
 }
 
+// moveVertices applies one set of (pointIndex → new XY) writes to a run
+// in a single op (Tier 3 #48 — multi-vertex select + drag). Used by the
+// node-edit canvas when the operator drags a vertex while two or more
+// vertices on the same run are selected: every selected vertex
+// translates by the same delta. Driving this through one op keeps the
+// undo stack intact (one entry per drag, not per vertex) and avoids
+// per-vertex revalidation churn.
+//
+// Out-of-range or no-op writes are silently dropped; if every write
+// dropped, the run is returned unchanged so editDoc's structural-equal
+// guard short-circuits the dirty-flag bump.
+export function moveVertices(
+  doc: DesignDoc,
+  runId: string,
+  writes: { pointIndex: number; x: number; y: number }[],
+): DesignDoc {
+  if (writes.length === 0) return doc;
+  const idx = doc.runs.findIndex((r) => r.id === runId);
+  if (idx < 0) return doc;
+  const run = doc.runs[idx];
+  const pts = run.polyline.points;
+  let nextPts: [number, number][] | null = null;
+  for (const w of writes) {
+    if (w.pointIndex < 0 || w.pointIndex >= pts.length) continue;
+    const cur = pts[w.pointIndex];
+    if (cur[0] === w.x && cur[1] === w.y) continue;
+    if (!nextPts) nextPts = pts.slice();
+    nextPts[w.pointIndex] = [w.x, w.y];
+  }
+  if (!nextPts) return doc;
+  const updated: DesignRun = { ...run, polyline: { ...run.polyline, points: nextPts } };
+  const nextRuns = doc.runs.slice();
+  nextRuns[idx] = updated;
+  return { ...doc, runs: nextRuns };
+}
+
+// mergeVertices collapses two vertices on the same run into one
+// (Tier 3 #48 — vertex-merge on drop). The inverse of splitRun in
+// spirit: where splitRun duplicates a vertex into two distinct runs,
+// mergeVertices folds two distinct vertices on ONE run back into a
+// single vertex. Useful after import where vectorize over-segmented a
+// corner into two near-coincident points.
+//
+// Behaviour:
+//   - `indexA` is the kept vertex (its XY survives as the merge anchor);
+//     `indexB` is dropped.
+//   - All anchor references to `indexB` are rewritten to `indexA`
+//     (including run.electrodes' `point_index` and live-arc-indexed
+//     metadata for the open-run no-electrode common case).
+//   - References strictly above `indexB` shift down by 1 to account
+//     for the dropped polyline slot.
+//   - Adjacent merges (|indexA - indexB| == 1) collapse cleanly: the
+//     remaining vertex preserves the kept index's XY.
+//   - A non-adjacent merge leaves the polyline disconnected at the
+//     "gap" that used to be filled by the path through indexB. We
+//     do NOT auto-bridge — the caller is expected to drag the merge
+//     candidates close together first, so the topology change is
+//     invisible. (Operationally: the canvas only fires this when the
+//     drop lands inside the snap-to-vertex radius.)
+//   - Closed runs collapsing below 3 distinct points, or open runs
+//     below 2, are silently no-op'd to keep the doc valid.
+//   - indexA == indexB is a no-op.
+//
+// Like splitRun this produces a NEW DesignRun; the caller's editDoc
+// wraps it for the dirty/undo bookkeeping.
+export function mergeVertices(
+  doc: DesignDoc,
+  runId: string,
+  indexA: number,
+  indexB: number,
+): DesignDoc {
+  if (indexA === indexB) return doc;
+  return mapRun(doc, runId, (run) => {
+    const pts = run.polyline.points;
+    const n = pts.length;
+    if (indexA < 0 || indexA >= n) return run;
+    if (indexB < 0 || indexB >= n) return run;
+    const minPts = run.polyline.closed ? 3 : 2;
+    if (n - 1 < minPts) return run;
+
+    const drop = indexB;
+    const keep = indexA;
+    // Remap any anchor pointing at `drop` to `keep`; anchors strictly
+    // above `drop` shift down by 1.
+    const remap = (i: number): number => {
+      if (i === drop) return keep > drop ? keep - 1 : keep;
+      if (i > drop) return i - 1;
+      return i;
+    };
+
+    const points = pts.filter((_, i) => i !== drop);
+
+    // Electrodes: rewrite point_index, then dedup if the merge collapsed
+    // two electrodes onto the same vertex (rare but possible if both
+    // ends of an electrode pair sat on the merge candidates).
+    const seenElec = new Set<number>();
+    const electrodes: Electrode[] = [];
+    for (const e of run.electrodes ?? []) {
+      const next = remap(e.point_index);
+      if (seenElec.has(next)) continue;
+      seenElec.add(next);
+      electrodes.push({ ...e, point_index: next });
+    }
+
+    // Live-arc-indexed metadata: open-run no-electrode common case
+    // treats live_index as polyline index. We mirror the splitRun /
+    // insertVertex / deleteVertex partition convention here. For the
+    // closed-run / electrode-bearing edge case the operator can clean
+    // up afterwards — vertex-merge is post-import polish, not deep
+    // editing of an already-instrumented run.
+    const blockouts: Blockout[] = [];
+    for (const b of run.blockouts ?? []) {
+      blockouts.push({
+        start_live_index: remap(b.start_live_index),
+        end_live_index: remap(b.end_live_index),
+      });
+    }
+    const annotations: Annotation[] = [];
+    for (const a of run.annotations ?? []) {
+      annotations.push({ ...a, live_index: remap(a.live_index) });
+    }
+    const bends: Bend[] = [];
+    for (const bn of run.bends ?? []) {
+      bends.push({ live_index: remap(bn.live_index) });
+    }
+
+    const next: DesignRun = {
+      ...run,
+      polyline: { ...run.polyline, points },
+    };
+    if (electrodes.length > 0) next.electrodes = electrodes;
+    else if (run.electrodes) delete next.electrodes;
+    if (blockouts.length > 0) next.blockouts = blockouts;
+    else if (run.blockouts) delete next.blockouts;
+    if (annotations.length > 0) next.annotations = annotations;
+    else if (run.annotations) delete next.annotations;
+    if (bends.length > 0) next.bends = bends;
+    else if (run.bends) delete next.bends;
+    return next;
+  });
+}
+
 // simplifyRun runs a Ramer-Douglas-Peucker pass on the polyline and trims
 // vertices whose perpendicular distance to the line through their
 // neighbors falls below epsilonMM. Adjusts electrode and live-arc-indexed
@@ -980,6 +1122,73 @@ export function nextRunId(doc: DesignDoc, prefix: string = 'r'): string {
   let n = 1;
   while (taken.has(n)) n++;
   return `${prefix}${n}`;
+}
+
+// renameLegacyRunIds rewrites every run id matching the pre-Tier-3-#25
+// `<base>-a` / `<base>-b` (and deeper-nested `<base>-a-a` etc.) suffix
+// scheme to the flat numeric `r<n>` form (Tier 3 #48 — opt-in
+// migration of legacy split-run docs). Non-matching ids (e.g. plain
+// `r1`, `text-1`, `circle-2`) are left alone so the migration is
+// strictly additive — the caller can re-run it without further effect.
+//
+// Detection heuristic: an id ending in `-a` / `-b` (case-sensitive,
+// only those two letters — chosen to match exactly what splitRun
+// historically emitted, not arbitrary user-named runs that happen to
+// end in "-a"). Repeated splits could nest as `-a-a` / `-a-b`; those
+// also match (the suffix is checked, not the full id). The trade-off:
+// we MIGHT rename a deliberately-`-a`-suffixed run a user crafted by
+// hand, but the design-doc spec doesn't sanction custom run ids and
+// the run-row UI just reads `run.id` — the migration's worst case is
+// "the operator sees a different id label after the rename". We surface
+// this in the button tooltip so it's not a surprise.
+//
+// Returns the same doc instance when no rename was needed (so React
+// state doesn't churn for an already-migrated doc), otherwise returns
+// a NEW doc with the rewritten runs array. Idempotent: a second call
+// on the rewritten doc returns the same reference.
+//
+// References in the design doc that depend on run ids:
+//   - Run.group_id refers to Group.id (NOT a run id) — untouched.
+//   - Annotations / blockouts / bends index INTO their parent run by
+//     live/point index — they don't carry the run id at all.
+//   - Connect-tubes jumpers carry world-space coords (not run id refs).
+// So the rewrite is run-id-only; no cross-field ripple.
+const LEGACY_RUN_ID_RE = /-(a|b)(?:-(a|b))*$/;
+
+export function renameLegacyRunIds(doc: DesignDoc): DesignDoc {
+  // Cheap pre-scan: if no run id matches the legacy pattern, return the
+  // same reference so callers can safely call this on every doc-load
+  // without invalidating React memo / dirty-flag bookkeeping.
+  let needsRename = false;
+  for (const r of doc.runs) {
+    if (LEGACY_RUN_ID_RE.test(r.id)) {
+      needsRename = true;
+      break;
+    }
+  }
+  if (!needsRename) return doc;
+
+  // Reserve all already-numeric `r<n>` slots so the rename can't
+  // collide. We allocate fresh ids one-at-a-time, growing the reserved
+  // set as we go so two legacy runs don't both claim the same number.
+  const re = /^r(\d+)$/;
+  const taken = new Set<number>();
+  for (const r of doc.runs) {
+    const m = re.exec(r.id);
+    if (m) taken.add(parseInt(m[1], 10));
+  }
+  function takeNext(): string {
+    let n = 1;
+    while (taken.has(n)) n++;
+    taken.add(n);
+    return `r${n}`;
+  }
+
+  const nextRuns = doc.runs.map((r) => {
+    if (!LEGACY_RUN_ID_RE.test(r.id)) return r;
+    return { ...r, id: takeNext() };
+  });
+  return { ...doc, runs: nextRuns };
 }
 
 // splitRun splits one polyline into two new runs at a vertex. The vertex
