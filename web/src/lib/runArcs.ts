@@ -158,6 +158,43 @@ export function blockoutSegments(
     cur.liveIndices.push(liveIndices[j]);
   }
   if (cur.liveIndices.length > 0) out.push(cur);
+
+  // Tier 3 #59 — closed-loop seam continuity. When a blockout
+  // straddles index 0 of a closed live arc, the loop above emits two
+  // separate blockout segments (one starting at index 0, one ending
+  // at index n-1) that conceptually represent ONE continuous painted
+  // arc through the wrap edge. Merge them so downstream renderers
+  // (the 2D editor SVG and the 3D preview's segment-split) draw one
+  // continuous dashed/dark sleeve instead of two.
+  //
+  // Guard: only fire on closed loops AND only when BOTH end segments
+  // are blockouts. Open arcs never wrap (short-circuit). Closed loops
+  // with mid-loop blockouts (first/last both live) are left unchanged
+  // to preserve the identity invariant — those rendered correctly
+  // pre-fix because two adjacent live tubes meet visually at the
+  // seam-share point even though the wrap edge geometry is technically
+  // missing. We don't want to change segment counts for docs that
+  // were already rendering correctly.
+  //
+  // Merge formula: `[...last.liveIndices, ...first.liveIndices]`. The
+  // pre-merge `last` ends at polyline index n-1 (no trailing seam-
+  // share, j=n-1 was the loop's final iteration) and `first` starts
+  // at polyline index 0 (no leading seam-share, j=0 was the loop's
+  // first iteration). On a closed loop those two indices are adjacent
+  // via the wrap edge n-1 -> 0, so we concatenate WITHOUT dropping a
+  // duplicate. The resulting segment walks last (...n-1) -> wrap ->
+  // first (0...) in polyline traversal order.
+  if (liveClosed && out.length >= 2) {
+    const first = out[0];
+    const last = out[out.length - 1];
+    if (first.isBlockout && last.isBlockout) {
+      const merged: BlockoutSegment = {
+        isBlockout: true,
+        liveIndices: [...last.liveIndices, ...first.liveIndices],
+      };
+      return [merged, ...out.slice(1, -1)];
+    }
+  }
   return out;
 }
 
