@@ -63,6 +63,22 @@ export type HersheyRun = {
  *                            positionally stable across newline edits, which
  *                            keeps the dialog's drag handles aligned to the
  *                            visible inter-glyph gaps. See spec.)
+ * @param applyPresetKerning  If true, consult `font.presetKerning` for each
+ *                            visible-glyph pair (e.g. 'AV', 'To') and add
+ *                            the table value (in JHF units) to that slot's
+ *                            kerning AS A FALLBACK when `perPairKerningMM`
+ *                            has no explicit entry for that slot. The
+ *                            user-supplied per-pair value always wins —
+ *                            so dragging a handle persists past edits even
+ *                            when the preset would also apply.
+ *                            Default: false (back-compat with existing tests).
+ * @param baselineShiftsMM    Optional per-glyph vertical offset (mm) added
+ *                            to that glyph's baseline. Length matches the
+ *                            visible-glyph index space (newlines do NOT
+ *                            consume a slot). Useful for aligning two
+ *                            stacked words ('OPEN' + '2026') by metaposition
+ *                            within their own line. Out-of-range entries =
+ *                            0. Doesn't shift the cursor — only Y.
  * @param lineHeight          Multi-line line-height multiplier. Default: 1.2.
  *
  * Multi-stroke glyphs return multiple HersheyRuns. Whitespace advances
@@ -76,6 +92,8 @@ export type HersheyTextOptions = {
   originY: number;
   letterSpacingMM?: number;
   perPairKerningMM?: number[];
+  applyPresetKerning?: boolean;
+  baselineShiftsMM?: number[];
   lineHeight?: number;
 };
 
@@ -88,6 +106,8 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
     originY,
     letterSpacingMM = 0,
     perPairKerningMM,
+    applyPresetKerning = false,
+    baselineShiftsMM,
     lineHeight = 1.2,
   } = opts;
 
@@ -98,6 +118,13 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
   // illegible garbage. -capHeight is roughly "up to one cap-height of
   // overlap" which still allows tight optical kerning of e.g. AV/To.
   const kernFloor = -capHeightMM;
+
+  // First walk: collect the visible-glyph sequence (the printable
+  // characters in input order, skipping '\n', whitespace, and unknown
+  // codepoints — anything that does NOT consume a pairIdx slot in the
+  // existing semantics). Used so preset lookup can see the NEXT visible
+  // glyph during the second walk without a second nested loop.
+  const visibleChars = collectVisibleChars(text, font);
 
   let cursorX = originX;
   let baselineY = originY;
@@ -145,6 +172,10 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       continue;
     }
 
+    // Per-glyph baseline shift (mm) — Y-only, doesn't affect cursorX.
+    const shiftY = baselineShiftsMM?.[pairIdx];
+    const shifted = typeof shiftY === 'number' && Number.isFinite(shiftY) ? shiftY : 0;
+
     // Place glyph: glyph.left is its left bracket; we want the cursor to
     // sit at the bracket's left edge, so subtract glyph.left from JHF X.
     const glyphOffsetX = cursorX - glyph.left * scale;
@@ -153,21 +184,56 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       if (stroke.length < 2) continue;
       const points: [number, number][] = stroke.map(([gx, gy]) => [
         glyphOffsetX + gx * scale,
-        baselineY + gy * scale,
+        baselineY + gy * scale + shifted,
       ]);
       runs.push({ points });
     }
 
-    // Advance cursor by glyph's own advance + uniform letter-spacing +
-    // per-pair kerning at the current pairIdx (which represents the gap
-    // FROM this glyph TO the next renderable glyph).
+    // Advance cursor by glyph's own advance + uniform letter-spacing.
     cursorX += (glyph.right - glyph.left) * scale + letterSpacingMM;
-    const k = perPairKerningMM?.[pairIdx];
+
+    // Determine the kerning delta for the gap AFTER this glyph. User-
+    // supplied per-pair kerning takes precedence; preset is the fallback
+    // when the user has not explicitly set this slot. We treat "explicit"
+    // as "the slot exists in the array AND its value is a finite number".
+    // Why this rule, not just typeof === 'number': if the dialog seeds
+    // user values with NaN as a sentinel for "untouched", the preset
+    // can fill in. Today the dialog stores 0 for untouched, so this
+    // path falls through to user value 0 (no-op for matching pairs and
+    // the back-compat tests still pass).
+    const userK = perPairKerningMM?.[pairIdx];
+    let k: number | undefined;
+    if (typeof userK === 'number' && Number.isFinite(userK)) {
+      k = userK;
+    } else if (applyPresetKerning) {
+      const nextGlyph = visibleChars[pairIdx + 1];
+      if (nextGlyph) {
+        const pair = ch + nextGlyph;
+        const presetJHF = font.presetKerning[pair];
+        if (typeof presetJHF === 'number') k = presetJHF * scale;
+      }
+    }
     if (typeof k === 'number') cursorX += Math.max(k, kernFloor);
     pairIdx++;
   }
 
   return runs;
+}
+
+/** Collect the sequence of printable characters that consume a pairIdx
+ *  slot. Mirrors the skip logic in `hersheyTextToRuns` exactly. */
+function collectVisibleChars(text: string, font: ReturnType<typeof getFont>): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '\n') continue;
+    const code = ch.codePointAt(0);
+    if (code === undefined) continue;
+    if (code < 32 || code > 127) continue;
+    if (!font.data.glyphs[String(code)]) continue;
+    out.push(ch);
+  }
+  return out;
 }
 
 /** Tight bounding box of every emitted stroke point. Useful for placing

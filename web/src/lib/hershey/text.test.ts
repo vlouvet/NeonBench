@@ -245,6 +245,118 @@ describe('hersheyTextToRuns', () => {
     }
   });
 
+  it('preset kerning fires for known pairs when applyPresetKerning=true', () => {
+    // Roman Simplex preset has 'AV': -2 (JHF). At capHeightMM=120,
+    // scale = 120/12 = 10, so the preset shifts everything after the A by
+    // -20mm vs the unkerned baseline. Compare the maxX (rightmost point,
+    // which is in the V cluster) directly — no splitRunsByLetter needed.
+    const baseline = hersheyTextToRuns({
+      text: 'AV',
+      capHeightMM: 120,
+      originX: 0,
+      originY: 0,
+    });
+    const preset = hersheyTextToRuns({
+      text: 'AV',
+      capHeightMM: 120,
+      originX: 0,
+      originY: 0,
+      applyPresetKerning: true,
+    });
+    const baseMaxX = runsMaxX(baseline);
+    const presetMaxX = runsMaxX(preset);
+    expect(presetMaxX - baseMaxX).toBeCloseTo(-20, 5);
+  });
+
+  it('user override on a slot beats the preset for the same pair', () => {
+    // 'AV' has a Roman preset of -2 JHF. With perPairKerningMM[0] = +30
+    // AND applyPresetKerning: true the user's +30mm should win, NOT the
+    // preset's -20mm (at capHeight=120). Compare the rightmost X
+    // (V cluster) directly.
+    const baseline = hersheyTextToRuns({
+      text: 'AV',
+      capHeightMM: 120,
+      originX: 0,
+      originY: 0,
+    });
+    const userOverride = hersheyTextToRuns({
+      text: 'AV',
+      capHeightMM: 120,
+      originX: 0,
+      originY: 0,
+      applyPresetKerning: true,
+      perPairKerningMM: [30],
+    });
+    const dx = runsMaxX(userOverride) - runsMaxX(baseline);
+    expect(dx).toBeCloseTo(30, 5);
+  });
+
+  it('preset is a no-op when applyPresetKerning is omitted (back-compat)', () => {
+    // Without the opt-in, AV must render identically to a fresh AV.
+    const off = hersheyTextToRuns({ text: 'AV', capHeightMM: 100, originX: 0, originY: 0 });
+    const offAgain = hersheyTextToRuns({
+      text: 'AV',
+      capHeightMM: 100,
+      originX: 0,
+      originY: 0,
+      applyPresetKerning: false,
+    });
+    expect(offAgain).toEqual(off);
+  });
+
+  it('preset skips pairs not in the table (e.g. "AB")', () => {
+    // 'AB' isn't in the Roman preset, so applyPresetKerning has no effect.
+    const off = hersheyTextToRuns({ text: 'AB', capHeightMM: 100, originX: 0, originY: 0 });
+    const on = hersheyTextToRuns({
+      text: 'AB',
+      capHeightMM: 100,
+      originX: 0,
+      originY: 0,
+      applyPresetKerning: true,
+    });
+    expect(on).toEqual(off);
+  });
+
+  it('baseline shift moves a single glyph in Y without disturbing its neighbours', () => {
+    // Shift the SECOND visible glyph (slot 1) of 'OPEN' down by 30mm.
+    // O's bbox should be unchanged; E's should shift.
+    const flat = hersheyTextToRuns({ text: 'OE', capHeightMM: 100, originX: 0, originY: 0 });
+    const shifted = hersheyTextToRuns({
+      text: 'OE',
+      capHeightMM: 100,
+      originX: 0,
+      originY: 0,
+      baselineShiftsMM: [0, 30],
+    });
+    const flatLetters = splitRunsByLetter(flat);
+    const shiftedLetters = splitRunsByLetter(shifted);
+    expect(flatLetters.length).toBe(2);
+    expect(shiftedLetters.length).toBe(2);
+    // O cluster Y unchanged.
+    const flatOMinY = Math.min(...flatLetters[0].map(runMinY));
+    const shiftedOMinY = Math.min(...shiftedLetters[0].map(runMinY));
+    expect(shiftedOMinY).toBeCloseTo(flatOMinY, 5);
+    // E cluster shifted by exactly +30 in Y.
+    const flatEMinY = Math.min(...flatLetters[1].map(runMinY));
+    const shiftedEMinY = Math.min(...shiftedLetters[1].map(runMinY));
+    expect(shiftedEMinY - flatEMinY).toBeCloseTo(30, 5);
+  });
+
+  it('baseline shift is independent of cursor X (the next glyph still advances on the original line)', () => {
+    // Shift slot 0 by 30mm in Y; the X-advance to slot 1 must NOT change.
+    const flat = hersheyTextToRuns({ text: 'AB', capHeightMM: 100, originX: 0, originY: 0 });
+    const shifted = hersheyTextToRuns({
+      text: 'AB',
+      capHeightMM: 100,
+      originX: 0,
+      originY: 0,
+      baselineShiftsMM: [30, 0],
+    });
+    const flatLetters = splitRunsByLetter(flat);
+    const shiftedLetters = splitRunsByLetter(shifted);
+    expect(clusterMinX(shiftedLetters[1])).toBeCloseTo(clusterMinX(flatLetters[1]), 5);
+  });
+
   it('newline does NOT consume a kerning slot — slots track visible glyph pairs', () => {
     // 'AB\nCD' has 4 renderable glyphs and 3 inter-glyph slots:
     //   slot 0 = A-B, slot 1 = B-C (spans the newline; B's kerning is
@@ -328,5 +440,11 @@ function clusterMinX(cluster: Cluster): number {
 function runMinY(run: Run): number {
   let m = Infinity;
   for (const [, y] of run.points) if (y < m) m = y;
+  return m;
+}
+
+function runsMaxX(runs: Run[]): number {
+  let m = -Infinity;
+  for (const r of runs) for (const [x] of r.points) if (x > m) m = x;
   return m;
 }
