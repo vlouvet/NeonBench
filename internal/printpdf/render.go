@@ -2,6 +2,7 @@ package printpdf
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -11,6 +12,13 @@ import (
 	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/validate"
 )
+
+// ErrNoStripsToRender is returned by RenderFromDoc when StripsOnly is
+// set on a doc that has no channel-letter face runs (Tier 3 #50). The
+// handler translates this to HTTP 422 with a short user-facing message
+// so the hidden print iframe shows something instead of silently
+// spooling an empty job. Sentinel; errors.Is works directly.
+var ErrNoStripsToRender = errors.New("no return strips in this design (StripsOnly requires at least one channel-letter face run)")
 
 // Options bundle the user-facing knobs for a print job.
 type Options struct {
@@ -41,6 +49,19 @@ type Options struct {
 	// forms the seam. Zero falls back to 12.7 mm (½ in) at
 	// emission time.
 	StripOverlapMM float64
+	// StripsOnly, when true, suppresses the main pattern pages and
+	// the bend-list summary page from RenderFromDoc, emitting ONLY
+	// the per-run channel-letter return-strip pages and any
+	// raceway-grouped strip pages (Tier 3 #50). Operators flip this
+	// on after the front-face glass is bent and they only want to
+	// print the metal-strip patterns. Has no effect on Render
+	// (SVG-only path) — that path doesn't emit strip pages anyway.
+	// When true and the design has zero face-flagged runs the
+	// renderer returns ErrNoStripsToRender so the handler can return
+	// a 422 with a clear "no return strips in this design" message
+	// (a zero-page PDF is technically invalid; failing loud lets the
+	// caller's iframe surface the error).
+	StripsOnly bool
 }
 
 // DefaultOptions returns conservative paper-template defaults.
@@ -189,6 +210,26 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		opts.StrokeMM = 0.5
 	}
 
+	// StripsOnly fail-fast: refuse to emit a zero-page PDF. Walk runs
+	// once before any geometry / paper math; if no run is a channel-
+	// letter face, return the typed sentinel so the handler maps to
+	// HTTP 422. We don't enforce the same check in the SVG-only Render
+	// path: that path never emits strip pages, so calling it with
+	// StripsOnly is meaningless either way; the handler steers
+	// StripsOnly requests at the doc-bearing path.
+	if opts.StripsOnly {
+		anyFace := false
+		for _, run := range doc.Runs {
+			if run.IsChannelLetterFace && len(run.Polyline.Points) >= 2 {
+				anyFace = true
+				break
+			}
+		}
+		if !anyFace {
+			return nil, ErrNoStripsToRender
+		}
+	}
+
 	bbox := docBBox(doc)
 	pageW, pageH := opts.Paper.WidthMM, opts.Paper.HeightMM
 	if opts.Landscape {
@@ -244,110 +285,115 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		bendsByRun[run.ID] = designdoc.EffectiveBends(run, projectDiameterMM)
 	}
 
-	for r := 0; r < rows; r++ {
-		for c := 0; c < cols; c++ {
-			pdf.AddPage()
-			tileX := bbox[0] + float64(c)*stepW
-			tileY := bbox[1] + float64(r)*stepH
-			toPage := func(x, y float64) (float64, float64) {
-				return x - tileX + opts.MarginMM, y - tileY + opts.MarginMM
-			}
-
-			pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
-			pdf.SetDrawColor(0, 0, 0)
-			pdf.SetLineWidth(opts.StrokeMM)
-
-			// Draw the tube geometry: alive segments solid, blockouts dashed.
-			for _, run := range doc.Runs {
-				for _, seg := range designdoc.RenderableSegments(run) {
-					if len(seg.Indices) < 2 {
-						continue
-					}
-					if seg.IsBlockout {
-						pdf.SetDashPattern([]float64{2, 1.2}, 0)
-					}
-					start := run.Polyline.Points[seg.Indices[0]]
-					sx, sy := toPage(start[0], start[1])
-					pdf.MoveTo(sx, sy)
-					for i := 1; i < len(seg.Indices); i++ {
-						p := run.Polyline.Points[seg.Indices[i]]
-						px, py := toPage(p[0], p[1])
-						pdf.LineTo(px, py)
-					}
-					if seg.Closed {
-						pdf.LineTo(sx, sy)
-					}
-					pdf.DrawPath("D")
-					if seg.IsBlockout {
-						pdf.SetDashPattern([]float64{}, 0)
-					}
+	// StripsOnly skips the main tile pages entirely — the operator only
+	// wants the metal-strip pages, post-fabrication. The strip pages
+	// themselves are still emitted below by the unchanged emit calls.
+	if !opts.StripsOnly {
+		for r := 0; r < rows; r++ {
+			for c := 0; c < cols; c++ {
+				pdf.AddPage()
+				tileX := bbox[0] + float64(c)*stepW
+				tileY := bbox[1] + float64(r)*stepH
+				toPage := func(x, y float64) (float64, float64) {
+					return x - tileX + opts.MarginMM, y - tileY + opts.MarginMM
 				}
-			}
 
-			// Electrodes: small open circle with a centered cross.
-			for _, run := range doc.Runs {
-				for _, e := range run.Electrodes {
-					if e.PointIndex < 0 || e.PointIndex >= len(run.Polyline.Points) {
-						continue
-					}
-					p := run.Polyline.Points[e.PointIndex]
-					ex, ey := toPage(p[0], p[1])
-					drawElectrodeMark(pdf, ex, ey)
-				}
-			}
-
-			// Numbered bend apex labels (and a small dot at the apex).
-			pdf.SetFont("Helvetica", "B", 7)
-			for _, run := range doc.Runs {
-				for i, b := range bendsByRun[run.ID] {
-					bx, by := toPage(b.X, b.Y)
-					pdf.SetLineWidth(0.2)
-					pdf.Circle(bx, by, 1.6, "D")
-					pdf.SetLineWidth(opts.StrokeMM)
-					label := fmt.Sprintf("%s.%d", shortRunID(run.ID), i+1)
-					pdf.Text(bx+2, by-1, label)
-				}
-			}
-
-			// Doc-level dimensions: line + perpendicular ticks + measured label.
-			pdf.SetLineWidth(0.3)
-			for _, d := range doc.Dimensions {
-				ax, ay := toPage(d.X1, d.Y1)
-				bx, by := toPage(d.X2, d.Y2)
-				pdf.Line(ax, ay, bx, by)
-				dx := bx - ax
-				dy := by - ay
-				length := math.Hypot(dx, dy)
-				if length > 0 {
-					px := -dy / length * 1.5
-					py := dx / length * 1.5
-					pdf.Line(ax-px, ay-py, ax+px, ay+py)
-					pdf.Line(bx-px, by-py, bx+px, by+py)
-				}
-				measured := math.Hypot(d.X2-d.X1, d.Y2-d.Y1)
-				note := fmt.Sprintf("%.1fmm", measured)
-				if d.Note != "" {
-					note += " · " + d.Note
-				}
-				pdf.SetFont("Helvetica", "", 8)
-				pdf.Text((ax+bx)/2+1, (ay+by)/2-1, note)
-			}
-			pdf.SetLineWidth(opts.StrokeMM)
-
-			// Doc-level text labels: small dot + text to the right.
-			pdf.SetFont("Helvetica", "", 9)
-			for _, l := range doc.Labels {
-				lx, ly := toPage(l.X, l.Y)
-				pdf.SetLineWidth(0.3)
-				pdf.Circle(lx, ly, 0.7, "F")
+				pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
+				pdf.SetDrawColor(0, 0, 0)
 				pdf.SetLineWidth(opts.StrokeMM)
-				pdf.Text(lx+2, ly-1, l.Text)
-			}
 
-			pdf.ClipEnd()
-			drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows)
+				// Draw the tube geometry: alive segments solid, blockouts dashed.
+				for _, run := range doc.Runs {
+					for _, seg := range designdoc.RenderableSegments(run) {
+						if len(seg.Indices) < 2 {
+							continue
+						}
+						if seg.IsBlockout {
+							pdf.SetDashPattern([]float64{2, 1.2}, 0)
+						}
+						start := run.Polyline.Points[seg.Indices[0]]
+						sx, sy := toPage(start[0], start[1])
+						pdf.MoveTo(sx, sy)
+						for i := 1; i < len(seg.Indices); i++ {
+							p := run.Polyline.Points[seg.Indices[i]]
+							px, py := toPage(p[0], p[1])
+							pdf.LineTo(px, py)
+						}
+						if seg.Closed {
+							pdf.LineTo(sx, sy)
+						}
+						pdf.DrawPath("D")
+						if seg.IsBlockout {
+							pdf.SetDashPattern([]float64{}, 0)
+						}
+					}
+				}
+
+				// Electrodes: small open circle with a centered cross.
+				for _, run := range doc.Runs {
+					for _, e := range run.Electrodes {
+						if e.PointIndex < 0 || e.PointIndex >= len(run.Polyline.Points) {
+							continue
+						}
+						p := run.Polyline.Points[e.PointIndex]
+						ex, ey := toPage(p[0], p[1])
+						drawElectrodeMark(pdf, ex, ey)
+					}
+				}
+
+				// Numbered bend apex labels (and a small dot at the apex).
+				pdf.SetFont("Helvetica", "B", 7)
+				for _, run := range doc.Runs {
+					for i, b := range bendsByRun[run.ID] {
+						bx, by := toPage(b.X, b.Y)
+						pdf.SetLineWidth(0.2)
+						pdf.Circle(bx, by, 1.6, "D")
+						pdf.SetLineWidth(opts.StrokeMM)
+						label := fmt.Sprintf("%s.%d", shortRunID(run.ID), i+1)
+						pdf.Text(bx+2, by-1, label)
+					}
+				}
+
+				// Doc-level dimensions: line + perpendicular ticks + measured label.
+				pdf.SetLineWidth(0.3)
+				for _, d := range doc.Dimensions {
+					ax, ay := toPage(d.X1, d.Y1)
+					bx, by := toPage(d.X2, d.Y2)
+					pdf.Line(ax, ay, bx, by)
+					dx := bx - ax
+					dy := by - ay
+					length := math.Hypot(dx, dy)
+					if length > 0 {
+						px := -dy / length * 1.5
+						py := dx / length * 1.5
+						pdf.Line(ax-px, ay-py, ax+px, ay+py)
+						pdf.Line(bx-px, by-py, bx+px, by+py)
+					}
+					measured := math.Hypot(d.X2-d.X1, d.Y2-d.Y1)
+					note := fmt.Sprintf("%.1fmm", measured)
+					if d.Note != "" {
+						note += " · " + d.Note
+					}
+					pdf.SetFont("Helvetica", "", 8)
+					pdf.Text((ax+bx)/2+1, (ay+by)/2-1, note)
+				}
+				pdf.SetLineWidth(opts.StrokeMM)
+
+				// Doc-level text labels: small dot + text to the right.
+				pdf.SetFont("Helvetica", "", 9)
+				for _, l := range doc.Labels {
+					lx, ly := toPage(l.X, l.Y)
+					pdf.SetLineWidth(0.3)
+					pdf.Circle(lx, ly, 0.7, "F")
+					pdf.SetLineWidth(opts.StrokeMM)
+					pdf.Text(lx+2, ly-1, l.Text)
+				}
+
+				pdf.ClipEnd()
+				drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows)
+			}
 		}
-	}
+	} // end if !opts.StripsOnly — main pattern + tile overlays skipped when stripping.
 
 	// Channel-letter return-strip pages (NW #106): one extra page per
 	// face-marked run, sandwiched between the tile pages and the
@@ -391,13 +437,18 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		emitRacewayStrip(pdf, opts, gid, runs, projectDepth)
 	}
 
-	// Bend-list summary page (only if any bends were detected).
-	totalBends := 0
-	for _, bs := range bendsByRun {
-		totalBends += len(bs)
-	}
-	if totalBends > 0 {
-		drawBendListPage(pdf, opts, doc, bendsByRun)
+	// Bend-list summary page (only if any bends were detected). The
+	// bend list is about the main runs, not the metal strips — when
+	// StripsOnly is on we skip it (the operator already has the bend
+	// list from the original print run).
+	if !opts.StripsOnly {
+		totalBends := 0
+		for _, bs := range bendsByRun {
+			totalBends += len(bs)
+		}
+		if totalBends > 0 {
+			drawBendListPage(pdf, opts, doc, bendsByRun)
+		}
 	}
 
 	var buf bytes.Buffer

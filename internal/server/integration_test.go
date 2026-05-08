@@ -1353,6 +1353,316 @@ func TestChannelLetterReturnPattern(t *testing.T) {
 	}
 }
 
+// countPDFPages returns the number of page objects in a gofpdf-emitted
+// PDF. gofpdf emits page object dictionaries uncompressed (only content
+// streams are compressed), so a substring count of "/Type /Page" hits
+// every page plus the single "/Type /Pages" parent — subtract the
+// parent count to get the page count. Used by the strips-only tests
+// below to assert page-count deltas precisely instead of relying on
+// fragile byte-size heuristics.
+func countPDFPages(pdfBytes []byte) int {
+	s := string(pdfBytes)
+	all := strings.Count(s, "/Type /Page")
+	parents := strings.Count(s, "/Type /Pages")
+	return all - parents
+}
+
+// TestPrintStripsOnlyOmitsMainPages — Tier 3 #50 strips-only filter.
+// Builds a doc with one face-flagged run + one plain run, fetches the
+// default PDF, then fetches the same URL with strips_only=1, and
+// asserts (a) the strips-only response is a valid PDF, (b) the page
+// count drops by the expected amount (main tile pages + bend-list
+// page disappear; the strip page survives), and (c) the strips-only
+// PDF is strictly smaller than the default.
+func TestPrintStripsOnlyOmitsMainPages(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "strips only",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// Closed rectangle face + plain open polyline. The face run produces
+	// the strip page; the plain run keeps the bend-list path off the
+	// happy path (no auto-bends below 20°).
+	faceRun := designdoc.Run{
+		ID: "face-rect",
+		Polyline: designdoc.Polyline{
+			Points: [][2]float64{{0, 0}, {100, 0}, {100, 50}, {0, 50}},
+			Closed: true,
+		},
+		IsChannelLetterFace: true,
+	}
+	plainRun := designdoc.Run{
+		ID: "plain-line",
+		Polyline: designdoc.Polyline{
+			Points: [][2]float64{{0, 80}, {100, 80}, {100, 90}},
+			Closed: false,
+		},
+	}
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs:      []designdoc.Run{faceRun, plainRun},
+	}
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "with face",
+		"design_doc": doc,
+	}, &version)
+	vid := int64(version["id"].(float64))
+
+	getPDF := func(suffix string) []byte {
+		resp, err := client.Get(base + "/api/projects/" + itoa(projectID) +
+			"/design_versions/" + itoa(vid) + "/print.pdf" + suffix)
+		if err != nil {
+			t.Fatalf("print.pdf%s: %v", suffix, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("print.pdf%s status %d: %s", suffix, resp.StatusCode, body)
+		}
+		if !bytes.HasPrefix(body, []byte("%PDF-")) {
+			t.Fatalf("print.pdf%s: not a PDF (first 8 bytes %q)",
+				suffix, body[:min(8, len(body))])
+		}
+		return body
+	}
+
+	defaultPDF := getPDF("")
+	stripsOnlyPDF := getPDF("?strips_only=1")
+
+	defaultPages := countPDFPages(defaultPDF)
+	stripsOnlyPages := countPDFPages(stripsOnlyPDF)
+
+	t.Logf("default PDF: %d bytes / %d pages; strips-only: %d bytes / %d pages",
+		len(defaultPDF), defaultPages, len(stripsOnlyPDF), stripsOnlyPages)
+
+	// Strips-only must produce strictly fewer pages — at minimum, the
+	// main tile page is gone (1 strip page total).
+	if stripsOnlyPages >= defaultPages {
+		t.Errorf("strips-only PDF page count %d should be < default %d",
+			stripsOnlyPages, defaultPages)
+	}
+	// Exactly 1 face run = exactly 1 strip page expected.
+	if stripsOnlyPages != 1 {
+		t.Errorf("strips-only with one face run: expected 1 page, got %d",
+			stripsOnlyPages)
+	}
+	// Strips-only response must still be a strictly smaller PDF byte-
+	// wise (main tile + bend-list pages add real bytes).
+	if len(stripsOnlyPDF) >= len(defaultPDF) {
+		t.Errorf("strips-only PDF (%d B) should be smaller than default (%d B)",
+			len(stripsOnlyPDF), len(defaultPDF))
+	}
+}
+
+// TestPrintStripsOnlyZeroFacesEmpty — when strips_only=1 is requested
+// against a doc with no face-flagged runs, the server returns 422 with
+// a clear message rather than emitting a zero-page (technically
+// invalid) PDF. Failing loud lets the toolbar's hidden iframe surface
+// the error to the operator instead of silently spooling nothing.
+func TestPrintStripsOnlyZeroFacesEmpty(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "strips only zero",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// One plain run, zero face flags. strips_only=1 must 422.
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []designdoc.Run{
+			{
+				ID: "plain",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {100, 0}, {100, 50}},
+					Closed: false,
+				},
+			},
+		},
+	}
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "no faces",
+		"design_doc": doc,
+	}, &version)
+	vid := int64(version["id"].(float64))
+
+	url := base + "/api/projects/" + itoa(projectID) +
+		"/design_versions/" + itoa(vid) + "/print.pdf?strips_only=1"
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("print.pdf?strips_only=1: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", resp.StatusCode, body)
+	}
+	if !bytes.Contains(body, []byte("no return strips")) {
+		t.Errorf("expected error mentioning 'no return strips', got: %s", body)
+	}
+
+	// Sanity: same version without strips_only=1 still works.
+	resp2, err := client.Get(base + "/api/projects/" + itoa(projectID) +
+		"/design_versions/" + itoa(vid) + "/print.pdf")
+	if err != nil {
+		t.Fatalf("baseline print.pdf: %v", err)
+	}
+	defer resp2.Body.Close()
+	body2, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode != 200 {
+		t.Fatalf("baseline print.pdf status %d: %s", resp2.StatusCode, body2)
+	}
+	if !bytes.HasPrefix(body2, []byte("%PDF-")) {
+		t.Fatalf("baseline print.pdf: not a PDF")
+	}
+}
+
+// TestPrintBackwardsCompat — a request without strips_only=1 must
+// produce identical output to a request with strips_only=0 (the
+// param's no-op value). Pins the no-regression guarantee for any
+// caller hitting /print.pdf without the new flag. We compare two
+// fresh responses from the same in-process server in the same test
+// run, so the embedded /CreationDate is the same.
+func TestPrintBackwardsCompat(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "backcompat",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []designdoc.Run{
+			{
+				ID: "face",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {100, 0}, {100, 50}, {0, 50}},
+					Closed: true,
+				},
+				IsChannelLetterFace: true,
+			},
+		},
+	}
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "v1",
+		"design_doc": doc,
+	}, &version)
+	vid := int64(version["id"].(float64))
+
+	get := func(suffix string) []byte {
+		resp, err := client.Get(base + "/api/projects/" + itoa(projectID) +
+			"/design_versions/" + itoa(vid) + "/print.pdf" + suffix)
+		if err != nil {
+			t.Fatalf("print.pdf%s: %v", suffix, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("print.pdf%s status %d: %s", suffix, resp.StatusCode, body)
+		}
+		return body
+	}
+
+	plain := get("")
+	withZeroFlag := get("?strips_only=0")
+
+	// strips_only=0 should produce a PDF with the same gross size and
+	// page count as omitting the param entirely. We can't byte-equal-
+	// compare: gofpdf interleaves font dictionaries non-deterministically
+	// across two render runs, and the embedded /CreationDate is a
+	// wall-clock timestamp that can straddle a second boundary. The
+	// length-and-page-count check is enough to pin "the strips-only=0
+	// branch is identical to the no-param branch end-to-end" — which is
+	// the no-regression guarantee Tier 3 #50 promises callers.
+	if len(plain) != len(withZeroFlag) {
+		t.Errorf("strips_only=0 PDF length should match no-param length: plain=%d zeroFlag=%d",
+			len(plain), len(withZeroFlag))
+	}
+	if a, b := countPDFPages(plain), countPDFPages(withZeroFlag); a != b {
+		t.Errorf("strips_only=0 PDF page count should match no-param: plain=%d zeroFlag=%d", a, b)
+	}
+
+	// Sanity: the page count exceeds 1 (proves the main pages survived).
+	if pages := countPDFPages(plain); pages < 2 {
+		t.Errorf("baseline PDF should have >= 2 pages (main tile + strip), got %d", pages)
+	}
+}
+
 // TestMigration0007Reversible exercises the goose Down step for the
 // 0007_channel_letter_depth migration so we catch any future
 // SQLite/driver breakage that would brick a user mid-rollback.
