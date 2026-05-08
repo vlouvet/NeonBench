@@ -71,6 +71,13 @@ export default function EditorPage() {
   // Canvas click handler: routes to replace-or-toggle based on the
   // modifier keys (Shift/Cmd-Ctrl). Passed in to EditorCanvas which
   // owns the click-on-run / click-background events.
+  //
+  // Tier 3 #33b — plain click on a grouped run extends the selection
+  // to every run sharing the same `group_id` (the group is "one
+  // logical unit" from the operator's POV). Shift/Cmd still toggles
+  // ONLY the clicked run — the modifier semantics from 33a are
+  // preserved so the operator can pluck individual members out of a
+  // group when they need to.
   function handleSelectRun(id: string | null, opts?: { additive?: boolean }) {
     if (id === null) {
       clearSelection();
@@ -78,9 +85,17 @@ export default function EditorPage() {
     }
     if (opts?.additive) {
       toggleSelection(id);
-    } else {
-      setSelectedToOne(id);
+      return;
     }
+    const clicked = doc?.runs.find((r) => r.id === id);
+    if (clicked?.group_id) {
+      const memberIds = (doc?.runs ?? [])
+        .filter((r) => r.group_id === clicked.group_id)
+        .map((r) => r.id);
+      setSelectedRunIds(memberIds);
+      return;
+    }
+    setSelectedToOne(id);
   }
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -804,6 +819,44 @@ export default function EditorPage() {
     editDoc((prev) => ops.autoAssignRaceways(prev));
   }
 
+  // Tier 3 #33b — group helpers. `groupSelected` prompts for a name
+  // and binds every selected run into a fresh group; `dissolveGroup` /
+  // `renameGroup` flow through editDoc so undo/redo and the dirty
+  // flag work the same way as every other doc mutation.
+  //
+  // Selection follow-up: after grouping, we re-select every member
+  // (which is identical to the post-extension state when the user
+  // next clicks one of them anyway) so the canvas group outline has
+  // immediate visual feedback. After dissolving, the selection stays
+  // exactly as it was — the runs themselves are unchanged.
+  function groupSelected() {
+    if (!doc) return;
+    if (selectedRunIds.length < 2) return;
+    const defaultName = `Group ${(doc.groups?.length ?? 0) + 1}`;
+    const name = window.prompt('Group name:', defaultName);
+    if (name == null) return; // Cancel
+    const trimmed = name.trim();
+    if (trimmed === '') return; // Empty-string also cancels per spec
+    const memberIds = selectedRunIds.slice();
+    editDoc((prev) => ops.groupRuns(prev, memberIds, trimmed).doc);
+    setSelectedRunIds(memberIds);
+  }
+
+  function dissolveGroupById(groupId: string) {
+    editDoc((prev) => ops.dissolveGroup(prev, groupId));
+  }
+
+  function renameGroupById(groupId: string) {
+    if (!doc) return;
+    const group = (doc.groups ?? []).find((g) => g.id === groupId);
+    if (!group) return;
+    const next = window.prompt('Rename group:', group.name);
+    if (next == null) return;
+    const trimmed = next.trim();
+    if (trimmed === '' || trimmed === group.name) return;
+    editDoc((prev) => ops.renameGroup(prev, groupId, trimmed));
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (selectedRunIds.length === 0) return;
     // Tier 3 #33a — apply Douglas-Peucker to each selected run in
@@ -1254,6 +1307,53 @@ export default function EditorPage() {
               severityFilter={severityFilter}
               onSeverityFilterChange={setSeverityFilter}
             />
+          )}
+          {/* Tier 3 #33b — Groups bind 2+ runs so they select + transform
+              as one logical unit. The "Group selected" button stays
+              disabled until at least two runs are selected (a one-run
+              "group" is meaningless and would just clutter the list).
+              Each existing group exposes inline rename + Dissolve. */}
+          <div className="groups-header">
+            <h3>Groups ({doc.groups?.length ?? 0})</h3>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={selectedRunIds.length < 2}
+              onClick={groupSelected}
+              title="Bind the selected runs into a named group. Clicking any member selects all members; transforms (color, diameter, delete) apply to all."
+            >
+              Group selected
+            </button>
+          </div>
+          {(doc.groups?.length ?? 0) > 0 && (
+            <ul className="group-list">
+              {(doc.groups ?? []).map((g) => {
+                const memberCount = doc.runs.filter((r) => r.group_id === g.id).length;
+                return (
+                  <li key={g.id} className="group-row">
+                    <button
+                      type="button"
+                      className="group-name btn-link"
+                      onClick={() => renameGroupById(g.id)}
+                      title="Click to rename"
+                    >
+                      {g.name}
+                    </button>
+                    <span className="meta">
+                      {' '}({memberCount} {memberCount === 1 ? 'run' : 'runs'})
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-secondary group-dissolve-btn"
+                      onClick={() => dissolveGroupById(g.id)}
+                      title="Dissolve this group; member runs become independent again."
+                    >
+                      Dissolve
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           )}
           <div className="runs-header">
             <h3>Runs</h3>

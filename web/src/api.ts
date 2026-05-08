@@ -168,6 +168,23 @@ export type DesignDoc = {
   runs: DesignRun[];
   labels?: Label[];
   dimensions?: Dimension[];
+  // Tier 3 #33b / NW #139 — named bindings of two-or-more runs.
+  // Membership lives on the Run side (`group_id`); this slice is
+  // the source-of-truth for display names. Optional / omitted on
+  // pre-33b docs — consumers should treat `undefined` and `[]` as
+  // equivalent ("no groups defined").
+  groups?: Group[];
+};
+
+// Tier 3 #33b — display-name + identity for one group of runs.
+// Mirrors `internal/designdoc.Group` byte-for-byte. A run is bound
+// to this group when its `group_id` matches `id`. The data model
+// is one-to-many (one group, many runs) but one-to-one in the run
+// model (a run is in zero or one groups); re-grouping replaces the
+// prior FK rather than introducing M:N membership.
+export type Group = {
+  id: string;
+  name: string;
 };
 
 export type Blockout = {
@@ -223,6 +240,14 @@ export type DesignRun = {
   // without this field deserialize cleanly to "" — flows through
   // the existing design_doc JSON blob (no migration needed).
   kind?: '' | 'jumper';
+  // Tier 3 #33b / NW #139 — foreign key into `DesignDoc.groups`.
+  // Empty / missing = ungrouped; non-empty = bound to the group
+  // with that ID (selecting any sibling extends to all members).
+  // Old design blobs without this field deserialize cleanly to ""
+  // — additive, no migration. A run can only be in one group at a
+  // time; re-grouping replaces the prior value (see groupRuns in
+  // lib/docOps.ts for the canonical "replace" semantic).
+  group_id?: string;
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {

@@ -208,3 +208,119 @@ func TestRunKindBackwardsCompat(t *testing.T) {
 		t.Errorf("run picked up a Kind from old JSON: %q", doc.Runs[0].Kind)
 	}
 }
+
+// TestGroupRoundTrip verifies the Doc.Groups slice + Run.GroupID FK
+// (Tier 3 #33b / NW #139) survive a JSON round-trip and that
+// `omitempty` keeps pre-33b doc blobs byte-identical when no groups
+// exist. The new fields ride on the existing design_doc JSON blob —
+// no schema migration — so the round-trip in this test IS the
+// persistence contract.
+func TestGroupRoundTrip(t *testing.T) {
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []Run{
+			// Run with no group: GroupID stays "" and should not
+			// emit a "group_id" key in the encoded JSON.
+			{
+				ID:       "r1",
+				Polyline: Polyline{Points: [][2]float64{{0, 0}, {100, 0}}},
+			},
+			// Two runs sharing one group id ("g1"). Membership
+			// is one-directional: the FK lives on the Run; the
+			// Group entry only carries the display name.
+			{
+				ID:       "r2",
+				GroupID:  "g1",
+				Polyline: Polyline{Points: [][2]float64{{0, 10}, {100, 10}}},
+			},
+			{
+				ID:       "r3",
+				GroupID:  "g1",
+				Polyline: Polyline{Points: [][2]float64{{0, 20}, {100, 20}}},
+			},
+		},
+		Groups: []Group{
+			{ID: "g1", Name: "Trim"},
+		},
+	}
+
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Ungrouped run must NOT leak a `"group_id":""` key; both
+	// grouped runs must emit the FK exactly once each.
+	if strings.Contains(string(raw), `"group_id":""`) {
+		t.Errorf("ungrouped run leaked a group_id:\"\" key into the marshaled doc: %s", raw)
+	}
+	if got, want := strings.Count(string(raw), `"group_id":"g1"`), 2; got != want {
+		t.Errorf("expected %d group_id=g1 keys in marshaled doc, got %d: %s", want, got, raw)
+	}
+	if !strings.Contains(string(raw), `"groups":[{"id":"g1","name":"Trim"}]`) {
+		t.Errorf("expected Doc.Groups entry in marshaled JSON: %s", raw)
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Runs) != 3 {
+		t.Fatalf("unexpected run count: %d", len(got.Runs))
+	}
+	if got.Runs[0].GroupID != "" {
+		t.Errorf("ungrouped run picked up a group_id: %q", got.Runs[0].GroupID)
+	}
+	if got.Runs[1].GroupID != "g1" || got.Runs[2].GroupID != "g1" {
+		t.Errorf("grouped runs lost their group_id: %+v / %+v", got.Runs[1], got.Runs[2])
+	}
+	if len(got.Groups) != 1 || got.Groups[0].ID != "g1" || got.Groups[0].Name != "Trim" {
+		t.Errorf("Doc.Groups did not survive round-trip: %+v", got.Groups)
+	}
+}
+
+// TestGroupBackwardsCompat verifies a pre-33b doc blob (no Groups
+// field, no group_id FKs on runs) deserializes cleanly: every
+// Run.GroupID stays "" and Doc.Groups stays nil. Confirms the new
+// fields require no data migration — rows persisted before this PR
+// keep loading verbatim.
+func TestGroupBackwardsCompat(t *testing.T) {
+	old := []byte(`{
+        "version": 1,
+        "view_box_mm": [0, 0, 100, 50],
+        "runs": [
+          {"id": "r1", "polyline": {"points": [[0,0],[10,0]], "closed": false}},
+          {"id": "r2", "polyline": {"points": [[0,5],[10,5]], "closed": false}}
+        ]
+      }`)
+	var doc Doc
+	if err := json.Unmarshal(old, &doc); err != nil {
+		t.Fatalf("unmarshal pre-groups doc: %v", err)
+	}
+	if len(doc.Runs) != 2 {
+		t.Fatalf("unexpected shape: %+v", doc)
+	}
+	for i, r := range doc.Runs {
+		if r.GroupID != "" {
+			t.Errorf("run %d picked up a GroupID from old JSON: %q", i, r.GroupID)
+		}
+	}
+	if doc.Groups != nil {
+		t.Errorf("Doc.Groups picked up entries from old JSON: %+v", doc.Groups)
+	}
+
+	// Round-trip the pre-33b doc through Marshal: the encoded form
+	// should NOT contain a `"groups"` key (omitempty kicks in for a
+	// nil slice) and no run should leak `"group_id":""`. This is the
+	// "byte-identical for groupless docs" promise in the PR spec.
+	raw, err := json.Marshal(&doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"groups":`) {
+		t.Errorf("groupless doc leaked a groups key after re-marshal: %s", raw)
+	}
+	if strings.Contains(string(raw), `"group_id":`) {
+		t.Errorf("groupless doc leaked a group_id key after re-marshal: %s", raw)
+	}
+}
