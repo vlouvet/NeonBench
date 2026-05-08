@@ -13,7 +13,11 @@ func ValidateSVG(svgData []byte, limits Limits) (*Report, error) {
 		return nil, err
 	}
 
-	issues := append([]Issue(nil), parseIssues...)
+	// Start non-nil so JSON marshals an empty result as `[]`, not `null` —
+	// the editor's live-validate path on a blank design hits exactly this
+	// case, and the frontend reads report.issues.length unconditionally.
+	issues := make([]Issue, 0, len(parseIssues))
+	issues = append(issues, parseIssues...)
 	issues = append(issues, checkBendRadiusClustered(polylines, limits)...)
 	issues = append(issues, checkSegmentLength(polylines, limits)...)
 	issues = append(issues, checkSpacing(polylines, limits)...)
