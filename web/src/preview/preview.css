@@ -116,3 +116,147 @@
   font-size: 0.95rem;
   color: #f88;
 }
+
+/* Phase 3 #7 — scene-controls sidebar. Top-right corner of the canvas
+ * pane (the preset bar from #5 is top-left, so they don't collide
+ * regardless of viewport size). z-index 1 matches the preset bar:
+ * both float above the WebGL canvas, below any future overlay. */
+.preview-page__scene-controls {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 1;
+  width: 280px;
+  background: rgba(17, 17, 17, 0.9);
+  border: 1px solid #222;
+  border-radius: 6px;
+  color: #ddd;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-page__scene-controls-header {
+  appearance: none;
+  background: transparent;
+  color: #ddd;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  /* Removes the underline focus ring from native button-in-region. */
+  outline-offset: 2px;
+}
+
+.preview-page__scene-controls-header:hover,
+.preview-page__scene-controls-header:focus-visible {
+  background: #1a1a1a;
+  color: #6cf;
+}
+
+.preview-page__scene-controls-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0 0.75rem 0.75rem;
+  border-top: 1px solid #222;
+  padding-top: 0.6rem;
+}
+
+.preview-page__scene-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.preview-page__scene-control--group {
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 0.4rem 0.5rem;
+  margin: 0;
+}
+
+.preview-page__scene-control-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #aaa;
+  padding: 0;
+}
+
+.preview-page__scene-control-value {
+  /* Numeric readout next to the slider; tabular-nums keeps the value
+   * from jittering as digits change width. */
+  font-variant-numeric: tabular-nums;
+  color: #ddd;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 0.4rem;
+}
+
+.preview-page__scene-control select,
+.preview-page__scene-control input[type='range'] {
+  width: 100%;
+  background: #0a0a0a;
+  color: #ddd;
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.85rem;
+}
+
+.preview-page__scene-control--group select {
+  width: 100%;
+  background: #0a0a0a;
+  color: #ddd;
+  border: 1px solid #222;
+  border-radius: 4px;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.85rem;
+  margin-top: 0.3rem;
+}
+
+.preview-page__scene-control--group select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.preview-page__scene-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #ddd;
+  cursor: pointer;
+}
+
+.preview-page__scene-screenshot {
+  appearance: none;
+  background: #1f3a5a;
+  color: #ddd;
+  border: 1px solid #2a4a6a;
+  border-radius: 4px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  margin-top: 0.2rem;
+  transition: background 80ms ease, border-color 80ms ease, color 80ms ease;
+}
+
+.preview-page__scene-screenshot:hover,
+.preview-page__scene-screenshot:focus-visible {
+  background: #2a4a6a;
+  border-color: #3a5a7a;
+  color: #6cf;
+  outline: none;
+}
+
+.preview-page__scene-screenshot:active {
+  background: #142840;
+}
