@@ -37,6 +37,15 @@ export interface DownloadEnv {
 }
 
 /**
+ * Minimal post-process composer surface this helper drives. Keeps the
+ * dep-free signature: tests can pass a `{ render: vi.fn() }` stub
+ * without pulling in `@react-three/postprocessing` types.
+ */
+export interface ComposerLike {
+  render(): void;
+}
+
+/**
  * Render one frame to the WebGL canvas, then trigger a PNG download
  * of that canvas via a transient `<a download>` element.
  *
@@ -47,11 +56,19 @@ export interface DownloadEnv {
  * errors (passing a bad gl/scene/camera) and WebGL context loss,
  * both of which the caller should surface.
  *
+ * When `composer` is provided, we drive the post-process pipeline via
+ * `composer.render()` so bloom (and any other configured passes) lands
+ * in the captured PNG. When it's absent or `null`, we fall back to
+ * `gl.render(scene, camera)` — that's the `?nobloom` debug path and
+ * the back-compat path for callers that never had a composer to
+ * surface (Tier 1 #68).
+ *
  * @param gl       The Three.js WebGL renderer driving the Canvas.
  * @param scene    The scene to render.
  * @param camera   The camera to render through.
  * @param filename The download filename (e.g. `My Sign-preview-...png`).
  * @param env      Document-like seam for tests; defaults to the global `document`.
+ * @param composer Optional post-process composer; when present, drives the bloom pipeline.
  */
 export function captureCanvasToPNG(
   gl: THREE.WebGLRenderer,
@@ -61,10 +78,21 @@ export function captureCanvasToPNG(
   env: DownloadEnv = (typeof document !== 'undefined'
     ? (document as unknown as DownloadEnv)
     : (undefined as unknown as DownloadEnv)),
+  composer?: ComposerLike | null,
 ): void {
   // Force a fresh frame so the backbuffer is populated. Without this
   // the dataURL is usually transparent black on Chrome/Firefox.
-  gl.render(scene, camera);
+  //
+  // When a composer is wired up (bloom path), drive its `render()` so
+  // the post-process chain writes the final image (with bloom halos)
+  // into the canvas backbuffer. Otherwise fall back to the bare
+  // renderer — used by the `?nobloom` URL flag and any pre-bloom
+  // callers.
+  if (composer) {
+    composer.render();
+  } else {
+    gl.render(scene, camera);
+  }
   const dataURL = gl.domElement.toDataURL('image/png');
   const a = env.createElement('a');
   a.href = dataURL;

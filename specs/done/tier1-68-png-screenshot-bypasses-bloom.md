@@ -1,6 +1,6 @@
 # Tier 1 #68 — PNG screenshot bypasses bloom
 
-> **Status:** active · drafted 2026-05-08 · branch `task/1-png-screenshot-bypasses-bloom`
+> **Status:** done · drafted 2026-05-08 · branch `task/1-png-screenshot-bypasses-bloom`
 
 ## Goal
 

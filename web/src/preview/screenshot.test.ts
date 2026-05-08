@@ -118,6 +118,59 @@ describe('captureCanvasToPNG', () => {
     expect(env._removed.length).toBe(1);
     expect(env._appended[0]).toBe(env._removed[0]);
   });
+
+  // Tier 1 #68 — when an `EffectComposer` is wired up, the screenshot
+  // helper must drive the post-process pipeline (so bloom lands in
+  // the PNG) rather than the bare `gl.render(scene, camera)` path
+  // (which would skip post-processing and produce a flat-emissive
+  // image).
+  it('drives composer.render() when a composer is provided (bloom path)', () => {
+    const gl = makeStubRenderer();
+    const env = makeStubEnv();
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera();
+    const composer = { render: vi.fn() };
+    captureCanvasToPNG(
+      gl as unknown as THREE.WebGLRenderer,
+      scene,
+      camera,
+      'x.png',
+      env,
+      composer,
+    );
+    // Composer ran exactly once; the bare renderer was NOT touched.
+    // Driving both would double-paint the frame and waste the GPU
+    // cost (and on some drivers the bare-render call after the
+    // composer reset would clobber the bloomed framebuffer).
+    expect(composer.render).toHaveBeenCalledOnce();
+    expect(gl.render).not.toHaveBeenCalled();
+    // Composer render must precede the dataURL grab — same backbuffer
+    // ordering invariant as the bare-renderer path above.
+    const composerOrder = composer.render.mock.invocationCallOrder[0];
+    const grabOrder = gl.domElement.toDataURL.mock.invocationCallOrder[0];
+    expect(composerOrder).toBeLessThan(grabOrder);
+  });
+
+  it('falls back to gl.render when composer is explicitly null (?nobloom)', () => {
+    // `?nobloom` short-circuits the EffectComposer wrap inside Scene,
+    // so PreviewPage forwards `composer: null` here. Behavior must
+    // match the no-composer back-compat path so `?nobloom` still
+    // produces a (flat-emissive) PNG.
+    const gl = makeStubRenderer();
+    const env = makeStubEnv();
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera();
+    captureCanvasToPNG(
+      gl as unknown as THREE.WebGLRenderer,
+      scene,
+      camera,
+      'x.png',
+      env,
+      null,
+    );
+    expect(gl.render).toHaveBeenCalledOnce();
+    expect(gl.render).toHaveBeenCalledWith(scene, camera);
+  });
 });
 
 describe('screenshotFilename', () => {
