@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -39,6 +39,14 @@ export default function ProjectDetail() {
   // across every affected design version. Auto-clears on a 4-second
   // timer (set in handleTubeSpecEdit). Tier 3 #18.
   const [tubeSpecToast, setTubeSpecToast] = useState<string | null>(null);
+  // Tier 3 #33a — drag-drop image upload onto the project page.
+  // Mirrors Tier 3 #22's depth-counter + pointer-events:none overlay
+  // pattern from ProjectList. The toast shows "Uploaded foo.png" for
+  // 4 s after a successful drop so the operator gets visual feedback
+  // even when the assets list is below the fold.
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+  const [uploadToast, setUploadToast] = useState<string | null>(null);
 
   async function startBlankDesign() {
     if (creatingBlank) return;
@@ -113,17 +121,100 @@ export default function ProjectDetail() {
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    await uploadFile(file);
+    e.target.value = '';
+  }
+
+  // Tier 3 #33a — shared upload entry point. The hidden file input's
+  // onChange handler funnels through here, as does the drop handler
+  // below. Keeping it as one function means the two entry points
+  // can never drift on error handling, the uploading flag, or the
+  // post-upload reload + toast.
+  async function uploadFile(file: File) {
     setUploading(true);
     setError(null);
     try {
       await api.uploadAsset(projectId, file);
       await reload();
+      setUploadToast(`Uploaded ${file.name}`);
+      // 4 s auto-dismiss matches the existing tube-spec-edit toast so
+      // the two transient banners feel consistent.
+      window.setTimeout(() => setUploadToast(null), 4000);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setUploading(false);
-      e.target.value = '';
     }
+  }
+
+  // Tier 3 #33a — drag-drop file upload on the project page. Same
+  // depth-counter pattern Tier 3 #22 uses on the project list (a child
+  // dragenter would otherwise flip dragActive off mid-drag). Validation
+  // is filename-extension-based (case-insensitive) — sniffing the bytes
+  // would be more robust but the backend's vectorize pipeline already
+  // handles the bad-mime case, and the .png/.jpg/.svg test is the same
+  // contract the file picker advertises via its `accept` attribute.
+  function isImageFile(file: File): boolean {
+    const name = file.name.toLowerCase();
+    return (
+      name.endsWith('.png') ||
+      name.endsWith('.jpg') ||
+      name.endsWith('.jpeg') ||
+      name.endsWith('.svg')
+    );
+  }
+
+  function onDragEnter(e: React.DragEvent<HTMLElement>) {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    if (dragDepthRef.current === 1) setDragActive(true);
+  }
+
+  function onDragOver(e: React.DragEvent<HTMLElement>) {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    // preventDefault is mandatory; without it the browser refuses to
+    // fire the subsequent drop event at all.
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }
+
+  function onDragLeave(e: React.DragEvent<HTMLElement>) {
+    if (!e.dataTransfer.types.includes('Files')) return;
+    dragDepthRef.current -= 1;
+    if (dragDepthRef.current <= 0) {
+      dragDepthRef.current = 0;
+      setDragActive(false);
+    }
+  }
+
+  function onDrop(e: React.DragEvent<HTMLElement>) {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setDragActive(false);
+    const files = e.dataTransfer.files;
+    if (!files || files.length === 0) return;
+    if (files.length > 1) {
+      // Multi-file drops aren't supported in V1 — uploading more than
+      // one source image at once doesn't have an obvious flow yet
+      // (which one becomes the active image for vectorize?). Surface
+      // the rest as a console hint rather than silently importing
+      // whichever file lands at index 0.
+      console.warn(
+        `Drop one image at a time; ignoring ${files.length - 1} additional file(s).`,
+      );
+    }
+    const file = files[0];
+    if (!isImageFile(file)) {
+      const ext = file.name.includes('.')
+        ? file.name.slice(file.name.lastIndexOf('.'))
+        : '';
+      setError(
+        `Drop a .png / .jpg / .jpeg / .svg image. That looked like a ${ext || file.type || 'non-image file'}.`,
+      );
+      return;
+    }
+    void uploadFile(file);
   }
 
   async function showVersion(v: DesignVersion) {
@@ -232,7 +323,27 @@ export default function ProjectDetail() {
   const isSVG = mostRecentSource?.mime === 'image/svg+xml';
 
   return (
-    <section>
+    <section
+      className={dragActive ? 'project-detail-section drag-active' : 'project-detail-section'}
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {dragActive && (
+        // pointer-events: none is non-negotiable: without it, releasing
+        // the mouse on the overlay's text won't fire `drop` on the
+        // section. The styling lives in App.css under the Tier 3 #33a
+        // block (mirrors the Tier 3 #22 .drop-overlay pattern).
+        <div className="drop-overlay" aria-hidden="true">
+          <span>Drop a PNG / JPG / SVG to upload</span>
+        </div>
+      )}
+      {uploadToast && (
+        <p className="meta upload-toast" role="status" aria-live="polite">
+          {uploadToast}
+        </p>
+      )}
       <p>
         <Link to="/">&larr; All projects</Link>
       </p>

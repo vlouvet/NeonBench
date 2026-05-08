@@ -55,7 +55,7 @@ const MAX_SCALE = 200;
 export default function EditorCanvas({
   doc,
   tool,
-  selectedRunId,
+  selectedRunIds,
   projectDiameterMM,
   snapEnabled,
   snapMM,
@@ -90,7 +90,13 @@ export default function EditorCanvas({
 }: {
   doc: DesignDoc;
   tool: EditorTool;
-  selectedRunId: string | null;
+  // Tier 3 #33a — multi-select. `selectedRunIds` is the canonical
+  // source of truth for which runs render with a selection ring. Empty
+  // array means "nothing selected"; a length-1 array is the equivalent
+  // of the legacy single-select state. The "primary" run for tools that
+  // still operate on one run at a time (node-edit, alt-click bend) is
+  // the LAST entry — most recently clicked or toggled-in.
+  selectedRunIds: string[];
   projectDiameterMM: number;
   snapEnabled: boolean;
   snapMM: number;
@@ -123,7 +129,11 @@ export default function EditorCanvas({
   // zoom-in to inspect a region; rescaling-to-fit on every j/k would
   // undo that). A 200 ms cubic ease-out keeps the motion subtle.
   centerOnIssue?: { x: number; y: number; epoch: number } | null;
-  onSelectRun: (id: string | null) => void;
+  // Tier 3 #33a — `opts.additive` is true for Shift / Cmd-Ctrl-click;
+  // the parent toggles the run in/out of the selection. Plain click
+  // sends opts undefined (parent replaces the selection with [id]).
+  // Background click sends id=null (parent clears the selection).
+  onSelectRun: (id: string | null, opts?: { additive?: boolean }) => void;
   onPlaceElectrode: (runId: string, pointIndex: number) => void;
   onDeleteElectrode: (runId: string, electrodeIndex: number) => void;
   // Right-click on an electrode pin opens the housing picker modal
@@ -186,6 +196,16 @@ export default function EditorCanvas({
   // direction/electrodes (for V1: none).
   onCommitShape: (kind: 'pen' | 'rect' | 'circle' | 'arc', points: [number, number][], closed: boolean) => void;
 }) {
+  // Tier 3 #33a — most-recently-selected run, used by tools that still
+  // operate on a single run at a time (node-edit handles, bend marker
+  // overlay, alt-click vertex insert). Multi-select rendering loops
+  // over `selectedRunIds` directly.
+  const primarySelectedRunId =
+    selectedRunIds.length > 0 ? selectedRunIds[selectedRunIds.length - 1] : null;
+  const primarySelectedRunIdSet = useMemo(
+    () => new Set(selectedRunIds),
+    [selectedRunIds],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
@@ -629,9 +649,9 @@ export default function EditorCanvas({
     // handler in onRunClick consults the same state to skip a redundant
     // insert.
     if (tool === 'node') {
-      if (e.altKey && selectedRunId) {
+      if (e.altKey && primarySelectedRunId) {
         const w = clientToWorld(e.clientX, e.clientY);
-        const run = w ? doc.runs.find((r) => r.id === selectedRunId) : null;
+        const run = w ? doc.runs.find((r) => r.id === primarySelectedRunId) : null;
         if (w && run) {
           const snap = nodeSnapRadiusMM(transform.k, snapEnabled, snapMM);
           const hit = nearestVertexWithin(run.polyline.points, w, snap);
@@ -938,7 +958,9 @@ export default function EditorCanvas({
       // vertex at the click point. The selected run must match the
       // clicked run; otherwise just select the new run so the user can
       // see its existing vertices first.
-      if (e.altKey && run.id === selectedRunId) {
+      if (e.altKey && run.id === primarySelectedRunId) {
+        // Note: alt-click reuses the primary selection only — we don't
+        // want a stray multi-select to fire vertex inserts on every run.
         const world = clientToWorld(e.clientX, e.clientY);
         if (!world) return;
         // Tier 3 #25 — if the click landed within the snap-to-vertex
@@ -959,7 +981,15 @@ export default function EditorCanvas({
       onSelectRun(run.id);
       return;
     }
-    onSelectRun(run.id);
+    // Tier 3 #33a — Shift / Cmd-Ctrl-click toggles the run in/out of
+    // the multi-select. Plain click replaces the selection. The
+    // modifier check lives only on this default branch — tool-specific
+    // clicks above (electrode placement, blockout, jump/support, bend,
+    // insert-doubleback, break-open) all want the legacy "set selection
+    // to clicked run" behavior so the active tool's followup operates
+    // on a single run as before.
+    const additive = e.shiftKey || e.metaKey || e.ctrlKey;
+    onSelectRun(run.id, { additive });
   }
 
   // Track which segment the cursor is closest to while the
@@ -1138,7 +1168,7 @@ export default function EditorCanvas({
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
           {doc.runs.map((run) => {
-            const selected = run.id === selectedRunId;
+            const selected = primarySelectedRunIdSet.has(run.id);
             const arcs = runArcs(run);
             const inactiveD = arcs.inactive.length > 1
               ? indicesToD(arcs.inactive, run.polyline.points, false)
@@ -1633,15 +1663,15 @@ export default function EditorCanvas({
               );
             }),
           )}
-          {selectedRunId &&
+          {primarySelectedRunId &&
             (() => {
-              const run = doc.runs.find((r) => r.id === selectedRunId);
+              const run = doc.runs.find((r) => r.id === primarySelectedRunId);
               if (!run) return null;
               const bends = effectiveBends(run, projectDiameterMM);
               const isManual = !!run.bends && run.bends.length > 0;
               return bends.map((b, bi) => (
                 <BendMarker
-                  key={`bend-${selectedRunId}-${bi}`}
+                  key={`bend-${primarySelectedRunId}-${bi}`}
                   x={b.x}
                   y={b.y}
                   sizeMM={markerSizeMM * 0.6}
@@ -1739,8 +1769,8 @@ export default function EditorCanvas({
                   }
                 }
               }
-              if (selectedRunId) {
-                const run = doc.runs.find((r) => r.id === selectedRunId);
+              if (primarySelectedRunId) {
+                const run = doc.runs.find((r) => r.id === primarySelectedRunId);
                 if (run) {
                   for (let pi = 0; pi < run.polyline.points.length; pi++) {
                     const p = run.polyline.points[pi];
@@ -1859,7 +1889,7 @@ export default function EditorCanvas({
           <span className="meta hint">
             {joinArm
               ? `Join armed at ${joinArm.runId} ${joinArm.endpoint} — click another endpoint (green) to merge`
-              : selectedRunId
+              : primarySelectedRunId
                 ? 'Drag to reshape · alt-click path to insert vertex · alt-click vertex to split run · shift-click vertex to delete'
                 : 'Select a run first, then drag/insert/split its vertices'}
           </span>
