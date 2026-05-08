@@ -39,6 +39,11 @@ export type DrawingTool =
   | 'label'
   | 'dimension'
   | 'node'
+  // Tier 3 #61 — click-tool that breaks closed loops open / moves the
+  // opening on already-open runs. No in-progress drawing state, but it
+  // still flows through `switchTool` so leaving e.g. an in-progress
+  // pen polyline for break-open clears the pen anchor.
+  | 'break-open'
   | 'pen'
   | 'rect'
   | 'circle'
@@ -68,7 +73,8 @@ export type DrawingState =
         | 'bend'
         | 'label'
         | 'dimension'
-        | 'node';
+        | 'node'
+        | 'break-open';
     }
   | { tool: 'pen'; vertices: Point[] }
   | { tool: 'rect'; firstCorner: Point | null }

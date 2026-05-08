@@ -1262,3 +1262,186 @@ describe('channel-letter polish ops (Tier 3 #26)', () => {
     expect(next.runs[0].raceway_id).toBeUndefined();
   });
 });
+
+// breakOpen / moveOpening — Tier 3 #61 (NW #130). Both ops convert a
+// closed loop's "start vertex" into an electrode opening (or move an
+// existing opening to a new vertex) without changing the underlying
+// physical shape of the tube. The test cases below verify that the
+// rewritten polyline traces the same arc, that electrodes land at the
+// right indices, and that live-arc-relative metadata (blockouts /
+// annotations / bends) carries over without manual remap.
+describe('breakOpen', () => {
+  function closedTriangleDoc(): DesignDoc {
+    const runs: DesignRun[] = [
+      {
+        id: 'tri',
+        polyline: {
+          points: [
+            [0, 0],
+            [10, 0],
+            [5, 10],
+          ],
+          closed: true,
+        },
+        tube_diameter_mm: 10,
+      },
+    ];
+    return { version: 1, view_box_mm: [0, 0, 20, 20], runs };
+  }
+
+  it('converts a 3-point closed triangle into a 4-point open polyline with electrodes at the duplicated vertices', () => {
+    const next = ops.breakOpen(closedTriangleDoc(), 'tri', 1);
+    const tri = next.runs[0];
+    expect(tri.polyline.closed).toBe(false);
+    // Walk starts at vertex 1 (10,0), goes 2 (5,10), wraps to 0 (0,0),
+    // then duplicates the start vertex at the end to preserve geometry.
+    expect(tri.polyline.points).toEqual([
+      [10, 0],
+      [5, 10],
+      [0, 0],
+      [10, 0],
+    ]);
+    expect(tri.electrodes).toEqual([
+      { point_index: 0 },
+      { point_index: 3 },
+    ]);
+    // Direction is dropped — meaningless once the run is open.
+    expect(tri.direction).toBeUndefined();
+  });
+
+  it('preserves blockout live-arc indices through the rewrite', () => {
+    // Use a 6-vertex closed hexagonal loop with a blockout that spans
+    // live indices 2..3 (a fixed step count along the active arc).
+    const N = 6;
+    const closedPts: [number, number][] = [];
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      closedPts.push([10 + 5 * Math.cos(a), 10 + 5 * Math.sin(a)]);
+    }
+    const before: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 20, 20],
+      runs: [
+        {
+          id: 'hex',
+          polyline: { points: closedPts, closed: true },
+          blockouts: [{ start_live_index: 2, end_live_index: 3 }],
+        },
+      ],
+    };
+    const after = ops.breakOpen(before, 'hex', 0);
+    const hex = after.runs[0];
+    expect(hex.polyline.closed).toBe(false);
+    expect(hex.polyline.points).toHaveLength(N + 1);
+    // Live indices are walk-relative, so the same blockout is still
+    // 2 steps in to 3 steps in along the new live walk.
+    expect(hex.blockouts).toEqual([{ start_live_index: 2, end_live_index: 3 }]);
+  });
+
+  it('throws when the run is already open', () => {
+    const openDoc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'open',
+          polyline: { points: [[0, 0], [5, 0], [10, 0]], closed: false },
+        },
+      ],
+    };
+    expect(() => ops.breakOpen(openDoc, 'open', 1)).toThrow(/already open/);
+  });
+});
+
+describe('moveOpening', () => {
+  function eightPointOpenDoc(): DesignDoc {
+    // 8-vertex open polyline tracing a horseshoe; electrodes at [0, 7]
+    // (the natural state after a breakOpen).
+    const pts: [number, number][] = [];
+    for (let i = 0; i < 8; i++) pts.push([i, 0]);
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'horseshoe',
+          polyline: { points: pts, closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 7 }],
+        },
+      ],
+    };
+  }
+
+  it('rotates the polyline so the chosen vertex becomes the new start; electrodes land at [0, last]', () => {
+    const before = eightPointOpenDoc();
+    const after = ops.moveOpening(before, 'horseshoe', 4);
+    const run = after.runs[0];
+    // New polyline: [4, 5, 6, 7, 0, 1, 2, 3] from the original points.
+    expect(run.polyline.points).toEqual([
+      [4, 0],
+      [5, 0],
+      [6, 0],
+      [7, 0],
+      [0, 0],
+      [1, 0],
+      [2, 0],
+      [3, 0],
+    ]);
+    expect(run.polyline.closed).toBe(false);
+    expect(run.electrodes).toEqual([
+      { point_index: 0 },
+      { point_index: 7 },
+    ]);
+    // The geometry walked from the new index 0 should match the prior
+    // walk starting at vertex 4 — verify by sampling.
+    const beforeWalk = before.runs[0].polyline.points;
+    for (let i = 0; i < run.polyline.points.length; i++) {
+      const beforeIdx = (4 + i) % beforeWalk.length;
+      expect(run.polyline.points[i]).toEqual(beforeWalk[beforeIdx]);
+    }
+  });
+
+  it('preserves blockout live-arc indices because they are walk-relative', () => {
+    const before = eightPointOpenDoc();
+    const seeded: DesignDoc = {
+      ...before,
+      runs: [
+        {
+          ...before.runs[0],
+          blockouts: [{ start_live_index: 2, end_live_index: 5 }],
+        },
+      ],
+    };
+    const after = ops.moveOpening(seeded, 'horseshoe', 3);
+    const run = after.runs[0];
+    expect(run.blockouts).toEqual([{ start_live_index: 2, end_live_index: 5 }]);
+  });
+
+  it('throws on a closed run or a run with fewer than two electrodes', () => {
+    const closed: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'loop',
+          polyline: { points: [[0, 0], [5, 0], [5, 5], [0, 5]], closed: true },
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+        },
+      ],
+    };
+    expect(() => ops.moveOpening(closed, 'loop', 1)).toThrow(/closed/);
+
+    const oneElectrode: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'half',
+          polyline: { points: [[0, 0], [5, 0], [10, 0]], closed: false },
+          electrodes: [{ point_index: 0 }],
+        },
+      ],
+    };
+    expect(() => ops.moveOpening(oneElectrode, 'half', 1)).toThrow(/electrode/);
+  });
+});

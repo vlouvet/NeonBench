@@ -207,7 +207,8 @@ export default function EditorPage() {
 
   // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo. Skipped
   // when the user is typing into an input — otherwise an editor undo would
-  // hijack input field text undo.
+  // hijack input field text undo. Also handles the unmodified single-key
+  // tool hotkeys (Tier 3 #61: 'O' for Break/Move Opening).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -215,7 +216,16 @@ export default function EditorPage() {
         return;
       }
       const meta = e.metaKey || e.ctrlKey;
-      if (!meta) return;
+      if (!meta) {
+        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'o') {
+          // Tier 3 #61 — toggle Break/Move Opening tool. Pressing while
+          // already active reverts to select so the operator can dismiss
+          // the tool with the same key.
+          e.preventDefault();
+          setTool(tool === 'break-open' ? 'select' : 'break-open');
+        }
+        return;
+      }
       if (e.key.toLowerCase() === 'z') {
         e.preventDefault();
         if (e.shiftKey) {
@@ -230,7 +240,7 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [tool]);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
@@ -560,6 +570,32 @@ export default function EditorPage() {
     setSelected(runId);
   }
 
+  // Tier 3 #61 (NW #130) — break-open / move-opening dispatchers.
+  // EditorCanvas's `'break-open'` tool routes a click on a closed run
+  // here, and a click on an open run with two electrodes through the
+  // sibling `moveOpening` dispatcher. Both ops throw OperationError on
+  // an invalid input — the canvas only fires the matching handler so
+  // the throws shouldn't surface in normal use, but we still surface
+  // them to the user via setError so a stale doc state doesn't lead to
+  // a silent no-op.
+  function breakOpenOnRun(runId: string, vertexIndex: number) {
+    try {
+      editDoc((prev) => ops.breakOpen(prev, runId, vertexIndex));
+      setSelected(runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function moveOpeningOnRun(runId: string, newStartVertexIndex: number) {
+    try {
+      editDoc((prev) => ops.moveOpening(prev, runId, newStartVertexIndex));
+      setSelected(runId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function setRunNotes(runId: string, notes: string) {
     editDoc((prev) => ops.setRunNotes(prev, runId, notes));
   }
@@ -868,6 +904,12 @@ export default function EditorPage() {
               onClick={() => setTool('node')}
               title="Edit polyline vertices on the selected run (drag to move, shift-click to delete)"
             >Node edit</button>
+            <button
+              type="button"
+              className={tool === 'break-open' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('break-open')}
+              title="Break/Move Opening (O): click a vertex on a closed run to insert an opening, or on an open run to move the existing opening"
+            >Break/Move Opening</button>
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
@@ -956,6 +998,8 @@ export default function EditorPage() {
           joinArm={joinArm}
           onPickJoinEndpoint={pickJoinEndpoint}
           onInsertDoubleback={insertDoubleback}
+          onBreakOpen={breakOpenOnRun}
+          onMoveOpening={moveOpeningOnRun}
           onCommitShape={commitShape}
           snapEnabled={snapEnabled}
           snapMM={snapMM}
