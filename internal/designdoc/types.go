@@ -118,8 +118,26 @@ type Polyline struct {
 // Electrode marks a tube end. PointIndex is the index into the parent run's
 // polyline. A run with two electrodes is "open" between them; a run with no
 // electrodes is unassigned.
+//
+// HousingType, BoreDiameterMM, and ElevationMM describe the porcelain or
+// ceramic housing that holds the spring contact at the cabinet end of the
+// electrode lead-in (Miller Ch.IV p.62; Strattman NT Ch.3 Table 3.4). All
+// three fields are optional and serialize as zero values for old design-doc
+// blobs (omitempty), so adding them required no schema migration.
+//
+// HousingType is one of "" (no housing — the V1 default), "shell-15"
+// (15-shell, 3/8" × 1-5/16"), "shell-19" (19-shell, 1/2" × 1-5/8"), or
+// "custom". When stock shells are picked, BoreDiameterMM is ignored — the
+// frontend's HOUSING_LIBRARY is authoritative for those dimensions. When
+// HousingType == "custom", BoreDiameterMM carries the operator-supplied
+// inner diameter. ElevationMM is the housing's mounting height above the
+// substrate (raceway / cabinet face) in millimeters; meaningful for any
+// non-empty HousingType.
 type Electrode struct {
-	PointIndex int `json:"point_index"`
+	PointIndex     int     `json:"point_index"`
+	HousingType    string  `json:"housing_type,omitempty"`
+	BoreDiameterMM float64 `json:"bore_diameter_mm,omitempty"`
+	ElevationMM    float64 `json:"elevation_mm,omitempty"`
 }
 
 const SchemaVersion = 1

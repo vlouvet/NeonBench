@@ -90,6 +90,124 @@ describe('electrode ops', () => {
   });
 });
 
+describe('setElectrodeHousing', () => {
+  function docWithElectrode(): DesignDoc {
+    let doc = makeDoc();
+    doc = ops.placeElectrode(doc, 'run-1', 5);
+    return doc;
+  }
+
+  it('sets a stock 15-shell housing and strips the bore (library is authoritative)', () => {
+    const doc = docWithElectrode();
+    const next = ops.setElectrodeHousing(doc, 'run-1', 0, {
+      housing_type: 'shell-15',
+      elevation_mm: 50,
+    });
+    const e = next.runs[0].electrodes![0] as { point_index: number; housing_type?: string; bore_diameter_mm?: number; elevation_mm?: number };
+    expect(e.point_index).toBe(5);
+    expect(e.housing_type).toBe('shell-15');
+    // Bore for stock shells is sourced from the library at read time
+    // and intentionally not persisted on the doc.
+    expect(e.bore_diameter_mm).toBeUndefined();
+    expect(e.elevation_mm).toBe(50);
+  });
+
+  it('drops a user-supplied bore when picking a stock shell', () => {
+    const doc = docWithElectrode();
+    const next = ops.setElectrodeHousing(doc, 'run-1', 0, {
+      housing_type: 'shell-19',
+      bore_diameter_mm: 99, // ignored
+    });
+    const e = next.runs[0].electrodes![0] as { housing_type?: string; bore_diameter_mm?: number };
+    expect(e.housing_type).toBe('shell-19');
+    expect(e.bore_diameter_mm).toBeUndefined();
+  });
+
+  it('accepts a custom housing with an arbitrary positive bore', () => {
+    const doc = docWithElectrode();
+    const next = ops.setElectrodeHousing(doc, 'run-1', 0, {
+      housing_type: 'custom',
+      bore_diameter_mm: 11.0,
+      elevation_mm: 75,
+    });
+    const e = next.runs[0].electrodes![0] as { housing_type?: string; bore_diameter_mm?: number; elevation_mm?: number };
+    expect(e.housing_type).toBe('custom');
+    expect(e.bore_diameter_mm).toBe(11.0);
+    expect(e.elevation_mm).toBe(75);
+  });
+
+  it('throws OperationError when custom housing has no bore', () => {
+    const doc = docWithElectrode();
+    expect(() =>
+      ops.setElectrodeHousing(doc, 'run-1', 0, {
+        housing_type: 'custom',
+      }),
+    ).toThrow(/bore_diameter_mm/);
+  });
+
+  it('throws OperationError when custom housing has zero or negative bore', () => {
+    const doc = docWithElectrode();
+    expect(() =>
+      ops.setElectrodeHousing(doc, 'run-1', 0, {
+        housing_type: 'custom',
+        bore_diameter_mm: 0,
+      }),
+    ).toThrow(/bore_diameter_mm/);
+    expect(() =>
+      ops.setElectrodeHousing(doc, 'run-1', 0, {
+        housing_type: 'custom',
+        bore_diameter_mm: -2,
+      }),
+    ).toThrow(/bore_diameter_mm/);
+  });
+
+  it('throws OperationError on an unknown housing_type', () => {
+    const doc = docWithElectrode();
+    expect(() =>
+      ops.setElectrodeHousing(doc, 'run-1', 0, {
+        housing_type: 'shell-25' as 'custom', // bypass type guard for the test
+      }),
+    ).toThrow(/invalid housing_type/);
+  });
+
+  it('clears every housing field when housing_type is empty', () => {
+    let doc = docWithElectrode();
+    doc = ops.setElectrodeHousing(doc, 'run-1', 0, {
+      housing_type: 'custom',
+      bore_diameter_mm: 11,
+      elevation_mm: 80,
+    });
+    doc = ops.setElectrodeHousing(doc, 'run-1', 0, { housing_type: '' });
+    const e = doc.runs[0].electrodes![0] as { point_index: number; housing_type?: string; bore_diameter_mm?: number; elevation_mm?: number };
+    expect(e.point_index).toBe(5);
+    expect(e.housing_type).toBeUndefined();
+    expect(e.bore_diameter_mm).toBeUndefined();
+    expect(e.elevation_mm).toBeUndefined();
+  });
+
+  it('returns the input doc unchanged for an out-of-range electrode index', () => {
+    const doc = docWithElectrode();
+    const next = ops.setElectrodeHousing(doc, 'run-1', 99, {
+      housing_type: 'shell-15',
+    });
+    expect(next.runs[0].electrodes![0]).toEqual({ point_index: 5 });
+  });
+
+  it('round-trips through JSON cleanly', () => {
+    const doc = docWithElectrode();
+    const set = ops.setElectrodeHousing(doc, 'run-1', 0, {
+      housing_type: 'custom',
+      bore_diameter_mm: 11,
+      elevation_mm: 75,
+    });
+    const round = JSON.parse(JSON.stringify(set)) as DesignDoc;
+    const e = round.runs[0].electrodes![0] as { housing_type?: string; bore_diameter_mm?: number; elevation_mm?: number };
+    expect(e.housing_type).toBe('custom');
+    expect(e.bore_diameter_mm).toBe(11);
+    expect(e.elevation_mm).toBe(75);
+  });
+});
+
 describe('blockout ops', () => {
   it('placeBlockout normalizes start <= end', () => {
     const doc = ops.placeBlockout(makeDoc(), 'run-1', 9, 3);

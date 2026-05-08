@@ -566,11 +566,73 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 			}
 			y += 2
 		}
+		// Tier 3 #62 — per-run "Housings" subsection. Lists every
+		// electrode that has a configured housing (HousingType != "")
+		// with its bore diameter and mounting elevation. Skipped when
+		// no electrode has a housing set, so designs that haven't been
+		// tagged with housings yet keep the bend list compact.
+		if housings := housingsForRun(run); len(housings) > 0 {
+			pdf.SetFont("Helvetica", "B", 9)
+			pdf.Text(mx+4, y, "Housings:")
+			y += 5
+			pdf.SetFont("Helvetica", "", 9)
+			for _, h := range housings {
+				pdf.Text(mx+4, y, "  "+h)
+				y += 5
+			}
+			y += 2
+		}
 		// Page break: leave some margin from the footer area.
 		if y > opts.Paper.HeightMM-mx-15 {
 			pdf.AddPage()
 			y = mx + 8
 		}
+	}
+}
+
+// housingsForRun returns one display string per electrode that has a
+// configured housing on this run, in electrode order ("E1: ...",
+// "E2: ..."). Electrodes with HousingType == "" are skipped, so the
+// caller can short-circuit the whole "Housings" section when the
+// returned slice is empty. Stock-shell labels mirror the frontend
+// HOUSING_LIBRARY (Strattman NT Ch.3 Table 3.4); the bore is read from
+// the library when stock and from the doc when custom — same
+// authoritative-source split docOps.setElectrodeHousing enforces.
+func housingsForRun(run designdoc.Run) []string {
+	var out []string
+	for i, e := range run.Electrodes {
+		if e.HousingType == "" {
+			continue
+		}
+		label, bore := housingDimsForType(e.HousingType, e.BoreDiameterMM)
+		line := fmt.Sprintf("E%d - %s (bore %.1f mm", i+1, label, bore)
+		if e.ElevationMM > 0 {
+			line += fmt.Sprintf(", elev %.1f mm", e.ElevationMM)
+		}
+		line += ")"
+		out = append(out, line)
+	}
+	return out
+}
+
+// housingDimsForType resolves a (HousingType, BoreDiameterMM) pair to
+// the printed label + bore. Stock shells override the doc-supplied bore
+// (the library is authoritative); custom uses the doc value. Mirrors
+// web/src/lib/housingLibrary.ts; if a third stock shell is added there
+// it should be added here too. Mismatches are picked up by the round-
+// trip integration test rather than by a code-level guard, so the two
+// tables can drift if a future task forgets to update both — keep them
+// in sync.
+func housingDimsForType(housingType string, customBoreMM float64) (label string, boreMM float64) {
+	switch housingType {
+	case "shell-15":
+		return "15-shell (3/8\" x 1-5/16\")", 9.5
+	case "shell-19":
+		return "19-shell (1/2\" x 1-5/8\")", 12.7
+	case "custom":
+		return "Custom", customBoreMM
+	default:
+		return housingType, customBoreMM
 	}
 }
 

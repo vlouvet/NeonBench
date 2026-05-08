@@ -13,6 +13,7 @@ import {
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import HersheyTextDialog from '../components/HersheyTextDialog';
+import HousingPickerModal from '../components/HousingPickerModal';
 import PrintHost from '../components/PrintHost';
 import ValidationReportView, {
   type SeverityFilter,
@@ -21,6 +22,7 @@ import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as ops from '../lib/docOps';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
+import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -70,6 +72,15 @@ export default function EditorPage() {
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
   const [hersheyOpen, setHersheyOpen] = useState(false);
+  // Tier 3 #62 — housing-picker modal target. Non-null when the
+  // operator right-clicked an electrode pin; carries enough context
+  // (run id + electrode index within run.electrodes) for the modal
+  // to read the existing housing fields off the doc and emit a
+  // setElectrodeHousing op on Save.
+  const [housingTarget, setHousingTarget] = useState<{
+    runId: string;
+    electrodeIndex: number;
+  } | null>(null);
   // Print-via-OS-dialog state (Tier 3 #32). When non-null, a hidden
   // iframe loads the print PDF and triggers `window.print()` against
   // it. Cleared once the print dialog closes so the iframe unmounts.
@@ -418,6 +429,15 @@ export default function EditorPage() {
   function clearElectrodesOnSelected() {
     if (!selected) return;
     editDoc((prev) => ops.clearElectrodes(prev, selected));
+  }
+
+  // Tier 3 #62 — surfaced as a right-click on an electrode pin in the
+  // canvas. Just opens the modal with the run+electrode context; the
+  // modal's onSave handler dispatches setElectrodeHousing through
+  // editDoc so the change goes through the normal undo/dirty plumbing.
+  function openHousingPicker(runId: string, electrodeIndex: number) {
+    setHousingTarget({ runId, electrodeIndex });
+    setSelected(runId);
   }
 
   function placeBlockout(runId: string, startLiveIndex: number, endLiveIndex: number) {
@@ -920,6 +940,7 @@ export default function EditorPage() {
           onSelectRun={setSelected}
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
+          onElectrodeContextMenu={openHousingPicker}
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
@@ -1277,6 +1298,45 @@ export default function EditorPage() {
           onInsert={(runs) => insertHersheyText(runs)}
         />
       )}
+      {housingTarget && (() => {
+        const run = doc.runs.find((r) => r.id === housingTarget.runId);
+        const electrode = run?.electrodes?.[housingTarget.electrodeIndex] as
+          | ElectrodeWithHousing
+          | undefined;
+        if (!run || !electrode) {
+          // Run or electrode disappeared (rare race). Drop the modal so
+          // the operator isn't staring at a stale dialog.
+          return null;
+        }
+        const total = run.electrodes?.length ?? 0;
+        const caption = `${run.id} · electrode ${housingTarget.electrodeIndex + 1} of ${total}`;
+        return (
+          <HousingPickerModal
+            initial={{
+              housing_type: electrode.housing_type as HousingType | undefined,
+              bore_diameter_mm: electrode.bore_diameter_mm,
+              elevation_mm: electrode.elevation_mm,
+            }}
+            caption={caption}
+            onCancel={() => setHousingTarget(null)}
+            onSave={(housing) => {
+              try {
+                editDoc((prev) =>
+                  ops.setElectrodeHousing(
+                    prev,
+                    housingTarget.runId,
+                    housingTarget.electrodeIndex,
+                    housing,
+                  ),
+                );
+                setHousingTarget(null);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+          />
+        );
+      })()}
       {printSrc && (
         <PrintHost src={printSrc} onClose={() => setPrintSrc(null)} />
       )}

@@ -16,6 +16,11 @@ import type {
   Label,
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
+import {
+  HOUSING_LIBRARY,
+  type ElectrodeWithHousing,
+  type HousingType,
+} from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection } from './runArcs';
 import {
@@ -25,6 +30,34 @@ import {
 } from './shapes/offset';
 
 type Electrode = { point_index: number };
+
+// OperationError signals an invalid op input that the caller should
+// surface to the user (e.g. "custom housing requires a positive bore").
+// Throw rather than silently no-op so the editor can show a toast and
+// the test suite can assert on the message.
+export class OperationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OperationError';
+  }
+}
+
+// HousingInput is the shape the housing-picker modal builds when the
+// user clicks Save. setElectrodeHousing normalizes it before writing
+// onto the doc: stock shells have their bore stripped (the library is
+// authoritative), custom housings require a positive bore.
+export type HousingInput = {
+  housing_type: HousingType;
+  bore_diameter_mm?: number;
+  elevation_mm?: number;
+};
+
+const VALID_HOUSING_TYPES: ReadonlySet<string> = new Set([
+  '',
+  'shell-15',
+  'shell-19',
+  'custom',
+]);
 
 function mapRun(doc: DesignDoc, runId: string, fn: (run: DesignRun) => DesignRun): DesignDoc {
   return { ...doc, runs: doc.runs.map((r) => (r.id === runId ? fn(r) : r)) };
@@ -55,6 +88,88 @@ export function deleteElectrode(doc: DesignDoc, runId: string, electrodeIndex: n
     ...run,
     electrodes: (run.electrodes ?? []).filter((_, i) => i !== electrodeIndex),
   }));
+}
+
+// setElectrodeHousing writes housing metadata onto one electrode in a run
+// (Tier 3 #62 — Common + Custom electrode housings). The op is purely
+// additive at the schema level: the three optional fields on Electrode
+// (`housing_type`, `bore_diameter_mm`, `elevation_mm`) deserialize as
+// zero values for old design-doc blobs, so no migration is needed.
+//
+// Behavior:
+//   - housing_type === ''       → clears all three housing fields
+//                                 (the doc reverts to "no housing").
+//   - housing_type === stock    → sets type + elevation; bore is
+//                                 dropped from the doc because the
+//                                 frontend's HOUSING_LIBRARY is
+//                                 authoritative (avoids the doc and
+//                                 the library drifting apart on a
+//                                 future stock-shell dimension change).
+//   - housing_type === 'custom' → requires a positive bore_diameter_mm;
+//                                 throws OperationError otherwise.
+//
+// `electrodeIndex` is the index INTO `run.electrodes`, not the
+// electrode's polyline anchor (the doc's electrodes array is the same
+// shape the picker UI iterates with `electrodes.map((e, i) => …)`).
+export function setElectrodeHousing(
+  doc: DesignDoc,
+  runId: string,
+  electrodeIndex: number,
+  housing: HousingInput,
+): DesignDoc {
+  if (!VALID_HOUSING_TYPES.has(housing.housing_type)) {
+    throw new OperationError(
+      `setElectrodeHousing: invalid housing_type "${housing.housing_type}"`,
+    );
+  }
+  if (housing.housing_type === 'custom') {
+    if (
+      housing.bore_diameter_mm == null ||
+      !Number.isFinite(housing.bore_diameter_mm) ||
+      housing.bore_diameter_mm <= 0
+    ) {
+      throw new OperationError(
+        'setElectrodeHousing: custom housing requires bore_diameter_mm > 0',
+      );
+    }
+  }
+  return mapRun(doc, runId, (run) => {
+    const electrodes = run.electrodes ?? [];
+    if (electrodeIndex < 0 || electrodeIndex >= electrodes.length) {
+      return run;
+    }
+    const next = electrodes.slice();
+    const cur = next[electrodeIndex] as ElectrodeWithHousing;
+    const updated: ElectrodeWithHousing = { point_index: cur.point_index };
+    if (housing.housing_type === '') {
+      // Clearing — strip every housing field so the JSON stays clean.
+    } else if (housing.housing_type === 'shell-15' || housing.housing_type === 'shell-19') {
+      updated.housing_type = housing.housing_type;
+      // Bore is intentionally NOT persisted for stock shells: the
+      // library is authoritative, so writing it would only invite
+      // drift if the dimensions table changes later. The library
+      // reference here is a sanity guard — if the key isn't in the
+      // library the type system would have caught it; the lookup
+      // also throws if someone hand-edits a doc with a bogus key.
+      if (!HOUSING_LIBRARY[housing.housing_type]) {
+        throw new OperationError(
+          `setElectrodeHousing: stock housing "${housing.housing_type}" missing from library`,
+        );
+      }
+      if (housing.elevation_mm != null && housing.elevation_mm > 0) {
+        updated.elevation_mm = housing.elevation_mm;
+      }
+    } else {
+      // 'custom' — already validated above.
+      updated.housing_type = 'custom';
+      updated.bore_diameter_mm = housing.bore_diameter_mm;
+      if (housing.elevation_mm != null && housing.elevation_mm > 0) {
+        updated.elevation_mm = housing.elevation_mm;
+      }
+    }
+    next[electrodeIndex] = updated as unknown as Electrode;
+    return { ...run, electrodes: next };
+  });
 }
 
 export function clearElectrodes(doc: DesignDoc, runId: string): DesignDoc {

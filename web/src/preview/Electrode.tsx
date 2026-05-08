@@ -1,6 +1,10 @@
 import { useMemo } from 'react';
 import * as THREE from 'three';
 import type { DesignRun } from '../api';
+import {
+  resolveHousing,
+  type ElectrodeWithHousing,
+} from '../lib/housingLibrary';
 
 /**
  * Electrode renders one tube-end cap: a short metallic cylinder with
@@ -43,15 +47,18 @@ export default function Electrode({
   electrodeIndex: number;
   defaultDiameterMM?: number;
 }) {
-  const electrode = run.electrodes?.[electrodeIndex];
+  const electrode = run.electrodes?.[electrodeIndex] as
+    | ElectrodeWithHousing
+    | undefined;
   const points = run.polyline.points;
 
-  const { position, quaternion, capRadius, capHeight, valid } = useMemo(() => {
+  const { position, quaternion, capRadius, capHeight, housingRadius, valid } = useMemo(() => {
     const fallback = {
       position: new THREE.Vector3(),
       quaternion: new THREE.Quaternion(),
       capRadius: 0,
       capHeight: 0,
+      housingRadius: 0,
       valid: false as boolean,
     };
     if (!electrode) return fallback;
@@ -93,11 +100,31 @@ export default function Electrode({
     const yAxis = new THREE.Vector3(0, 1, 0);
     const q = new THREE.Quaternion().setFromUnitVectors(yAxis, tangent);
 
+    // Tier 3 #62 — resolve the housing dimensions for this electrode.
+    // resolveHousing returns boreMM = 0 for "no housing", which we
+    // surface as housingRadius = 0 (the render gates the housing
+    // cylinder on > 0). Stock shells pull from HOUSING_LIBRARY;
+    // custom housings use the doc-supplied bore.
+    const housing = resolveHousing(
+      electrode.housing_type,
+      electrode.bore_diameter_mm,
+    );
+    // The housing's bore is the INNER diameter of the porcelain shell.
+    // We render the shell at `bore / 2` so it visually surrounds the
+    // tube cap (whose radius matches the tube's outer diameter); since
+    // tube radii are typically 5–9 mm and shell bores are 9.5 / 12.7,
+    // the shell reads as a chunky collar around the cap. For a shell
+    // smaller than the tube radius, we'd visually clip the cap; in
+    // V1 the operator picks shells matching their tube and the
+    // validator (Tier 3 #62 follow-up) will eventually flag mismatches.
+    const housingRad = housing.boreMM > 0 ? housing.boreMM / 2 : 0;
+
     return {
       position: here,
       quaternion: q,
       capRadius: radius,
       capHeight: height,
+      housingRadius: housingRad,
       valid: true,
     };
   }, [
@@ -110,8 +137,25 @@ export default function Electrode({
 
   if (!valid) return null;
 
+  // Tier 3 #62 — porcelain housing cylinder. Layered OVER the existing
+  // cap geometry (we don't replace the cap — Phase 3 #6's bright nickel
+  // tip is what reads as "tube end" at zoom-out, the housing is a
+  // background collar). 30 mm tall by spec, sitting flush with the cap
+  // base so it looks bolted to the substrate. Lower segment count
+  // (16) than the cap because the housing is a passive prop in the
+  // scene; doesn't deserve the same poly budget.
+  const HOUSING_HEIGHT_MM = 30;
+
   return (
     <group position={position} quaternion={quaternion}>
+      {housingRadius > 0 && (
+        <mesh position={[0, -HOUSING_HEIGHT_MM / 2, 0]}>
+          <cylinderGeometry
+            args={[housingRadius, housingRadius, HOUSING_HEIGHT_MM, 16]}
+          />
+          <meshStandardMaterial color="#666666" roughness={0.4} metalness={0.6} />
+        </mesh>
+      )}
       <mesh position={[0, capHeight / 2, 0]}>
         <cylinderGeometry args={[capRadius, capRadius, capHeight, 12]} />
         <meshStandardMaterial color="#888888" roughness={0.3} metalness={0.85} />
