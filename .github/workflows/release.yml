@@ -1,0 +1,141 @@
+name: Release
+
+# Tagged releases: pushing a `v*` tag triggers a cross-platform build and
+# publishes the resulting binaries to a GitHub Release. macOS code signing /
+# notarization lands in sub-PR 70b (requires Secrets that aren't configured
+# yet) — for now darwin builds are unsigned but the rest of the pipeline is
+# end-to-end.
+on:
+  push:
+    tags: ['v*']
+
+# softprops/action-gh-release needs write access to the Releases API to
+# create the release and attach assets.
+permissions:
+  contents: write
+
+jobs:
+  # Linux + Windows binaries built from a single ubuntu runner. Cross-compile
+  # is cheap with CGO_ENABLED=0 (modernc.org/sqlite is pure-Go).
+  build-linux-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # The Go binary embeds web/dist/ via //go:embed, so the frontend MUST
+      # be built before any go build. Mirrors the local build flow.
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+        working-directory: web
+
+      - name: Cross-compile linux + windows binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 windows/amd64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            ext=""
+            if [ "$goos" = "windows" ]; then
+              ext=".exe"
+            fi
+            name="neonbench-${goos}-${goarch}${ext}"
+            echo "  -> dist/${name}"
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X 'github.com/vlouvet/neonbench/internal/version.Version=${VERSION}'" \
+              -o "dist/${name}" ./cmd/neonbench
+            ( cd dist && shasum -a 256 "${name}" > "${name}.sha256" )
+          done
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-windows-binaries
+          path: dist/
+
+  # macOS binaries built from a macos-latest runner. UNSIGNED in this PR;
+  # sub-PR 70b will add `codesign` + `xcrun notarytool` steps here.
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+        working-directory: web
+
+      - name: Build darwin binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            name="neonbench-darwin-${arch}"
+            echo "  -> dist/${name}"
+            GOOS=darwin GOARCH="$arch" CGO_ENABLED=0 go build \
+              -trimpath \
+              -ldflags "-s -w -X 'github.com/vlouvet/neonbench/internal/version.Version=${VERSION}'" \
+              -o "dist/${name}" ./cmd/neonbench
+            ( cd dist && shasum -a 256 "${name}" > "${name}.sha256" )
+          done
+          ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-binaries
+          path: dist/
+
+  # Combine artifacts into a single GitHub Release. download-artifact@v4
+  # places each upload into its own subdirectory (dist/linux-windows-binaries/,
+  # dist/macos-binaries/), so we flatten before publishing.
+  release:
+    needs: [build-linux-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find dist -type f \( -name 'neonbench-*' -o -name '*.sha256' \) -exec cp {} release/ \;
+          ls -lh release/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: release/neonbench-*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
