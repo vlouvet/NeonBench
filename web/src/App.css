@@ -3,10 +3,12 @@
   margin: 0 auto;
   padding: 1.5rem;
 }
-/* The editor needs the full viewport width — toolbar + canvas + sidebar
- * don't fit in 960px and the canvas wants every pixel. List/detail pages
- * stay capped because forms read better at column width. */
-.app:has(.editor-section) {
+/* The editor and 3D preview both need the full viewport width — toolbar +
+ * canvas + sidebar don't fit in 960px on either, and the WebGL canvas
+ * wants every pixel. List/detail pages stay capped because forms read
+ * better at column width. */
+.app:has(.editor-section),
+.app:has(.preview-page) {
   max-width: none;
 }
 
