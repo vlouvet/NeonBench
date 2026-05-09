@@ -15,31 +15,34 @@ web UI.
 > planning, double-back hairpins, channel-letter return strips with
 > raceway grouping, Hershey single-stroke text in three faces with
 > preset + optical kerning + font thumbnails, polygon-offset Neonize
-> with stitched single-tube output, **groups** that bind runs and
-> select/transform together, multi-select + drag-drop image upload,
-> snap-to-angle / snap-to-geometry on every drawing tool, common +
-> custom electrode housings, connect-tubes (jumper runs), move-opening
-> / break-tube-open, multi-vertex select + drag + merge in node-edit
-> mode, undo/redo, validation marker overlay with severity-filter +
-> j/k keyboard nav + sidebar↔canvas hover linking, full-spec-driven
-> validation including derived bend radius from wall thickness +
-> technique, click-to-edit tube-spec fields with fan-out re-validation,
-> full tube-spec CRUD, project-list bundle preview modal + URL/storage
-> -persisted sort/search), and **Phase 3** (lazy-loaded 3D preview via
-> three.js + react-three-fiber: extruded tubes from project tube-spec
-> diameter, emissive gas-color materials with per-gas-tuned bloom,
-> bloom intensity sliders + scene-control localStorage persistence,
-> electrode caps, per-segment blockout sleeves, jump-annotation tube
-> lifts, orbit camera with Front/Iso/Top/Side preset views,
-> auto-fit-on-mount, scene chrome controls + bloom-aware PNG screenshot
-> export) all ship today. **The preview route is now lazy-loaded —
-> users who never visit it save 309 KB gzipped on first paint.**
-> NeonWizard parity is **36 ✅ / 13 🟡** of 148 advertised features (19
-> deliberately out of scope as Tier 4 graphic-design-suite features
-> that don't help neon production). Remaining work: layers panel (33c)
-> on top of the groups model just shipped + per-group preview (#63) +
-> two Phase 3 cosmetics (warm-up flicker animation, optional bundle
-> schema v2 for round-tripping per-project metadata).
+> with stitched single-tube output, **groups + layers panel** with
+> per-group visibility + lock toggles, multi-select + drag-drop image
+> upload, snap-to-angle / snap-to-geometry on every drawing tool,
+> common + custom electrode housings, connect-tubes (jumper runs),
+> move-opening / break-tube-open, multi-vertex select + drag + merge
+> in node-edit mode, undo/redo, validation marker overlay with
+> severity-filter + j/k keyboard nav + sidebar↔canvas hover linking,
+> full-spec-driven validation including derived bend radius from wall
+> thickness + technique, click-to-edit tube-spec fields with fan-out
+> re-validation, full tube-spec CRUD, project-list bundle preview
+> modal + URL/storage-persisted sort/search), and **Phase 3**
+> (lazy-loaded 3D preview via three.js + react-three-fiber: extruded
+> tubes from project tube-spec diameter, emissive gas-color materials
+> with per-gas-tuned bloom, bloom intensity sliders + scene-control
+> localStorage persistence, electrode caps, per-segment blockout
+> sleeves, jump-annotation tube lifts, **per-group focus filter +
+> visibility-aware rendering**, orbit camera with Front/Iso/Top/Side
+> preset views, auto-fit-on-mount, scene chrome controls + bloom-aware
+> PNG screenshot export) all ship today. **The preview route is now
+> lazy-loaded — users who never visit it save 309 KB gzipped on first
+> paint.** NeonWizard parity is **37 ✅ / 12 🟡** of 148 advertised
+> features (19 deliberately out of scope as Tier 4 graphic-design-suite
+> features that don't help neon production). The shop-readiness backlog
+> is essentially closed; remaining work is two Phase 3 cosmetics
+> (warm-up flicker animation, optional bundle schema v2 for
+> round-tripping per-project metadata) plus Tier 3 #30 HV-cable spacing
+> which is BLOCKED on a prereq design contract for cabinet outline +
+> transformer placement + HV cable routing.
 
 ## Why
 
