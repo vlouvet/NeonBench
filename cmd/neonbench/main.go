@@ -13,19 +13,26 @@ import (
 	"github.com/vlouvet/neonbench/internal/appdata"
 	"github.com/vlouvet/neonbench/internal/server"
 	"github.com/vlouvet/neonbench/internal/storage"
+	"github.com/vlouvet/neonbench/internal/version"
 )
 
 const appName = "NeonBench"
 
 func main() {
 	var (
-		port     = flag.Int("port", 0, "HTTP port (0 = pick a free one)")
-		dataDir  = flag.String("data-dir", "", "Override data directory (default: per-OS app data path)")
-		dev      = flag.Bool("dev", false, "Dev mode: proxy frontend to Vite dev server on :5173")
-		noOpen   = flag.Bool("no-open", false, "Don't auto-open the browser on startup")
-		logLevel = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+		port        = flag.Int("port", 0, "HTTP port (0 = pick a free one)")
+		dataDir     = flag.String("data-dir", "", "Override data directory (default: per-OS app data path)")
+		dev         = flag.Bool("dev", false, "Dev mode: proxy frontend to Vite dev server on :5173")
+		noOpen      = flag.Bool("no-open", false, "Don't auto-open the browser on startup")
+		logLevel    = flag.String("log-level", "info", "Log level: debug, info, warn, error")
+		showVersion = flag.Bool("version", false, "Print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.Current())
+		os.Exit(0)
+	}
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
@@ -37,6 +44,8 @@ func main() {
 		AddSource: level == slog.LevelDebug,
 	}))
 	slog.SetDefault(logger)
+
+	logger.Info("starting "+appName, "version", version.Current())
 
 	dir := *dataDir
 	if dir == "" {
