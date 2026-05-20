@@ -9,17 +9,28 @@ import (
 	"github.com/vlouvet/neonbench/internal/designdoc"
 )
 
-// init pins the gofpdf creation and modification timestamps to a
-// fixed UTC instant so the rendered PDF bytes are reproducible across
-// test runs. Without this, RenderFromDoc embeds time.Now() into the
-// /CreationDate field of every PDF, and back-to-back renders differ
-// in those bytes even though the geometry is identical — defeating
-// the byte-equality assertion in TestRenderFromDocMirrorChangesOutput
-// that pins the trade-default invariant.
+// init pins the gofpdf-side sources of nondeterminism so two
+// back-to-back renders with identical inputs produce byte-identical
+// output. Two knobs:
+//
+//   - Creation / modification dates default to time.Now() inside
+//     gofpdf — pin them to a fixed UTC instant.
+//   - The font / image / gradient catalog tables are emitted in Go
+//     map iteration order by default, which is randomized per
+//     process AND per goroutine. Enable SetDefaultCatalogSort so
+//     gofpdf sorts the keys before emitting; otherwise back-to-back
+//     renders share the same byte LENGTH but different bytes (caught
+//     by the Windows CI runner, where the map seed happens to
+//     produce a different order than the Linux runner did).
+//
+// Without these two pins, TestRenderFromDocMirrorChangesOutput's
+// byte-equality assertion on the default-vs-explicit-true case
+// (the load-bearing trade-default invariant) flakes intermittently.
 func init() {
 	fixed := time.Date(2026, 5, 9, 0, 0, 0, 0, time.UTC)
 	gofpdf.SetDefaultCreationDate(fixed)
 	gofpdf.SetDefaultModificationDate(fixed)
+	gofpdf.SetDefaultCatalogSort(true)
 }
 
 // TestMirrorOnDefault pins the trade-default behavior: an unset
