@@ -418,6 +418,27 @@ export function appendRuns(doc: DesignDoc, newRuns: DesignRun[], idPrefix: strin
   return { ...doc, runs: [...doc.runs, ...reIded] };
 }
 
+// insertChannelLetterRuns appends the output of `channelLetterFromText`
+// (Tier 2 #71 — the "Channel letter wizard" dialog) onto the design doc
+// as one undo-able edit. Each emitted run is re-id'd via the standard
+// `idPrefix-N` convention so it doesn't collide with prior inserts; the
+// per-run `is_channel_letter_face` flag and optional `raceway_id`
+// already baked in by the wizard pass through untouched. When the
+// caller supplies a non-empty `racewayId`, every emitted run is tagged
+// with that id (overriding whatever the wizard wrote) — this is how the
+// EditorPage UI promotes the wizard's placeholder raceway label to the
+// user's chosen name in one step.
+export function insertChannelLetterRuns(
+  doc: DesignDoc,
+  runs: DesignRun[],
+  racewayId?: string,
+): DesignDoc {
+  const tagged = racewayId
+    ? runs.map((r) => ({ ...r, raceway_id: racewayId }))
+    : runs;
+  return appendRuns(doc, tagged, 'letter');
+}
+
 export function placeLabel(doc: DesignDoc, x: number, y: number, text: string): DesignDoc {
   const label: Label = { x, y, text };
   return { ...doc, labels: [...(doc.labels ?? []), label] };
