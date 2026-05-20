@@ -648,7 +648,11 @@ export default function EditorPage() {
     editDoc((prev) => ops.setRunColor(prev, runId, color));
   }
 
-  function placeAnnotation(runId: string, kind: 'jump' | 'support' | 'doubleback', liveIndex: number) {
+  function placeAnnotation(
+    runId: string,
+    kind: 'jump' | 'support' | 'doubleback' | 'drop_bend',
+    liveIndex: number,
+  ) {
     editDoc((prev) => ops.placeAnnotation(prev, runId, kind, liveIndex));
     setSelectedToOne(runId);
   }
@@ -1240,6 +1244,12 @@ export default function EditorPage() {
               onClick={() => setTool('doubleback')}
               title="Mark a hairpin as an intentional double-back (suppresses bend-radius warning)"
             >Mark double-back</button>
+            <button
+              type="button"
+              className={tool === 'drop_bend' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('drop_bend')}
+              title="Mark a drop bend (tube briefly dips behind the substrate; emits a DROP entry in the bend list, a subtle dip in 3D preview)"
+            >Mark drop</button>
             <button
               type="button"
               className={tool === 'insert-doubleback' ? 'tool-btn active' : 'tool-btn'}

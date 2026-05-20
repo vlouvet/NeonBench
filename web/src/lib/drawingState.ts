@@ -34,6 +34,11 @@ export type DrawingTool =
   | 'jump'
   | 'support'
   | 'doubleback'
+  // Tier 3 #77 — drop-bend annotation tool. Click-place semantics
+  // (no in-progress anchor state); listed in the union so the
+  // reducer's `switchTool` clears sibling-tool anchors when the
+  // operator picks this tool.
+  | 'drop_bend'
   | 'insert-doubleback'
   | 'bend'
   | 'label'
@@ -76,6 +81,7 @@ export type DrawingState =
         | 'jump'
         | 'support'
         | 'doubleback'
+        | 'drop_bend'
         | 'insert-doubleback'
         | 'bend'
         | 'label'
