@@ -1045,6 +1045,307 @@ describe('insertDoubleback', () => {
   });
 });
 
+describe('autoDoublebackAllTerminations (Tier 2 #72)', () => {
+  // Build a 4-letter sign — 4 open runs, each with two electrodes (head
+  // + tail). Eight terminations total → 8 doublebacks should land in a
+  // single batch. We keep each "letter" as a simple horizontal arc so
+  // the U-bend math is easy to inspect, but the auto-batch is
+  // letter-shape-agnostic — it just sweeps the doc.
+  function fourLetterDoc(): DesignDoc {
+    const runs: DesignRun[] = [];
+    for (let k = 0; k < 4; k++) {
+      const y = k * 30;
+      runs.push({
+        id: `letter-${k}`,
+        // 5 vertices so insertDoubleback at segment 0 has somewhere to
+        // grow into and the hairpin-detector has its 4-vertex window.
+        polyline: {
+          points: [
+            [0, y],
+            [25, y],
+            [50, y],
+            [75, y],
+            [100, y],
+          ],
+          closed: false,
+        },
+        tube_diameter_mm: 10,
+        electrodes: [{ point_index: 0 }, { point_index: 4 }],
+      });
+    }
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 120],
+      runs,
+    };
+  }
+
+  it('inserts a doubleback at every electrode termination on every open run', () => {
+    const res = ops.autoDoublebackAllTerminations(fourLetterDoc());
+    // 4 letters × 2 terminations each = 8.
+    expect(res.added).toBe(8);
+    expect(res.skipped).toBe(0);
+    for (const run of res.doc.runs) {
+      // Original 5 vertices + 4 added per termination × 2 terminations = 13.
+      expect(run.polyline.points.length).toBe(13);
+    }
+  });
+
+  it('returns the same doc reference when no electrodes are present (zero-electrode case)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r',
+          polyline: { points: [[0, 0], [10, 0], [20, 0]], closed: false },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    const res = ops.autoDoublebackAllTerminations(doc);
+    expect(res.added).toBe(0);
+    expect(res.skipped).toBe(0);
+    expect(res.doc).toBe(doc); // structural identity for editDoc short-circuit
+  });
+
+  it('skips closed runs entirely (no endpoints → no terminations)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'loop',
+          polyline: {
+            points: [[0, 0], [10, 0], [10, 10], [0, 10]],
+            closed: true,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+        },
+      ],
+    };
+    const res = ops.autoDoublebackAllTerminations(doc);
+    expect(res.added).toBe(0);
+    expect(res.doc).toBe(doc);
+  });
+
+  it('is idempotent: re-running on an already-doublebacked doc adds zero', () => {
+    const first = ops.autoDoublebackAllTerminations(fourLetterDoc());
+    expect(first.added).toBe(8);
+    const second = ops.autoDoublebackAllTerminations(first.doc);
+    expect(second.added).toBe(0);
+    // Skipped = 8 (every termination already wears a hairpin).
+    expect(second.skipped).toBe(8);
+    // No mutation → same doc reference.
+    expect(second.doc).toBe(first.doc);
+  });
+
+  it('skips terminations that already have a doubleback within ~tubeDiameter (mixed case)', () => {
+    // Manually doubleback the FIRST run's head, then auto-batch.
+    let doc = fourLetterDoc();
+    doc = ops.insertDoubleback(doc, 'letter-0', 0, 0.0, undefined, undefined, 'left');
+    const res = ops.autoDoublebackAllTerminations(doc);
+    // 8 total terminations; 1 already has a hairpin → 7 added.
+    expect(res.added).toBe(7);
+    expect(res.skipped).toBe(1);
+  });
+
+  it('honours custom depth + gap defaults', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 200, 200],
+      runs: [
+        {
+          id: 'r',
+          polyline: {
+            points: [
+              [0, 0],
+              [50, 0],
+              [100, 0],
+              [150, 0],
+              [200, 0],
+            ],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 0 }, { point_index: 4 }],
+        },
+      ],
+    };
+    const res = ops.autoDoublebackAllTerminations(doc, {
+      depthMM: 30,
+      gapMM: 6,
+    });
+    expect(res.added).toBe(2);
+    const r = res.doc.runs[0];
+    // The HEAD hairpin: applied LAST after the tail (so tail vertices
+    // sit at the end of the polyline). Vertex 0 is the head endpoint
+    // (electrode); the next 4 are the head hairpin's A B C D.
+    const head = r.polyline.points.slice(1, 5);
+    // |A-B| = depth = 30; A and D on segment line (y=0).
+    const ab = Math.hypot(head[1][0] - head[0][0], head[1][1] - head[0][1]);
+    const ad = Math.hypot(head[3][0] - head[0][0], head[3][1] - head[0][1]);
+    expect(ab).toBeCloseTo(30, 5);
+    expect(ad).toBeCloseTo(6, 5);
+  });
+
+  it('one-electrode open run: only the relevant endpoint gets a hairpin', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 0 }],
+        },
+      ],
+    };
+    const res = ops.autoDoublebackAllTerminations(doc);
+    expect(res.added).toBe(1);
+    // 5 original + 4 hairpin = 9.
+    expect(res.doc.runs[0].polyline.points.length).toBe(9);
+  });
+
+  it('mid-polyline electrodes on an open run are not terminations and are skipped', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r',
+          polyline: {
+            points: [[0, 0], [25, 0], [50, 0], [75, 0], [100, 0]],
+            closed: false,
+          },
+          tube_diameter_mm: 10,
+          electrodes: [{ point_index: 2 }], // dead-center, not an endpoint
+        },
+      ],
+    };
+    const res = ops.autoDoublebackAllTerminations(doc);
+    expect(res.added).toBe(0);
+    expect(res.doc).toBe(doc);
+  });
+});
+
+describe('autoHousingAllElectrodes (Tier 2 #72)', () => {
+  // Same 4-letter / 8-electrode shape as the auto-doubleback batch.
+  function fourLetterDoc(): DesignDoc {
+    const runs: DesignRun[] = [];
+    for (let k = 0; k < 4; k++) {
+      const y = k * 30;
+      runs.push({
+        id: `letter-${k}`,
+        polyline: {
+          points: [[0, y], [100, y]],
+          closed: false,
+        },
+        tube_diameter_mm: 10,
+        electrodes: [{ point_index: 0 }, { point_index: 1 }],
+      });
+    }
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 120],
+      runs,
+    };
+  }
+
+  it('sets a stock shell on every electrode (24-electrode equivalent batch)', () => {
+    const res = ops.autoHousingAllElectrodes(fourLetterDoc(), {
+      housing_type: 'shell-15',
+    });
+    expect(res.applied).toBe(8);
+    expect(res.skipped).toBe(0);
+    for (const run of res.doc.runs) {
+      for (const e of run.electrodes ?? []) {
+        expect((e as { housing_type?: string }).housing_type).toBe('shell-15');
+      }
+    }
+  });
+
+  it('skips electrodes that already have a housing set (preserves per-pin edits)', () => {
+    // Manually housing the first letter's first pin, then sweep.
+    let doc = fourLetterDoc();
+    doc = ops.setElectrodeHousing(doc, 'letter-0', 0, {
+      housing_type: 'shell-19',
+    });
+    const res = ops.autoHousingAllElectrodes(doc, {
+      housing_type: 'shell-15',
+    });
+    expect(res.applied).toBe(7);
+    expect(res.skipped).toBe(1);
+    // First pin keeps its existing 19-shell; remaining 7 get 15-shell.
+    const first = res.doc.runs[0].electrodes![0] as { housing_type?: string };
+    expect(first.housing_type).toBe('shell-19');
+    const second = res.doc.runs[0].electrodes![1] as { housing_type?: string };
+    expect(second.housing_type).toBe('shell-15');
+  });
+
+  it('returns the same doc reference for a doc with zero electrodes', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'r',
+          polyline: { points: [[0, 0], [10, 0]], closed: false },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    const res = ops.autoHousingAllElectrodes(doc, { housing_type: 'shell-15' });
+    expect(res.applied).toBe(0);
+    expect(res.skipped).toBe(0);
+    expect(res.doc).toBe(doc);
+  });
+
+  it('is idempotent: re-running adds zero', () => {
+    const first = ops.autoHousingAllElectrodes(fourLetterDoc(), {
+      housing_type: 'shell-15',
+    });
+    expect(first.applied).toBe(8);
+    const second = ops.autoHousingAllElectrodes(first.doc, {
+      housing_type: 'shell-15',
+    });
+    expect(second.applied).toBe(0);
+    expect(second.skipped).toBe(8);
+    expect(second.doc).toBe(first.doc);
+  });
+
+  it('supports a custom housing across the batch', () => {
+    const res = ops.autoHousingAllElectrodes(fourLetterDoc(), {
+      housing_type: 'custom',
+      bore_diameter_mm: 11.5,
+      elevation_mm: 50,
+    });
+    expect(res.applied).toBe(8);
+    for (const run of res.doc.runs) {
+      for (const e of run.electrodes ?? []) {
+        const eh = e as { housing_type?: string; bore_diameter_mm?: number; elevation_mm?: number };
+        expect(eh.housing_type).toBe('custom');
+        expect(eh.bore_diameter_mm).toBe(11.5);
+        expect(eh.elevation_mm).toBe(50);
+      }
+    }
+  });
+
+  it('propagates OperationError when the input housing is invalid (custom w/o bore)', () => {
+    expect(() =>
+      ops.autoHousingAllElectrodes(fourLetterDoc(), {
+        housing_type: 'custom',
+        // no bore — setElectrodeHousing rejects on the first call.
+      }),
+    ).toThrow(/bore_diameter_mm/);
+  });
+});
+
 describe('neonize', () => {
   function squareDoc(): DesignDoc {
     return {
