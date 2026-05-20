@@ -161,6 +161,21 @@ export default function EditorPage() {
     runId: string;
     electrodeIndex: number;
   } | null>(null);
+  // Tier 2 #72 — when the doc-wide auto-housing sweep is armed, this
+  // opens a small modal that asks the operator to pick the housing
+  // type (15/19/custom) to apply across every electrode. Reuses the
+  // per-electrode HousingPickerModal so the picker UX is consistent.
+  const [autoHousingOpen, setAutoHousingOpen] = useState(false);
+  // Tier 2 #72 — transient status banner ("Added 24 doublebacks across
+  // 12 runs"). Cleared by the next status set or by the auto-clear
+  // timer below. Lives at the editor's `<p className="meta">` strip
+  // so it sits in operator's eyeline above the canvas.
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!statusMessage) return;
+    const t = setTimeout(() => setStatusMessage(null), 5000);
+    return () => clearTimeout(t);
+  }, [statusMessage]);
   // Print-via-OS-dialog state (Tier 3 #32). When non-null, a hidden
   // iframe loads the print PDF and triggers `window.print()` against
   // it. Cleared once the print dialog closes so the iframe unmounts.
@@ -880,6 +895,92 @@ export default function EditorPage() {
     editDoc((prev) => ops.autoAssignRaceways(prev));
   }
 
+  // Tier 2 #72 — bulk doubleback every open-run electrode termination.
+  // The wrapped op (insertDoubleback) and its per-pin sidebar tool are
+  // unchanged; this just sweeps every applicable target on the doc and
+  // accumulates the result so editDoc collapses it into one undo step.
+  // Skips terminations that already have a hairpin within ~tubeDiameter
+  // of the endpoint (re-running on a fully-doublebacked doc is a no-op).
+  function autoDoublebackAll() {
+    if (!doc) return;
+    let result: ops.AutoDoublebackResult | null = null;
+    editDoc((prev) => {
+      const r = ops.autoDoublebackAllTerminations(prev);
+      result = r;
+      return r.doc;
+    });
+    if (!result) return;
+    // Toast: report added vs skipped so re-running on an already-
+    // doublebacked doc is clearly a no-op (added=0, skipped=N).
+    const r: ops.AutoDoublebackResult = result;
+    if (r.added === 0 && r.skipped === 0) {
+      setStatusMessage('No open-run terminations to doubleback.');
+    } else if (r.added === 0) {
+      setStatusMessage(
+        `0 doublebacks added (${r.skipped} terminations already had one).`,
+      );
+    } else {
+      const runsAffected = new Set<string>();
+      for (const run of r.doc.runs) {
+        // A run was affected if its polyline length differs from the
+        // pre-batch doc. Counting via the result doc is approximate but
+        // good enough for the toast.
+        const before = doc.runs.find((x) => x.id === run.id);
+        if (
+          before &&
+          before.polyline.points.length !== run.polyline.points.length
+        ) {
+          runsAffected.add(run.id);
+        }
+      }
+      const skipMsg = r.skipped > 0 ? ` · ${r.skipped} skipped (already doublebacked)` : '';
+      setStatusMessage(
+        `Added ${r.added} doublebacks across ${runsAffected.size} runs${skipMsg}.`,
+      );
+    }
+  }
+
+  // Tier 2 #72 — bulk-set a housing on every electrode that doesn't
+  // already have one. Opens the housing picker modal; on Save the
+  // picked type is applied across the doc in one editDoc, collapsing
+  // to a single undo step. Electrodes that already carry a housing
+  // are skipped (preserves per-pin custom edits the operator may
+  // have already made).
+  function openAutoHousingPicker() {
+    if (!doc) return;
+    setAutoHousingOpen(true);
+  }
+  function applyAutoHousing(housing: ops.HousingInput) {
+    if (!doc) return;
+    try {
+      let result: ops.AutoHousingResult | null = null;
+      editDoc((prev) => {
+        const r = ops.autoHousingAllElectrodes(prev, housing);
+        result = r;
+        return r.doc;
+      });
+      setAutoHousingOpen(false);
+      if (!result) return;
+      const r: ops.AutoHousingResult = result;
+      if (r.applied === 0 && r.skipped === 0) {
+        setStatusMessage('No electrodes to house.');
+      } else if (r.applied === 0) {
+        setStatusMessage(
+          `0 housings added (${r.skipped} electrodes already had one).`,
+        );
+      } else {
+        const skipMsg = r.skipped > 0
+          ? ` · ${r.skipped} skipped (already housed)`
+          : '';
+        setStatusMessage(
+          `Added housings to ${r.applied} electrodes${skipMsg}.`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   // Tier 3 #48 — `hasLegacyRunIds` memo lives at the top of the
   // component (before the loading/error early-returns) so it's a hook
   // call on every render. The button below toggles visibility off when
@@ -1406,6 +1507,11 @@ export default function EditorPage() {
           {' · '}
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
+        {statusMessage && (
+          // Tier 2 #72 — transient confirmation toast for the auto-batch
+          // ops (doubleback-all / housing-all). Auto-clears after 5s.
+          <p className="meta" role="status" aria-live="polite">{statusMessage}</p>
+        )}
         <ValidationBadge report={report} validating={validating || specSwitching} />
       </header>
       <div className="editor-layout">
@@ -1576,6 +1682,30 @@ export default function EditorPage() {
               title="Cluster every channel-letter face run by baseline + horizontal proximity and assign deterministic raceway IDs (raceway-1, raceway-2, …) left-to-right. Overwrites any manually labelled runs after a confirm prompt. Tier 3 #46."
             >
               Auto-group raceways
+            </button>
+            {/* Tier 2 #72 — doc-wide electrode helpers. Both gated on
+                "doc has at least one electrode". Doubleback-all sweeps
+                every open-run termination and inserts a hairpin; idempotent
+                across re-runs. Housing-all opens the housing picker and
+                applies the chosen type to every un-housed electrode in
+                one undo step. */}
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={totalElectrodes === 0}
+              onClick={autoDoublebackAll}
+              title="Insert a doubleback U-bend at every open-run electrode termination on the doc. Idempotent — terminations already wearing a hairpin are skipped. Wraps the per-segment Insert doubleback tool. Tier 2 #72."
+            >
+              Auto-doubleback all
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={totalElectrodes === 0}
+              onClick={openAutoHousingPicker}
+              title="Apply a housing (15-shell / 19-shell / custom) to every electrode that doesn't already have one. Per-pin custom housings are preserved. Wraps the right-click housing picker. Tier 2 #72."
+            >
+              Auto-housing all
             </button>
             {/* Tier 3 #48 — opt-in legacy run-id rename. Renders only
                 when the doc still carries `<base>-a` / `<base>-b` ids
@@ -1953,6 +2083,30 @@ export default function EditorPage() {
                 setError(err instanceof Error ? err.message : String(err));
               }
             }}
+          />
+        );
+      })()}
+      {autoHousingOpen && (() => {
+        // Tier 2 #72 — doc-wide housing picker. Reuses the per-electrode
+        // modal so the operator sees the same form (stock 15/19, custom
+        // bore + elevation). The caption flags that the choice will
+        // broadcast across every un-housed electrode. Skipping ones
+        // already housed preserves the per-pin custom edits a careful
+        // operator might have made.
+        const eligible = doc.runs.reduce((acc, r) => {
+          for (const e of r.electrodes ?? []) {
+            const eh = e as ElectrodeWithHousing;
+            if (!eh.housing_type) acc++;
+          }
+          return acc;
+        }, 0);
+        const caption = `All electrodes · ${eligible} of ${totalElectrodes} will be updated (others already housed)`;
+        return (
+          <HousingPickerModal
+            initial={{ housing_type: 'shell-15' as HousingType }}
+            caption={caption}
+            onCancel={() => setAutoHousingOpen(false)}
+            onSave={applyAutoHousing}
           />
         );
       })()}
