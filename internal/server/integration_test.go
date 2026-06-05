@@ -525,6 +525,119 @@ func TestDeleteDesignVersion(t *testing.T) {
 	}
 }
 
+// TestUpdateDesignVersionLabel covers PATCH /api/projects/{id}/design_versions/{vid}
+// (Bug #05): rename a version, clear the label, reject a missing field, and
+// guard against cross-project renames.
+func TestUpdateDesignVersionLabel(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "rename-version test",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// A version that starts with no label.
+	dv, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: projectID,
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	if err != nil {
+		t.Fatalf("create dv: %v", err)
+	}
+
+	patch := func(url string, body any) *http.Response {
+		t.Helper()
+		buf, _ := json.Marshal(body)
+		req, _ := http.NewRequest("PATCH", url, bytes.NewReader(buf))
+		req.Header.Set("content-type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("PATCH %s: %v", url, err)
+		}
+		return resp
+	}
+
+	dvURL := base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(dv.ID)
+
+	// Rename: "" → "electrodes placed".
+	resp := patch(dvURL, map[string]any{"label": "  electrodes placed  "})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("rename: want 200, got %d", resp.StatusCode)
+	}
+	var renamed map[string]any
+	json.NewDecoder(resp.Body).Decode(&renamed)
+	resp.Body.Close()
+	if renamed["label"] != "electrodes placed" { // server trims whitespace
+		t.Fatalf("rename: label = %v, want \"electrodes placed\"", renamed["label"])
+	}
+
+	// Persisted across a fresh GET.
+	var reloaded map[string]any
+	getJSON(t, client, dvURL, &reloaded)
+	if reloaded["label"] != "electrodes placed" {
+		t.Fatalf("after reload: label = %v, want \"electrodes placed\"", reloaded["label"])
+	}
+
+	// Clear: "" → NULL (label key omitted by omitempty).
+	clearResp := patch(dvURL, map[string]any{"label": ""})
+	if clearResp.StatusCode != http.StatusOK {
+		t.Fatalf("clear: want 200, got %d", clearResp.StatusCode)
+	}
+	clearResp.Body.Close()
+	var cleared map[string]any
+	getJSON(t, client, dvURL, &cleared)
+	if v, present := cleared["label"]; present && v != nil {
+		t.Fatalf("after clear: label = %v, want absent/null", v)
+	}
+
+	// Missing label field → 400.
+	badResp := patch(dvURL, map[string]any{})
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing label: want 400, got %d", badResp.StatusCode)
+	}
+	badResp.Body.Close()
+
+	// Cross-project guard → 404.
+	op, err := storage.CreateProject(t.Context(), db, storage.CreateProjectParams{Name: "other", TubeSpecID: tubeSpecID, Units: "mm"})
+	if err != nil {
+		t.Fatalf("create other project: %v", err)
+	}
+	otherDV, err := storage.CreateDesignVersion(t.Context(), db, storage.CreateDesignVersionParams{
+		ProjectID: op.ID,
+		SVGData:   `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+	})
+	if err != nil {
+		t.Fatalf("create other dv: %v", err)
+	}
+	wrongURL := base + "/api/projects/" + itoa(projectID) + "/design_versions/" + itoa(otherDV.ID)
+	wrongResp := patch(wrongURL, map[string]any{"label": "hijack"})
+	if wrongResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-project rename: want 404, got %d", wrongResp.StatusCode)
+	}
+	wrongResp.Body.Close()
+}
+
 // TestRevalidateAfterTubeSpecSwap is the regression guard for the
 // "silently stale validation report" failure mode that the editor's
 // tube-spec switcher (Tier 1 #5) is built to prevent. The flow:
@@ -1302,8 +1415,8 @@ func TestChannelLetterReturnPattern(t *testing.T) {
 	}
 	var withFaceVersion map[string]any
 	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
-		"label":       "with face",
-		"design_doc":  docWithFace,
+		"label":      "with face",
+		"design_doc": docWithFace,
 	}, &withFaceVersion)
 	withFaceVID := int64(withFaceVersion["id"].(float64))
 
@@ -1317,8 +1430,8 @@ func TestChannelLetterReturnPattern(t *testing.T) {
 	}
 	var baselineVersion map[string]any
 	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
-		"label":       "no face",
-		"design_doc":  docBaseline,
+		"label":      "no face",
+		"design_doc": docBaseline,
 	}, &baselineVersion)
 	baselineVID := int64(baselineVersion["id"].(float64))
 
