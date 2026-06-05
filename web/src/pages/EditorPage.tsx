@@ -1200,6 +1200,11 @@ export default function EditorPage() {
     const run: DesignRun = {
       id: kind, // appendRuns rewrites with `${kind}-N`
       polyline: { points, closed },
+      // Bug #02: seed the per-run diameter from the project tube spec so the
+      // run reports a real size (e.g. "ø 12mm") instead of "ø ?mm". Unset
+      // (undefined) when no spec is loaded yet, which still inherits the
+      // project default. The per-run editor can override or clear it.
+      tube_diameter_mm: tubeSpec?.diameter_mm,
     };
     editDoc((prev) => ops.appendRuns(prev, [run], kind));
   }
@@ -1222,6 +1227,9 @@ export default function EditorPage() {
         points: r.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
         closed: false,
       },
+      // Bug #02: seed diameter from the project tube spec (same as the
+      // drawing tools) so inserted text runs report a real size, not "ø ?mm".
+      tube_diameter_mm: tubeSpec?.diameter_mm,
     }));
     editDoc((prev) => ops.appendRuns(prev, designRuns, 'text'));
     setHersheyOpen(false);
