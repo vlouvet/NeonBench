@@ -1132,6 +1132,29 @@
   vertical-align: baseline;
 }
 
+/* Bug #04 — "Production defaults" disclosure on the project-detail header.
+   The end-gap / channel-depth / strip-overlap / strict-mode controls are
+   rarely touched, so they collapse out of the header until expanded. */
+.production-defaults {
+  display: block;
+  margin-top: 0.4rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.production-defaults > summary {
+  cursor: pointer;
+  width: fit-content;
+  user-select: none;
+}
+.production-defaults > summary:hover,
+.production-defaults > summary:focus-visible {
+  color: var(--text);
+}
+.production-defaults-body {
+  margin-top: 0.35rem;
+  padding-left: 0.25rem;
+}
+
 /* The .job-field labels behave like other muted metadata; only the
    click-to-edit value gets the affordance hint so the row reads as
    text by default and the interactive piece is obvious on hover. */
