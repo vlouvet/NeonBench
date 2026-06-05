@@ -51,3 +51,6 @@ internal/vectorize/testdata/goldens/_failures/
 # Neon Techniques (Miller/Strattman 1997) — Kindle page screenshots (~190 PNGs)
 # Reference material kept locally; extracted rules go in docs/neon-rules/
 /docs/shot_*
+
+# Playwright MCP scratch output (screenshots/snapshots during dev)
+.playwright-mcp/
