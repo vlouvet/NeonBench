@@ -844,23 +844,35 @@ export default function EditorCanvas({
     return result.point;
   }
 
-  function onWheel(e: React.WheelEvent<SVGSVGElement>) {
-    e.preventDefault();
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const factor = Math.exp(-e.deltaY * 0.001);
-    setTransform((t) => {
-      const newK = Math.max(MIN_SCALE, Math.min(MAX_SCALE, t.k * factor));
-      const ratio = newK / t.k;
-      return {
-        k: newK,
-        tx: cx - (cx - t.tx) * ratio,
-        ty: cy - (cy - t.ty) * ratio,
-      };
-    });
-  }
+  // Wheel-zoom calls preventDefault to stop the page from scrolling while
+  // zooming. React 19 registers `onWheel` as a *passive* listener, so a
+  // preventDefault there is rejected by the browser and logs "Unable to
+  // preventDefault inside passive event listener" on every wheel tick —
+  // a console flood during any zoom. Attaching a native, explicitly
+  // non-passive listener to the container makes preventDefault honored
+  // and keeps the console clean.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.001);
+      setTransform((t) => {
+        const newK = Math.max(MIN_SCALE, Math.min(MAX_SCALE, t.k * factor));
+        const ratio = newK / t.k;
+        return {
+          k: newK,
+          tx: cx - (cx - t.tx) * ratio,
+          ty: cy - (cy - t.ty) * ratio,
+        };
+      });
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (e.button !== 0 && e.button !== 1) return;
@@ -1601,7 +1613,6 @@ export default function EditorCanvas({
       <svg
         width="100%"
         height="100%"
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
