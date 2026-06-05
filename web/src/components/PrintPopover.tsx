@@ -22,6 +22,15 @@ export type PrintPopoverValues = {
   paper: string;
   landscape: boolean;
   stripsOnly: boolean;
+  // Tier 2 #73 — when true, the URL builder adds ?mirror=0 and the
+  // server skips the horizontal flip, emitting a front-facing
+  // pattern. The trade default is MIRRORED (operators bend against
+  // the BACK of the glass tube while reading the pattern), so this
+  // checkbox is an OPT-OUT: leaving it unchecked yields the
+  // mirrored print. Stored as `frontFacing` (the affirmative form
+  // of the opt-out) so the parent's value matches the checkbox's
+  // semantics — `checked = frontFacing = un-mirrored print`.
+  frontFacing: boolean;
 };
 
 export default function PrintPopover({
@@ -99,6 +108,19 @@ export default function PrintPopover({
           }
         />
         Strips only
+      </label>
+      <label
+        className="print-popover-checkbox"
+        title="Default is mirrored — the bender works against the BACK of the glass tube. Check this to print a front-facing pattern instead, useful for marketing renders and design review (Tier 2 #73)."
+      >
+        <input
+          type="checkbox"
+          checked={values.frontFacing}
+          onChange={(e) =>
+            onChange({ ...values, frontFacing: e.target.checked })
+          }
+        />
+        Print front-facing (un-mirrored)
       </label>
     </div>
   );

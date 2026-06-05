@@ -388,6 +388,50 @@ describe('appendRuns', () => {
   });
 });
 
+describe('insertChannelLetterRuns', () => {
+  it('appends every emitted run under the "letter-N" id prefix and preserves face flags', () => {
+    const wizardOut: DesignRun[] = [
+      {
+        id: 'letter-0-face',
+        polyline: { points: [[0, 0], [10, 0], [10, 10], [0, 10]], closed: true },
+        is_channel_letter_face: true,
+      },
+      {
+        id: 'letter-0-outer',
+        polyline: { points: [[-1, -1], [11, -1], [11, 11], [-1, 11]], closed: true },
+      },
+    ];
+    const doc = ops.insertChannelLetterRuns(makeDoc(), wizardOut);
+    const tail = doc.runs.slice(-2);
+    expect(tail.map((r) => r.id)).toEqual(['letter-1', 'letter-2']);
+    expect(tail[0].is_channel_letter_face).toBe(true);
+    expect(tail[1].is_channel_letter_face).toBeUndefined();
+  });
+
+  it('overrides every emitted run\'s raceway_id when the caller supplies one', () => {
+    const wizardOut: DesignRun[] = [
+      {
+        id: 'a',
+        polyline: { points: [[0, 0], [10, 0], [10, 10]], closed: true },
+        raceway_id: 'wizard-default',
+      },
+      {
+        id: 'b',
+        polyline: { points: [[2, 2], [8, 2], [8, 8]], closed: true },
+      },
+    ];
+    const doc = ops.insertChannelLetterRuns(makeDoc(), wizardOut, 'OPEN-sign');
+    const tail = doc.runs.slice(-2);
+    for (const r of tail) expect(r.raceway_id).toBe('OPEN-sign');
+  });
+
+  it('returns a doc with the input unchanged when given an empty runs array', () => {
+    const before = makeDoc();
+    const after = ops.insertChannelLetterRuns(before, []);
+    expect(after.runs.length).toBe(before.runs.length);
+  });
+});
+
 describe('path-op simplify', () => {
   it('drops collinear vertices below epsilon', () => {
     // Long straight line with a single bump: simplify should keep ends + bump.
