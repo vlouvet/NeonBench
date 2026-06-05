@@ -90,3 +90,39 @@ describe('api.printPDFURL', () => {
     );
   });
 });
+
+// Vector-graphics URL builders (Tier 3 #80). The three sibling formats
+// (SVG / EPS / AI) share the same query-string shape; we pin their
+// output here so a future refactor that touches buildExportURL can't
+// silently drift one format's wire form away from the others.
+describe('api.exportSVGURL / exportEPSURL / exportAIURL', () => {
+  it('returns the bare endpoint when no options are supplied', () => {
+    expect(api.exportSVGURL(7, 42)).toBe(
+      '/api/projects/7/design_versions/42/export.svg',
+    );
+    expect(api.exportEPSURL(7, 42)).toBe(
+      '/api/projects/7/design_versions/42/export.eps',
+    );
+    expect(api.exportAIURL(7, 42)).toBe(
+      '/api/projects/7/design_versions/42/export.ai',
+    );
+  });
+
+  it('omits the mirror param when explicitly false', () => {
+    expect(api.exportSVGURL(7, 42, { mirror: false })).toBe(
+      '/api/projects/7/design_versions/42/export.svg',
+    );
+  });
+
+  it('encodes mirror as 1 (matches the server flag)', () => {
+    expect(api.exportSVGURL(1, 2, { mirror: true })).toBe(
+      '/api/projects/1/design_versions/2/export.svg?mirror=1',
+    );
+    expect(api.exportEPSURL(1, 2, { mirror: true })).toBe(
+      '/api/projects/1/design_versions/2/export.eps?mirror=1',
+    );
+    expect(api.exportAIURL(1, 2, { mirror: true })).toBe(
+      '/api/projects/1/design_versions/2/export.ai?mirror=1',
+    );
+  });
+});

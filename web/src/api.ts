@@ -656,7 +656,44 @@ export const api = {
   // in millimeters, no page layout.
   dxfURL: (projectId: number, versionId: number) =>
     `/api/projects/${projectId}/design_versions/${versionId}/print.dxf`,
+  // Vector-graphics export URLs (Tier 3 #80). SVG / EPS / AI are
+  // sibling formats: SVG is the richest (per-run groups, dedicated
+  // annotation layers); EPS is the procedural PostScript flavour;
+  // AI is the EPS bytes served at .ai (Illustrator opens it
+  // natively — the file format converged historically). All three
+  // accept the same `?mirror=1` flag as the PDF / DXF exports so the
+  // backside view round-trips through any of the four CAM targets.
+  exportSVGURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'svg', opts),
+  exportEPSURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'eps', opts),
+  exportAIURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'ai', opts),
 };
+
+// buildExportURL — shared helper for the three vector-graphics URL
+// builders (SVG / EPS / AI). Keeps the call sites tiny and ensures the
+// three formats encode the `mirror` flag identically.
+function buildExportURL(
+  projectId: number,
+  versionId: number,
+  ext: 'svg' | 'eps' | 'ai',
+  opts: { mirror?: boolean },
+): string {
+  const params = new URLSearchParams();
+  if (opts.mirror) params.set('mirror', '1');
+  const qs = params.toString();
+  return `/api/projects/${projectId}/design_versions/${versionId}/export.${ext}${qs ? `?${qs}` : ''}`;
+}
 
 export const PAPER_OPTIONS = [
   { value: 'letter', label: 'US Letter (8.5 × 11 in)' },

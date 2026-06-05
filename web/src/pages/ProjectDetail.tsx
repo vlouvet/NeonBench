@@ -377,6 +377,17 @@ export default function ProjectDetail() {
         >
           Export bundle
         </a>
+        {/* Tier 3 #80 — Vector-graphics "Export as…" dropdown for the
+          * latest design version. Only renders when there's a version
+          * available with a structured design_doc (the backend
+          * gracefully 422s otherwise, but disabling the dropdown
+          * upfront avoids surfacing the error to the operator).
+          * DXF lives here too so the four CAM-targeted formats are
+          * grouped in one menu — symmetry with the existing
+          * PrintPanel that handles the human-readable PDF. */}
+        {latest?.design_doc_json && (
+          <ExportAsMenu projectId={projectId} versionId={latest.id} />
+        )}
       </div>
       {tubeSpecToast && (
         <p className="meta" role="status" aria-live="polite">
@@ -665,6 +676,111 @@ export default function ProjectDetail() {
         </>
       )}
     </section>
+  );
+}
+
+// ExportAsMenu renders the Tier 3 #80 vector-graphics format picker
+// (DXF / SVG / EPS / AI) as a native <select> that, on change,
+// dispatches to a hidden <a download> click. Native <select> keeps
+// keyboard accessibility free, avoids a popover state machine, and
+// the format-picker is small enough that a heavyweight menu component
+// would be overkill.
+//
+// The four entries cover the CAM-targeted vector exports. The
+// human-readable PDF lives on PrintPanel below the design preview —
+// kept separate because the PDF has paper / landscape / strips-only
+// options that the four vector formats don't need (they're vector-
+// only with no page layout).
+//
+// AI is documented inline as "EPS-compatible" because the true Adobe
+// binary format is closed and the .ai bytes we emit are EPS — modern
+// Illustrator opens them natively (the historical format converged),
+// but downstream tools that strictly require the AI8 / AI9 magic-byte
+// format would reject the file. Operators reading the tooltip know to
+// pick SVG instead if they hit that edge case.
+function ExportAsMenu({
+  projectId,
+  versionId,
+}: {
+  projectId: number;
+  versionId: number;
+}) {
+  const linkRef = useRef<HTMLAnchorElement | null>(null);
+  const [href, setHref] = useState<string>('');
+
+  function pick(value: string) {
+    if (!value) return;
+    let url: string;
+    switch (value) {
+      case 'dxf':
+        url = api.dxfURL(projectId, versionId);
+        break;
+      case 'svg':
+        url = api.exportSVGURL(projectId, versionId);
+        break;
+      case 'eps':
+        url = api.exportEPSURL(projectId, versionId);
+        break;
+      case 'ai':
+        url = api.exportAIURL(projectId, versionId);
+        break;
+      default:
+        return;
+    }
+    // Set the hidden <a>'s href then trigger the click. Browsers
+    // respect the <a download> attribute and save the response with
+    // the server-supplied filename (the handler sets a
+    // content-disposition header).
+    setHref(url);
+    // Defer the click to the next microtask so React has flushed the
+    // href update onto the DOM. setHref → click on the same synchronous
+    // tick fires the click against the prior href (or empty string)
+    // and the download misses.
+    queueMicrotask(() => {
+      linkRef.current?.click();
+    });
+  }
+
+  return (
+    <span className="export-as-menu" style={{ display: 'inline-flex', gap: '0.5rem', alignItems: 'baseline' }}>
+      <label>
+        <strong>Export as:</strong>{' '}
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            const value = e.target.value;
+            pick(value);
+            // Reset to the placeholder so picking the same value
+            // again re-triggers the download (otherwise the second
+            // pick is a no-op because onChange doesn't fire when the
+            // value doesn't change).
+            e.target.value = '';
+          }}
+          title="Download the latest design version as a vector-graphics file. DXF feeds CNC tube benders; SVG/EPS/AI feed graphic-design suites (Illustrator, CorelDRAW, Inkscape)."
+          aria-label="Export latest design as vector graphics"
+        >
+          <option value="" disabled>
+            (pick format…)
+          </option>
+          <option value="dxf">DXF (CNC tube bender)</option>
+          <option value="svg">SVG (Inkscape / Illustrator / browser)</option>
+          <option value="eps">EPS (legacy graphic-design suites)</option>
+          <option value="ai">AI (EPS-compatible — opens in Illustrator)</option>
+        </select>
+      </label>
+      {/* Hidden anchor — its href is set imperatively on each pick.
+        * download attribute tells the browser "save the response,
+        * don't navigate"; the server-supplied
+        * content-disposition: attachment header is the actual
+        * filename source so we don't need to specify a name here. */}
+      <a
+        ref={linkRef}
+        href={href}
+        download=""
+        style={{ display: 'none' }}
+        aria-hidden="true"
+      />
+    </span>
   );
 }
 
