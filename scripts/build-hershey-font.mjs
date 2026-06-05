@@ -20,6 +20,7 @@
 //   node scripts/build-hershey-font.mjs --font rowmans
 //   node scripts/build-hershey-font.mjs --font rowmand
 //   node scripts/build-hershey-font.mjs --font futural
+//   node scripts/build-hershey-font.mjs --font cursive
 //
 // Output (one per face):
 //   web/src/lib/hershey/<name>.json
@@ -56,6 +57,10 @@ const FACES = {
   futural: {
     description:
       'Hershey Futural (Sans Simplex) font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. Geometric sans-serif single-stroke face. Coordinate units: byte offsets from ASCII R.',
+  },
+  cursive: {
+    description:
+      'Hershey Cursive (Connecting Script) font data. Originally created by Dr. A. V. Hershey at the U.S. National Bureau of Standards (public domain, 1976). Format by James Hurt, 1980s Usenet Font Consortium; redistribution permitted with attribution. A flowing single-stroke italic where adjacent lowercase letters are designed to be joined at their endpoints by the consuming application — see web/src/lib/hershey/joinAdjacentGlyphs.ts for the joining logic. Coordinate units: byte offsets from ASCII R.',
   },
 };
 

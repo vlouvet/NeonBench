@@ -11,9 +11,12 @@
 // the bender will follow. No raster trace, no centerline extraction.
 //
 // Fonts: Roman Simplex (rowmans, default), Roman Duplex (rowmand, thicker
-// channel-letter look — every stroke paired with an offset twin), and
-// Sans Simplex / Futural (geometric sans). All public domain (NBS via
-// Hershey/Hurt). Attribution preserved per JSON file's _license field.
+// channel-letter look — every stroke paired with an offset twin), Sans
+// Simplex / Futural (geometric sans), and Cursive (connecting script,
+// adjacent lowercase letters stitched into one tube via
+// joinAdjacentGlyphs.ts; toggled per-face via fonts.ts's joinAdjacent
+// flag). All public domain (NBS via Hershey/Hurt). Attribution preserved
+// per JSON file's _license field.
 //
 // Coordinate convention:
 //   - JHF source units: bytes offset from ASCII 'R'. Cap height ≈ 12 JHF
@@ -25,6 +28,7 @@
 //   - Output units: millimeters in the design-doc coordinate system.
 
 import { getFont, type FontKey } from './fonts';
+import { joinAdjacentGlyphs } from './joinAdjacentGlyphs';
 
 /** One stroke = one tube run. Multi-stroke glyphs (e.g. 'i' = stem + dot,
  *  'E' = vertical + 3 horizontals) yield multiple HersheyRuns and become
@@ -113,11 +117,25 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
 
   const font = getFont(fontKey);
   const scale = capHeightMM / font.capHeightUnits;
-  const runs: HersheyRun[] = [];
+  // For non-joining faces we'd just push directly into a flat runs array.
+  // For joining faces (cursive) we collect per-glyph stroke groups so a
+  // post-pass can stitch adjacent glyphs together. Use the grouped path
+  // unconditionally — it's a few extra array allocations, no correctness
+  // cost — and flatten/join at the end based on font.joinAdjacent.
+  const glyphGroups: HersheyRun[][] = [];
+  // Parallel flags: true means "do not join glyphGroups[i] with
+  // glyphGroups[i-1]" (i.e. there was a space, newline, or unknown char
+  // between this glyph and the previous one). The 0-th flag is always
+  // true (no glyph before the first).
+  const breakBefore: boolean[] = [];
   // Floor on negative kerning: stop the user from collapsing glyphs into
   // illegible garbage. -capHeight is roughly "up to one cap-height of
   // overlap" which still allows tight optical kerning of e.g. AV/To.
   const kernFloor = -capHeightMM;
+  // Tracks whether the next emitted glyph starts a fresh joinable
+  // sequence (set true at start, after every space, after every newline,
+  // and after every skipped non-glyph character).
+  let breakNext = true;
 
   // First walk: collect the visible-glyph sequence (the printable
   // characters in input order, skipping '\n', whitespace, and unknown
@@ -145,6 +163,10 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       // tentatively added for the gap-before-newline is wiped here.
       baselineY += capHeightMM * lineHeight;
       cursorX = originX;
+      // Newline interrupts a join sequence (the next glyph sits on a new
+      // baseline, so even if X happens to align, joining would draw a
+      // bridge across two lines).
+      breakNext = true;
       continue;
     }
 
@@ -163,14 +185,21 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       );
       // Skipped chars don't consume a kerning slot — the user pasted
       // garbage; their kerning array is keyed to the visible glyphs.
+      // They DO interrupt joining (treated like a space): if a user
+      // pastes "foéo" the o's on either side of the dropped é
+      // should not be stitched.
+      breakNext = true;
       continue;
     }
 
     const glyph = font.data.glyphs[String(code)];
     if (!glyph) {
       console.warn(`hersheyTextToRuns: no glyph for ASCII ${code}`);
+      // Missing glyph also interrupts joining (same reasoning as above).
+      breakNext = true;
       continue;
     }
+
 
     // Per-glyph baseline shift (mm) — Y-only, doesn't affect cursorX.
     const shiftY = baselineShiftsMM?.[pairIdx];
@@ -180,13 +209,24 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
     // sit at the bracket's left edge, so subtract glyph.left from JHF X.
     const glyphOffsetX = cursorX - glyph.left * scale;
 
+    const glyphRuns: HersheyRun[] = [];
     for (const stroke of glyph.strokes) {
       if (stroke.length < 2) continue;
       const points: [number, number][] = stroke.map(([gx, gy]) => [
         glyphOffsetX + gx * scale,
         baselineY + gy * scale + shifted,
       ]);
-      runs.push({ points });
+      glyphRuns.push({ points });
+    }
+    // Glyphs that emit no strokes (e.g. ASCII space, whose only "stroke"
+    // is < 2 points and gets dropped at build time) do NOT contribute to
+    // glyphGroups but DO interrupt joining — a word break.
+    if (glyphRuns.length === 0) {
+      breakNext = true;
+    } else {
+      glyphGroups.push(glyphRuns);
+      breakBefore.push(breakNext);
+      breakNext = false;
     }
 
     // Advance cursor by glyph's own advance + uniform letter-spacing.
@@ -217,7 +257,44 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
     pairIdx++;
   }
 
-  return runs;
+  // For non-joining faces (the historical Hershey behaviour), just flatten
+  // glyphGroups into the output run list — same result as the pre-Tier-3
+  // straight-into-runs path. For joining faces, walk consecutive groups
+  // and try to stitch them at the boundaries.
+  if (!font.joinAdjacent || glyphGroups.length === 0) {
+    return glyphGroups.flat();
+  }
+
+  // Build the joined run list incrementally. We carry a "current"
+  // accumulator that holds the running stitched glyph (one glyph's
+  // worth of HersheyRun[]). On each subsequent glyph, attempt to join;
+  // if it succeeds we replace the accumulator with the joined result. If
+  // it fails (or breakBefore[i] is set), flush the accumulator and start
+  // a fresh one.
+  const out: HersheyRun[] = [];
+  let acc: HersheyRun[] = glyphGroups[0];
+  for (let i = 1; i < glyphGroups.length; i++) {
+    if (breakBefore[i]) {
+      // Word boundary: flush acc, start fresh.
+      out.push(...acc);
+      acc = glyphGroups[i];
+      continue;
+    }
+    const { joined, joinedStrokes } = joinAdjacentGlyphs(acc, glyphGroups[i], {
+      capHeightMM,
+    });
+    if (joined) {
+      // Successful stitch — the result becomes the new acc.
+      acc = joinedStrokes;
+    } else {
+      // Failed eligibility (e.g. 't' exiting at cap-top, or huge user
+      // kerning): flush prev, start fresh with this glyph isolated.
+      out.push(...acc);
+      acc = glyphGroups[i];
+    }
+  }
+  out.push(...acc);
+  return out;
 }
 
 /** Collect the sequence of printable characters that consume a pairIdx

@@ -42,6 +42,14 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("POST /api/projects/{id}/design_versions/{vid}/validate", s.handleRevalidate)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.pdf", s.handlePrintPDF)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.dxf", s.handlePrintDXF)
+	// Vector-graphics flavors (Tier 3 #80) — SVG / EPS / AI.
+	// SVG is the rich format (per-run groups, dedicated annotation
+	// layers); EPS is the procedural sibling; AI is EPS-bytes-with-
+	// .ai-extension (modern Illustrator opens EPS-shaped .ai files
+	// natively, see handlers_vector.go for the trade-off rationale).
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/export.svg", s.handleExportSVG)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/export.eps", s.handleExportEPS)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/export.ai", s.handleExportAI)
 	mux.HandleFunc("GET /api/projects/{id}/export.neonbench", s.handleExportBundle)
 	mux.HandleFunc("POST /api/projects/import", s.handleImportBundle)
 }

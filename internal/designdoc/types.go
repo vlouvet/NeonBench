@@ -149,13 +149,17 @@ type Bend struct {
 // only — the bender's pattern picks them up so they know where to leave
 // extra clearance (jumps) or where to mount supports.
 //
-// Kind is "jump" (a horseshoe lift over another tube or obstacle) or
-// "support" (a chassis-mount point holding the tube to the substrate).
-// LiveIndex is a position WITHIN the live arc, same convention as
-// Blockout.StartLiveIndex, so user intent survives later edits to
-// electrodes or direction.
+// Kind is "jump" (a horseshoe lift over another tube or obstacle),
+// "support" (a chassis-mount point holding the tube to the substrate),
+// "doubleback" (a hairpin where the tube reverses direction; suppresses
+// the bend-radius warning for that vertex), or "drop_bend" (Tier 3 #77
+// — an out-of-plane drop where the tube dips slightly away from the
+// substrate; distinct trade vocabulary from a jump, smaller 3D lift
+// multiplier, dedicated "DROP" bend-list entry). LiveIndex is a position
+// WITHIN the live arc, same convention as Blockout.StartLiveIndex, so
+// user intent survives later edits to electrodes or direction.
 type Annotation struct {
-	Kind      string `json:"kind"` // "jump" | "support"
+	Kind      string `json:"kind"` // "jump" | "support" | "doubleback" | "drop_bend"
 	LiveIndex int    `json:"live_index"`
 }
 

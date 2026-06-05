@@ -124,10 +124,15 @@ function TubeSegment({
     if (segment.points.length < 2) return null;
     // Tier 3 #68 — lift the polyline at jump points before feeding to
     // the curve so the tube physically arcs out of plane there.
+    // Tier 3 #77 — drop-bend indices apply a separate, shallower
+    // lift kernel (0.5× diameter vs 2.5× for jumps). Composed via
+    // max() per-point so a jump-adjacent-to-drop reads as the
+    // taller jump silhouette plus a separate subtle dip.
     const lifted = liftPointsAtJumps(
       segment.points,
       segment.jumpPolylineIndices,
       radius * 2,
+      segment.dropBendPolylineIndices,
     );
     const curve = polylineToCurve(lifted, segment.closed);
     const segCount = tubeSegmentCount(segment.points);
@@ -138,7 +143,13 @@ function TubeSegment({
       TUBE_RADIAL_SEGMENTS,
       segment.closed,
     );
-  }, [segment.points, segment.closed, segment.jumpPolylineIndices, radius]);
+  }, [
+    segment.points,
+    segment.closed,
+    segment.jumpPolylineIndices,
+    segment.dropBendPolylineIndices,
+    radius,
+  ]);
 
   if (!geometry) return null;
 

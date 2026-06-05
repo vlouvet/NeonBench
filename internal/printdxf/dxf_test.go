@@ -2,11 +2,18 @@ package printdxf
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
 )
+
+// jsonMarshal / jsonUnmarshal are thin aliases over encoding/json so
+// the schema round-trip test can call them with a clear name and not
+// bake the encoding-package choice into every call site.
+func jsonMarshal(v any) ([]byte, error)        { return json.Marshal(v) }
+func jsonUnmarshal(data []byte, v any) error    { return json.Unmarshal(data, v) }
 
 // TestEmitDXFTwoPolylines is the golden-path coverage: an open polyline
 // and a closed polyline emit a valid R12 ASCII DXF whose header, entity
@@ -471,6 +478,93 @@ func TestEmitDXFMarkers(t *testing.T) {
 	}
 	if !strings.Contains(out, "1\nDoubleback\n") {
 		t.Errorf("missing 'Doubleback' label:\n%s", out)
+	}
+}
+
+// TestEmitDXFMarkersDropBend covers the Tier 3 #77 drop-bend marker:
+// CIRCLE on MARKERS layer, radius 4 mm, DASHED linetype, label "Drop".
+// Distinct from jump (also DASHED but labeled "Jump") in the label
+// text only — the radius and linetype were chosen to match jump
+// (both are mid-effort callouts the bender flames specifically) so
+// the marker reads consistently in a mixed-annotation scene.
+func TestEmitDXFMarkersDropBend(t *testing.T) {
+	doc := &designdoc.Doc{
+		Runs: []designdoc.Run{
+			{
+				ID: "r1",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{0, 0}, {10, 0}, {20, 0}, {30, 0}},
+				},
+				Electrodes: []designdoc.Electrode{
+					{PointIndex: 0},
+					{PointIndex: 3},
+				},
+				Annotations: []designdoc.Annotation{
+					{Kind: "drop_bend", LiveIndex: 1},
+					{Kind: "jump", LiveIndex: 2},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	if err := EmitDXF(&buf, doc); err != nil {
+		t.Fatalf("EmitDXF: %v", err)
+	}
+	out := buf.String()
+
+	// Drop-bend CIRCLE: DASHED, radius 4, at P1=(10,0).
+	if !strings.Contains(out, "0\nCIRCLE\n8\nMARKERS\n6\nDASHED\n10\n10.0\n20\n0.0\n40\n4.0\n") {
+		t.Errorf("missing drop-bend CIRCLE (DASHED, r=4, at (10,0)):\n%s", out)
+	}
+	// "Drop" label (distinct from "Jump").
+	if !strings.Contains(out, "1\nDrop\n") {
+		t.Errorf("missing 'Drop' label:\n%s", out)
+	}
+	// Both jump and drop should be present and distinguishable.
+	if !strings.Contains(out, "1\nJump\n") {
+		t.Errorf("missing 'Jump' label alongside 'Drop':\n%s", out)
+	}
+	// Counts: 2 electrodes + 2 markers = 4 CIRCLEs total; 2 marker
+	// rows × 2 (CIRCLE + TEXT each) = 4 MARKERS-layer occurrences.
+	if got := strings.Count(out, "\n0\nCIRCLE\n"); got != 4 {
+		t.Errorf("CIRCLE count: want 4 (2 electrodes + 2 markers), got %d", got)
+	}
+	if got := strings.Count(out, "8\nMARKERS\n"); got != 4 {
+		t.Errorf("MARKERS layer count: want 4 (2 CIRCLE + 2 TEXT), got %d", got)
+	}
+}
+
+// TestDropBendRoundTrip is the Go-side schema-round-trip guard for the
+// Tier 3 #77 drop_bend annotation kind. The Annotation struct stays
+// JSON-stable (kind + live_index), and unmarshal of an unknown legacy
+// kind still works — additive, no migration.
+func TestDropBendRoundTrip(t *testing.T) {
+	t.Helper()
+	// In: a JSON blob with a drop_bend annotation; Out: the same
+	// fields after round-tripping through Marshal + Unmarshal.
+	const blob = `{"version":1,"view_box_mm":[0,0,100,100],"runs":[{"id":"r1","polyline":{"points":[[0,0],[10,0],[20,0]]},"annotations":[{"kind":"drop_bend","live_index":1}]}]}`
+	var doc designdoc.Doc
+	if err := jsonUnmarshal([]byte(blob), &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(doc.Runs) != 1 || len(doc.Runs[0].Annotations) != 1 {
+		t.Fatalf("expected 1 run with 1 annotation, got runs=%d", len(doc.Runs))
+	}
+	a := doc.Runs[0].Annotations[0]
+	if a.Kind != "drop_bend" {
+		t.Errorf("Kind: want drop_bend, got %q", a.Kind)
+	}
+	if a.LiveIndex != 1 {
+		t.Errorf("LiveIndex: want 1, got %d", a.LiveIndex)
+	}
+	// And the inverse: marshal the doc back to JSON and make sure
+	// the kind round-trips byte-stable.
+	out, err := jsonMarshal(&doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(out), `"kind":"drop_bend"`) {
+		t.Errorf("round-trip lost drop_bend kind in JSON output:\n%s", out)
 	}
 }
 

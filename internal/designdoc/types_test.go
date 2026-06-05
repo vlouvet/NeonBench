@@ -395,6 +395,92 @@ func TestGroupVisibleBackwardsCompat(t *testing.T) {
 	}
 }
 
+// TestDropBendAnnotationRoundTrip verifies the new "drop_bend" kind
+// (Tier 3 #77) survives a JSON round-trip alongside the pre-existing
+// "jump" / "support" / "doubleback" kinds. Pure-additive: the
+// Annotation struct shape is unchanged (kind + live_index), only the
+// allowed values for Kind grow. Confirms no schema migration is
+// needed — the new kind rides the existing design_doc JSON blob.
+func TestDropBendAnnotationRoundTrip(t *testing.T) {
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []Run{{
+			ID:       "r1",
+			Polyline: Polyline{Points: [][2]float64{{0, 0}, {10, 0}, {20, 0}, {30, 0}}},
+			Annotations: []Annotation{
+				{Kind: "jump", LiveIndex: 0},
+				{Kind: "support", LiveIndex: 1},
+				{Kind: "doubleback", LiveIndex: 2},
+				{Kind: "drop_bend", LiveIndex: 3},
+			},
+		}},
+	}
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Pure-additive contract: the new value is a string in the
+	// existing field, so it should appear verbatim in the JSON.
+	if !strings.Contains(string(raw), `"kind":"drop_bend"`) {
+		t.Errorf("expected kind:drop_bend in marshaled JSON: %s", raw)
+	}
+	// And the older kinds should still serialize unchanged.
+	for _, k := range []string{"jump", "support", "doubleback"} {
+		if !strings.Contains(string(raw), `"kind":"`+k+`"`) {
+			t.Errorf("expected kind:%s in marshaled JSON: %s", k, raw)
+		}
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Runs) != 1 || len(got.Runs[0].Annotations) != 4 {
+		t.Fatalf("unexpected shape after round-trip: %+v", got)
+	}
+	want := []string{"jump", "support", "doubleback", "drop_bend"}
+	for i, w := range want {
+		if got.Runs[0].Annotations[i].Kind != w {
+			t.Errorf("annotation[%d].Kind: got %q, want %q",
+				i, got.Runs[0].Annotations[i].Kind, w)
+		}
+	}
+}
+
+// TestDropBendBackwardsCompat verifies a pre-Tier-3-#77 doc blob (one
+// with only the original three annotation kinds) deserializes cleanly,
+// no field migrations. Pins the "additive only" promise: shipping the
+// new kind does not invalidate any existing persisted design version.
+func TestDropBendBackwardsCompat(t *testing.T) {
+	old := []byte(`{
+        "version": 1,
+        "view_box_mm": [0, 0, 100, 50],
+        "runs": [{
+          "id": "r1",
+          "polyline": {"points": [[0,0],[10,0],[20,0]], "closed": false},
+          "annotations": [
+            {"kind": "jump", "live_index": 0},
+            {"kind": "support", "live_index": 1},
+            {"kind": "doubleback", "live_index": 2}
+          ]
+        }]
+      }`)
+	var doc Doc
+	if err := json.Unmarshal(old, &doc); err != nil {
+		t.Fatalf("unmarshal pre-77 doc: %v", err)
+	}
+	if len(doc.Runs) != 1 || len(doc.Runs[0].Annotations) != 3 {
+		t.Fatalf("unexpected shape: %+v", doc)
+	}
+	wantKinds := []string{"jump", "support", "doubleback"}
+	for i, k := range wantKinds {
+		if got := doc.Runs[0].Annotations[i].Kind; got != k {
+			t.Errorf("annotation[%d].Kind: got %q, want %q", i, got, k)
+		}
+	}
+}
+
 // TestGroupBackwardsCompat verifies a pre-33b doc blob (no Groups
 // field, no group_id FKs on runs) deserializes cleanly: every
 // Run.GroupID stays "" and Doc.Groups stays nil. Confirms the new

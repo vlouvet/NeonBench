@@ -418,6 +418,27 @@ export function appendRuns(doc: DesignDoc, newRuns: DesignRun[], idPrefix: strin
   return { ...doc, runs: [...doc.runs, ...reIded] };
 }
 
+// insertChannelLetterRuns appends the output of `channelLetterFromText`
+// (Tier 2 #71 — the "Channel letter wizard" dialog) onto the design doc
+// as one undo-able edit. Each emitted run is re-id'd via the standard
+// `idPrefix-N` convention so it doesn't collide with prior inserts; the
+// per-run `is_channel_letter_face` flag and optional `raceway_id`
+// already baked in by the wizard pass through untouched. When the
+// caller supplies a non-empty `racewayId`, every emitted run is tagged
+// with that id (overriding whatever the wizard wrote) — this is how the
+// EditorPage UI promotes the wizard's placeholder raceway label to the
+// user's chosen name in one step.
+export function insertChannelLetterRuns(
+  doc: DesignDoc,
+  runs: DesignRun[],
+  racewayId?: string,
+): DesignDoc {
+  const tagged = racewayId
+    ? runs.map((r) => ({ ...r, raceway_id: racewayId }))
+    : runs;
+  return appendRuns(doc, tagged, 'letter');
+}
+
 export function placeLabel(doc: DesignDoc, x: number, y: number, text: string): DesignDoc {
   const label: Label = { x, y, text };
   return { ...doc, labels: [...(doc.labels ?? []), label] };
@@ -1609,6 +1630,286 @@ export function insertDoubleback(
         : run.bends,
     };
   });
+}
+
+// hasHairpinNearEndpoint — idempotency probe for autoDoublebackAllTerminations
+// (Tier 2 #72). Detects the 4-vertex U-bend signature that insertDoubleback
+// emits within ~tubeDiameter of a chosen polyline endpoint.
+//
+// The signature insertDoubleback produces (for a hairpin at segment 0,
+// t≈0, the head case):
+//   endpoint -- A         D -- ...
+//                |         |
+//                B---------C
+// where:
+//   - A is just past `endpoint` along the segment forward dir, distance ~= 0.5*gap
+//   - B is `depth` perpendicular off A
+//   - C is `gap` forward from B (parallel to AD)
+//   - D is `depth` back toward the segment line, on the same side as the
+//     original forward path.
+//
+// We probe by checking, on the interior side of the endpoint, whether
+// the four vertices nearest the endpoint look like the U. The
+// tolerance band is generous (matches the spec's "~tubeDiameter") so the
+// detector trips on user-placed hairpins of slightly different
+// proportions too — we err toward "skip" rather than "stack a second
+// U-bend onto an existing one".
+//
+// `side` selects which end we're probing:
+//   - 'head'  → endpoint is at point_index 0; vertices 1..4 carry the U.
+//   - 'tail'  → endpoint is at the last vertex; vertices n-2..n-5 carry the U.
+//
+// Returns true if a hairpin-shaped neighborhood exists within
+// `~2*tubeDiameter` of the endpoint. False if the path doesn't bend
+// back close to the endpoint within that range.
+function hasHairpinNearEndpoint(
+  pts: readonly [number, number][],
+  side: 'head' | 'tail',
+  tubeDiameter: number,
+): boolean {
+  const n = pts.length;
+  // Need at least 6 vertices total to host a 4-vertex hairpin inset from
+  // the endpoint (endpoint + 4 hairpin + 1 continuation).
+  if (n < 6) return false;
+  // Walk the 4 candidate U vertices from the endpoint inward.
+  const u: [number, number][] = side === 'head'
+    ? [pts[1], pts[2], pts[3], pts[4]]
+    : [pts[n - 2], pts[n - 3], pts[n - 4], pts[n - 5]];
+  // After insertDoubleback at t close to the endpoint: the U has its
+  // mouth on the segment line (A and D close to the line), with B and C
+  // perpendicular. We detect this geometrically: |A-B| ≈ depth ≈
+  // |D-C|, |A-D| ≈ gap, and BC parallel to AD.
+  const [A, B, C, D] = u;
+  const AB = Math.hypot(B[0] - A[0], B[1] - A[1]);
+  const DC = Math.hypot(C[0] - D[0], C[1] - D[1]);
+  const AD = Math.hypot(D[0] - A[0], D[1] - A[1]);
+  const BC = Math.hypot(C[0] - B[0], C[1] - B[1]);
+  // Sanity guards: every leg must be non-degenerate.
+  if (AB < 1e-6 || DC < 1e-6 || AD < 1e-6 || BC < 1e-6) return false;
+  // Generous shape tolerance (~tube diameter as a slack band). The
+  // canonical defaults are depth=1.5*ø and gap=1.0*ø, but operators may
+  // have hand-tuned either, so we accept a wide window: depth in
+  // [0.5*ø, 4*ø] and gap in [0.25*ø, 4*ø].
+  const minDepth = 0.5 * tubeDiameter;
+  const maxDepth = 4.0 * tubeDiameter;
+  const minGap = 0.25 * tubeDiameter;
+  const maxGap = 4.0 * tubeDiameter;
+  if (AB < minDepth || AB > maxDepth) return false;
+  if (DC < minDepth || DC > maxDepth) return false;
+  if (AD < minGap || AD > maxGap) return false;
+  if (BC < minGap || BC > maxGap) return false;
+  // The mouth (AD) and the floor (BC) should be roughly parallel and
+  // similar in length — the U should be roughly rectangular.
+  if (Math.abs(AD - BC) > tubeDiameter) return false;
+  // AB and DC (the two legs) should be roughly parallel and equal-ish.
+  if (Math.abs(AB - DC) > tubeDiameter) return false;
+  // The whole U should sit within ~2*tubeDiameter of the endpoint along
+  // the path — guard against false-positives where a U-bend exists deep
+  // inside the run far from the chosen termination.
+  const endpoint = side === 'head' ? pts[0] : pts[n - 1];
+  for (const p of u) {
+    const d = Math.hypot(p[0] - endpoint[0], p[1] - endpoint[1]);
+    if (d > 4 * tubeDiameter) return false;
+  }
+  return true;
+}
+
+// autoDoublebackAllTerminations — bulk-applies insertDoubleback to every
+// open-run electrode termination on the doc (Tier 2 #72). For a 12-letter
+// channel-letter sign with 24 electrodes, this is one click instead of
+// 24. The wrapped op (insertDoubleback) is unchanged; this just sweeps
+// over every applicable target and accumulates the result into a single
+// returned Doc so editDoc() collapses the whole batch into one undo
+// step (no per-iteration setDoc / setDirty churn).
+//
+// "Termination" = an electrode anchored at a polyline endpoint of an
+// OPEN run. Closed runs (no endpoints; the "live arc" is the chosen
+// half of the loop and the electrodes sit mid-walk) are skipped; users
+// can still doubleback closed-run electrodes via the per-electrode
+// tool. Electrodes placed mid-polyline on an open run (rare; usually
+// only if the operator hand-placed them) are also skipped because
+// "termination" implies "endpoint of the open arc."
+//
+// Idempotency: for each candidate termination, hasHairpinNearEndpoint
+// probes the nearby 4 vertices for the U-bend signature; if one
+// already exists within ~tubeDiameter of the endpoint, the termination
+// is skipped. Re-running the op on an already-doublebacked doc is a
+// no-op (returns the same Doc reference so editDoc's structural-equal
+// guard prevents a spurious undo entry).
+//
+// Index discipline: insertDoubleback grows the polyline by 4 vertices
+// and shifts every anchor at or after the insertion. We always process
+// the tail termination BEFORE the head when both apply, so the head
+// insertion (at segment 0) doesn't shift the tail's segment index out
+// from under us. Within a single run we re-derive segment indices off
+// the working run between insertions.
+//
+// Returns the new Doc plus a `count` of doublebacks added; the editor
+// uses the count to drive its toast / status-line confirmation
+// ("Added N doublebacks across M runs"). Callers that only need the
+// Doc can ignore the second field.
+export type AutoDoublebackOptions = {
+  depthMM?: number;
+  gapMM?: number;
+};
+
+export type AutoDoublebackResult = {
+  doc: DesignDoc;
+  added: number;
+  skipped: number;
+};
+
+export function autoDoublebackAllTerminations(
+  doc: DesignDoc,
+  opts: AutoDoublebackOptions = {},
+): AutoDoublebackResult {
+  let next = doc;
+  let added = 0;
+  let skipped = 0;
+  // Iterate by run id (not by index) so we can re-read the run off the
+  // working doc between insertions — insertDoubleback grows the
+  // polyline so any pre-computed segmentIndex would drift.
+  for (const original of doc.runs) {
+    const runId = original.id;
+    // Re-find the run on the working doc (point indices and polyline
+    // length may have shifted from a sibling op above).
+    let workingRun = next.runs.find((r) => r.id === runId);
+    if (!workingRun) continue;
+    // Only open runs have terminations; closed runs without endpoints
+    // are skipped silently.
+    if (workingRun.polyline.closed) continue;
+    const electrodes = workingRun.electrodes ?? [];
+    if (electrodes.length === 0) continue;
+    const tubeDiam = workingRun.tube_diameter_mm ?? 10;
+    // Process tail-side terminations BEFORE head-side ones within a
+    // single run. Otherwise inserting at the head shifts every
+    // downstream index (including the tail's segment index) by 4.
+    // Building the work list with tail entries first guarantees the
+    // tail's segment index is correct at the moment we apply it.
+    type Termination = { side: 'head' | 'tail'; segmentIndex: number; t: number };
+    const work: Termination[] = [];
+    // Detect head/tail terminations by electrode point_index on the
+    // CURRENT working run.
+    const headElec = electrodes.some((e) => e.point_index === 0);
+    const lastIdx = workingRun.polyline.points.length - 1;
+    const tailElec = electrodes.some((e) => e.point_index === lastIdx);
+    if (tailElec) {
+      // Insert at the last segment, near its tail endpoint.
+      work.push({ side: 'tail', segmentIndex: lastIdx - 1, t: 1.0 });
+    }
+    if (headElec) {
+      // Insert at the first segment, near its head endpoint.
+      work.push({ side: 'head', segmentIndex: 0, t: 0.0 });
+    }
+    for (const w of work) {
+      // Re-read the working run for the up-to-date polyline.
+      workingRun = next.runs.find((r) => r.id === runId);
+      if (!workingRun) break;
+      const pts = workingRun.polyline.points;
+      if (pts.length < 2) continue;
+      // Idempotency: probe the 4 vertices nearest this endpoint for an
+      // existing hairpin. If found, skip the insertion.
+      if (hasHairpinNearEndpoint(pts, w.side, tubeDiam)) {
+        skipped++;
+        continue;
+      }
+      // Recompute segment index for the tail case off the latest
+      // polyline length (head's segment 0 is stable).
+      const seg = w.side === 'tail' ? workingRun.polyline.points.length - 2 : 0;
+      const before = next;
+      next = insertDoubleback(
+        next,
+        runId,
+        seg,
+        w.t,
+        opts.depthMM,
+        opts.gapMM,
+        'left',
+      );
+      if (next !== before) {
+        added++;
+      } else {
+        skipped++;
+      }
+    }
+  }
+  if (added === 0) {
+    // No mutation — return the original doc reference so editDoc's
+    // structural-equal guard short-circuits the dirty / undo push.
+    return { doc, added: 0, skipped };
+  }
+  return { doc: next, added, skipped };
+}
+
+// autoHousingAllElectrodes — bulk-applies setElectrodeHousing to every
+// electrode on the doc that doesn't already have a housing (Tier 2 #72).
+// For a 12-letter channel-letter sign with 24 electrodes this is one
+// click instead of 24 housing-picker modal interactions.
+//
+// The wrapped op (setElectrodeHousing) is unchanged; this just sweeps
+// over every (runId, electrodeIndex) pair on the doc and accumulates
+// the result into a single returned Doc so editDoc collapses the whole
+// batch into one undo step.
+//
+// "Already housed" means the electrode's `housing_type` field is set
+// to anything other than empty/undefined. We deliberately skip these
+// rather than overwrite so the per-letter custom-housing edits the
+// operator may have already made stay intact. Operators who want to
+// reset everything first can run "Clear electrodes" + "Place electrode"
+// or hit the per-pin housing picker and pick "None".
+//
+// `housing` is the same HousingInput shape the per-electrode modal
+// builds; setElectrodeHousing handles validation (stock-shell bore is
+// stripped; custom requires positive bore) and throws OperationError
+// on invalid input. We let the throw propagate so the editor's toast
+// surfaces it as a single error rather than a per-electrode noisy run.
+export type AutoHousingResult = {
+  doc: DesignDoc;
+  applied: number;
+  skipped: number;
+};
+
+export function autoHousingAllElectrodes(
+  doc: DesignDoc,
+  housing: HousingInput,
+): AutoHousingResult {
+  let next = doc;
+  let applied = 0;
+  let skipped = 0;
+  // Iterate by (runId, electrodeIndex). The setElectrodeHousing op
+  // returns a new doc on every call; we thread the latest doc through
+  // the loop so the final return is the cumulative state.
+  for (const original of doc.runs) {
+    const runId = original.id;
+    const electrodes = (original.electrodes ?? []) as ElectrodeWithHousing[];
+    for (let i = 0; i < electrodes.length; i++) {
+      // Re-read off the working doc so the skip check sees the most
+      // recent housing state (defensive — within one batch nothing
+      // else should mutate it, but it costs nothing to be careful).
+      const workingRun = next.runs.find((r) => r.id === runId);
+      const workingElec = (workingRun?.electrodes ?? [])[i] as
+        | ElectrodeWithHousing
+        | undefined;
+      if (!workingElec) {
+        skipped++;
+        continue;
+      }
+      // Skip electrodes that already carry a housing — preserves
+      // per-pin operator edits. The truthy check excludes both
+      // undefined (no housing field) and the empty-string sentinel
+      // (operator explicitly cleared the housing).
+      if (workingElec.housing_type) {
+        skipped++;
+        continue;
+      }
+      next = setElectrodeHousing(next, runId, i, housing);
+      applied++;
+    }
+  }
+  if (applied === 0) {
+    return { doc, applied: 0, skipped };
+  }
+  return { doc: next, applied, skipped };
 }
 
 // neonize turns a single run (closed or open) into a pair of parallel-
