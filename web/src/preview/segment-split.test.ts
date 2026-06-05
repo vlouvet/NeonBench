@@ -156,6 +156,32 @@ describe('splitRunBySegments', () => {
     expect(segs[0].closed).toBe(true);
   });
 
+  it('routes drop_bend annotations to dropBendPolylineIndices and jump to jumpPolylineIndices (Tier 3 #77)', () => {
+    // Same 12-point straight run, but with a jump at live index 3
+    // and a drop_bend at live index 7. The two annotations should
+    // partition into separate per-segment arrays so the 3D preview
+    // can apply distinct lift kernels.
+    const run: DesignRun = {
+      id: 'r',
+      polyline: {
+        points: Array.from({ length: 12 }, (_, i) => [i * 10, 0]),
+        closed: false,
+      },
+      annotations: [
+        { kind: 'jump', live_index: 3 },
+        { kind: 'drop_bend', live_index: 7 },
+        { kind: 'support', live_index: 5 }, // ignored — not a lift kind
+      ],
+    };
+    const segs = splitRunBySegments(run);
+    expect(segs).toHaveLength(1);
+    const seg = segs[0];
+    // Polyline-local indices match live indices because the live arc
+    // here is the entire polyline (no electrodes ⇒ live = all).
+    expect(seg.jumpPolylineIndices).toEqual([3]);
+    expect(seg.dropBendPolylineIndices).toEqual([7]);
+  });
+
   it('marks blockout-broken closed runs as open sub-segments', () => {
     // Once a closed loop has any blockout, its sub-segments are
     // necessarily open arcs — there's no "closed sub-tube" semantic

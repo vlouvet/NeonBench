@@ -25,6 +25,11 @@ export type EditorTool =
   | 'jump'
   | 'support'
   | 'doubleback'
+  // Tier 3 #77 — `drop_bend` annotation tool: click on a path to mark
+  // a localized out-of-plane drop (the tube briefly dips behind the
+  // substrate). NW's special-bend-toggle equivalent, kind-vocabulary
+  // distinct from a `jump`'s horseshoe-over-an-obstacle.
+  | 'drop_bend'
   | 'insert-doubleback'
   | 'bend'
   | 'label'
@@ -46,7 +51,7 @@ export type EditorTool =
   // them. Esc / right-click cancels the staged source.
   | 'connect';
 
-export type AnnotationKind = 'jump' | 'support' | 'doubleback';
+export type AnnotationKind = 'jump' | 'support' | 'doubleback' | 'drop_bend';
 
 type StagedBlockout = { runId: string; liveIndex: number };
 
@@ -839,23 +844,35 @@ export default function EditorCanvas({
     return result.point;
   }
 
-  function onWheel(e: React.WheelEvent<SVGSVGElement>) {
-    e.preventDefault();
-    const rect = containerRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const cx = e.clientX - rect.left;
-    const cy = e.clientY - rect.top;
-    const factor = Math.exp(-e.deltaY * 0.001);
-    setTransform((t) => {
-      const newK = Math.max(MIN_SCALE, Math.min(MAX_SCALE, t.k * factor));
-      const ratio = newK / t.k;
-      return {
-        k: newK,
-        tx: cx - (cx - t.tx) * ratio,
-        ty: cy - (cy - t.ty) * ratio,
-      };
-    });
-  }
+  // Wheel-zoom calls preventDefault to stop the page from scrolling while
+  // zooming. React 19 registers `onWheel` as a *passive* listener, so a
+  // preventDefault there is rejected by the browser and logs "Unable to
+  // preventDefault inside passive event listener" on every wheel tick —
+  // a console flood during any zoom. Attaching a native, explicitly
+  // non-passive listener to the container makes preventDefault honored
+  // and keeps the console clean.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
+      const factor = Math.exp(-e.deltaY * 0.001);
+      setTransform((t) => {
+        const newK = Math.max(MIN_SCALE, Math.min(MAX_SCALE, t.k * factor));
+        const ratio = newK / t.k;
+        return {
+          k: newK,
+          tx: cx - (cx - t.tx) * ratio,
+          ty: cy - (cy - t.ty) * ratio,
+        };
+      });
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, []);
 
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (e.button !== 0 && e.button !== 1) return;
@@ -1332,7 +1349,12 @@ export default function EditorCanvas({
       setStaged(null);
       return;
     }
-    if (tool === 'jump' || tool === 'support' || tool === 'doubleback') {
+    if (
+      tool === 'jump' ||
+      tool === 'support' ||
+      tool === 'doubleback' ||
+      tool === 'drop_bend'
+    ) {
       const world = clientToWorld(e.clientX, e.clientY);
       if (!world) return;
       const arcs = runArcs(run);
@@ -1591,7 +1613,6 @@ export default function EditorCanvas({
       <svg
         width="100%"
         height="100%"
-        onWheel={onWheel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -2414,6 +2435,9 @@ export default function EditorCanvas({
         {tool === 'doubleback' && (
           <span className="meta hint">Click the apex of a hairpin to mark it as an intentional double-back</span>
         )}
+        {tool === 'drop_bend' && (
+          <span className="meta hint">Click on a path to mark a drop bend (tube dips behind the substrate at this vertex)</span>
+        )}
         {tool === 'insert-doubleback' && (
           <span className="meta hint">
             Click a polyline segment to splice in a hairpin (1.5× ø deep). Shift-click to flip the U to the other side.
@@ -2817,6 +2841,25 @@ function AnnotationMarker({
       <g onClick={onClick} style={{ cursor: 'pointer' }}>
         <circle cx={x} cy={y} r={r} fill="#fff" stroke="#1aa37a" strokeWidth={r * 0.15} />
         <path d={d} fill="none" stroke="#1aa37a" strokeWidth={r * 0.25} strokeLinecap="round" />
+      </g>
+    );
+  }
+  if (kind === 'drop_bend') {
+    // Tier 3 #77 — downward chevron (V-shape) that visualizes "the
+    // tube dips down behind the substrate at this point." Distinct
+    // from jump's arch-above (the tube lifts up) and support's
+    // triangle (a static anchor). Amber so it reads warm/warning
+    // — a drop bend is a labor-intensive bender callout — and
+    // contrasts cleanly with jump's blue arch and support's purple
+    // triangle in a mixed-annotation scene.
+    const cw = r * 0.7; // chevron half-width
+    const ch = r * 0.7; // chevron full height
+    const d = `M${x - cw},${y - ch * 0.35} L${x},${y + ch * 0.55} L${x + cw},${y - ch * 0.35}`;
+    return (
+      <g onClick={onClick} style={{ cursor: 'pointer' }}>
+        <title>Drop bend</title>
+        <circle cx={x} cy={y} r={r} fill="#fff" stroke="#d97706" strokeWidth={r * 0.15} />
+        <path d={d} fill="none" stroke="#d97706" strokeWidth={r * 0.3} strokeLinecap="round" strokeLinejoin="round" />
       </g>
     );
   }

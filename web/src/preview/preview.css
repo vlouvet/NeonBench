@@ -10,11 +10,11 @@
 .preview-page {
   display: flex;
   flex-direction: column;
-  /* Header sits at the top of the page; the rest is for the canvas.
-   * The Layout component keeps padding around <main>, so we use a
-   * small min-height instead of a fixed 100vh; this lets the page
-   * still scroll if we ever add chrome below. */
-  min-height: 70vh;
+  /* The 3D scene should own the vertical space. Fill the viewport
+   * below the global app header (brand bar + .app top/bottom padding ≈
+   * 7rem) instead of a loose 70vh, so the canvas pane below grows to most
+   * of the screen height rather than a third of it, with no page scroll. */
+  min-height: calc(100vh - 7rem);
   background: #0a0a0a;
   color: #ddd;
 }
@@ -50,6 +50,25 @@
   /* `position: relative` is the anchor for the absolutely-
    * positioned preset bar (Phase 3 #5), which floats over the
    * canvas without consuming a pixel of the rendered scene. */
+}
+
+/* react-three-fiber mounts its <canvas> inside an unclassed wrapper
+ * <div style="width:100%;height:100%">. This flex pane has no *definite*
+ * CSS height (its height comes from flex-grow / min-height, not an
+ * explicit `height`), so the wrapper's percentage height can't resolve
+ * and the <canvas> collapses to the HTML default of 150px — leaving the
+ * scene in the top sliver of the pane. Pinning the wrapper to the pane's
+ * box with absolute inset:0 gives it a resolved height, so the canvas
+ * fills the full pane. `:not([class])` targets only r3f's generated div,
+ * not the preset bar / scene-controls children (which carry classes). */
+.preview-page__canvas > div:not([class]) {
+  /* r3f writes `position: relative` as an INLINE style on this wrapper,
+   * which outranks a stylesheet rule — hence !important to flip it to
+   * absolute. Once absolutely positioned against the relative pane, the
+   * wrapper's inline `height:100%` resolves (an abs-positioned box's
+   * containing-block height is always definite), so the canvas fills. */
+  position: absolute !important;
+  inset: 0 !important;
 }
 
 /* Phase 3 #5 — camera preset button bar. Floats over the top-left

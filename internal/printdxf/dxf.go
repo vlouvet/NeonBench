@@ -86,14 +86,17 @@ const (
 	dimensionTextOffset  = 5.0  // perpendicular offset, mm; one text-height
 	dimensionMinLengthMM = 0.01 // shorter dims are skipped as degenerate
 
-	// Per-kind marker radii (Tier 3 #38a). Chosen to give the operator a
-	// quick visual ranking on the CAM screen: doubleback (largest) >
-	// jump > support. Sizes also map to the relative shop-floor effort
-	// each annotation implies — a doubleback bend is the most fiddly,
-	// a jump needs deliberate clearance, a support is just a clip.
+	// Per-kind marker radii (Tier 3 #38a, extended by Tier 3 #77).
+	// Chosen to give the operator a quick visual ranking on the CAM
+	// screen: doubleback (largest) > jump = drop > support. Sizes also
+	// map to the relative shop-floor effort each annotation implies — a
+	// doubleback bend is the most fiddly, a jump needs deliberate
+	// clearance, a drop bend is a flame-shaped out-of-plane offset on
+	// par with a jump in callout weight, a support is just a clip.
 	markerRadiusJump       = 4.0
 	markerRadiusSupport    = 3.0
 	markerRadiusDoubleback = 5.0
+	markerRadiusDropBend   = 4.0
 
 	// Marker text offset = one text-height along the right-hand normal,
 	// matching the dimensions convention so the operator's eye reads the
@@ -371,6 +374,15 @@ func markerStyle(kind string) (radius float64, lineType, label string) {
 		// scanning the layer at zoom levels where text is illegible,
 		// which matches its real-world priority on the shop floor.
 		return markerRadiusDoubleback, lineTypeDashdot, "Doubleback"
+	case "drop_bend":
+		// Tier 3 #77 — drop-bend rendering. Same radius as jump
+		// (both are mid-effort callouts) but DASHED to match the
+		// spec's "CIRCLE on MARKERS layer, radius 4 mm, DASHED
+		// linetype, label 'Drop'." The label distinguishes it
+		// from jump in mixed-annotation scenes; the bender reads
+		// the layer at zoom levels where text IS legible by the
+		// time they're staging the specific bend.
+		return markerRadiusDropBend, lineTypeDashed, "Drop"
 	default:
 		return markerRadiusSupport, lineTypeContinuous, kind
 	}
