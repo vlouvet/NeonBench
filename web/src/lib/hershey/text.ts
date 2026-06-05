@@ -29,6 +29,7 @@
 
 import { getFont, type FontKey } from './fonts';
 import { joinAdjacentGlyphs } from './joinAdjacentGlyphs';
+import { smoothStrokePoints } from './smooth';
 
 /** One stroke = one tube run. Multi-stroke glyphs (e.g. 'i' = stem + dot,
  *  'E' = vertical + 3 horizontals) yield multiple HersheyRuns and become
@@ -216,7 +217,11 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
         glyphOffsetX + gx * scale,
         baselineY + gy * scale + shifted,
       ]);
-      glyphRuns.push({ points });
+      // Bug #07: densify curved strokes (e.g. the 21-point "O") along a
+      // corner-preserving Catmull-Rom spline so the validator's bend-radius
+      // sampling sees smooth curvature instead of polygon facets. Straight
+      // strokes and hard corners pass through unchanged.
+      glyphRuns.push({ points: smoothStrokePoints(points) });
     }
     // Glyphs that emit no strokes (e.g. ASCII space, whose only "stroke"
     // is < 2 points and gets dropped at build time) do NOT contribute to
