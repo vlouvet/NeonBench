@@ -178,6 +178,12 @@ export default function EditorPage() {
     paper: 'letter',
     landscape: false,
     stripsOnly: false,
+    // Tier 2 #73 — opt-out for the trade-default mirrored print.
+    // Default false means "leave the mirror on" (operators bend
+    // against the back of the glass and need the pattern mirrored);
+    // checking the popover's "Print front-facing (un-mirrored)" box
+    // flips this to true and the URL builder emits ?mirror=0.
+    frontFacing: false,
   });
   const printGroupRef = useRef<HTMLDivElement | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
@@ -1382,7 +1388,20 @@ export default function EditorPage() {
                   // source of truth (live edits aren't persisted), so we
                   // print whatever was last committed under this `vid`.
                   if (dirty) return;
-                  setPrintSrc(api.printPDFURL(projectId, versionId, printOpts));
+                  // The popover stores `frontFacing` (the affirmative
+                  // form of the opt-out checkbox). printPDFURL accepts
+                  // `mirror` directly — when frontFacing is checked the
+                  // user wants the un-mirrored print (mirror=false);
+                  // unchecked yields the trade-default mirrored print
+                  // (omit the mirror param entirely). Tier 2 #73.
+                  setPrintSrc(
+                    api.printPDFURL(projectId, versionId, {
+                      paper: printOpts.paper,
+                      landscape: printOpts.landscape,
+                      stripsOnly: printOpts.stripsOnly,
+                      mirror: printOpts.frontFacing ? false : undefined,
+                    }),
+                  );
                 }}
                 disabled={dirty || printSrc !== null}
                 title={
