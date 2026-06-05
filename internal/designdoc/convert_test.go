@@ -2,8 +2,60 @@ package designdoc
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// toSVGForRun renders a single run to the canonical SVG string so a test can
+// assert on its <path> paint attributes.
+func toSVGForRun(run Run) string {
+	doc := &Doc{Version: SchemaVersion, ViewBoxMM: [4]float64{0, 0, 100, 100}, Runs: []Run{run}}
+	return string(ToSVG(doc))
+}
+
+// Bug #01 — open tube runs were emitted with fill="black", which paints the
+// enclosed area solid in the inline preview (an open "O" became a blob). A tube
+// is a stroke, not a region: open runs must be stroked, not filled.
+func TestToSVGStrokesOpenTubeRun(t *testing.T) {
+	svg := toSVGForRun(Run{
+		ID:       "open",
+		Polyline: Polyline{Points: [][2]float64{{0, 0}, {50, 0}, {50, 50}}, Closed: false},
+	})
+	if strings.Contains(svg, `fill="black"`) {
+		t.Errorf("open tube run must not be filled black:\n%s", svg)
+	}
+	if !strings.Contains(svg, `fill="none"`) || !strings.Contains(svg, `stroke="black"`) {
+		t.Errorf("open tube run must be stroked (fill=none stroke=black):\n%s", svg)
+	}
+}
+
+// Bug #01 — a closed loop that is NOT a channel-letter face (a circle / rect
+// tube) is still a tube, not a filled region, so it must be stroked too.
+func TestToSVGStrokesClosedNonFaceLoop(t *testing.T) {
+	svg := toSVGForRun(Run{
+		ID:       "loop",
+		Polyline: Polyline{Points: [][2]float64{{0, 0}, {50, 0}, {50, 50}, {0, 50}}, Closed: true},
+	})
+	if strings.Contains(svg, `fill="black"`) {
+		t.Errorf("closed non-face loop (circle/rect) must not be filled black:\n%s", svg)
+	}
+	if !strings.Contains(svg, `stroke="black"`) {
+		t.Errorf("closed non-face loop must be stroked:\n%s", svg)
+	}
+}
+
+// Bug #01 — a channel-letter face IS a deliberate solid silhouette, so it must
+// keep its black fill (the distinction the fix preserves).
+func TestToSVGFillsChannelLetterFace(t *testing.T) {
+	svg := toSVGForRun(Run{
+		ID:                  "face",
+		Polyline:            Polyline{Points: [][2]float64{{0, 0}, {50, 0}, {50, 50}, {0, 50}}, Closed: true},
+		IsChannelLetterFace: true,
+	})
+	if !strings.Contains(svg, `fill="black"`) {
+		t.Errorf("channel-letter face must be filled black:\n%s", svg)
+	}
+}
 
 // Tier 3 #59 — closed-loop seam continuity. When a closed live arc
 // has a blockout that straddles index 0, splitByBlockouts used to
