@@ -12,6 +12,13 @@ import (
 
 func sqrt(x float64) float64 { return math.Sqrt(x) }
 
+// defaultPreviewStrokeMM is the stroke width used to render a tube run in the
+// canonical SVG when the run carries no explicit diameter. It only affects the
+// inline preview's appearance — the validator and print pipeline parse path
+// geometry, not paint — and a mid-range neon-tube diameter reads well at
+// thumbnail scale.
+const defaultPreviewStrokeMM = 6.0
+
 // FromSVG parses an SVG document and returns the structured design doc. Each
 // disjoint subpath becomes a Run with no electrodes assigned.
 //
@@ -272,10 +279,25 @@ func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isB
 	if isChannelLetterFace {
 		faceAttr = ` data-channel-letter-face="1"`
 	}
-	if isBlockout {
+	switch {
+	case isBlockout:
 		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="0.6" stroke-dasharray="2 1.2" data-kind="blockout"%s%s%s d="`, diameterAttr, dbAttr, faceAttr)
-	} else {
+	case isChannelLetterFace && closed:
+		// A channel-letter face is a deliberate solid silhouette (its
+		// perimeter drives the returns-strip), so fill it.
 		fmt.Fprintf(buf, `<path fill="black" fill-rule="evenodd" stroke="none"%s%s%s d="`, diameterAttr, dbAttr, faceAttr)
+	default:
+		// A live tube run — an open path OR a closed loop (circle/rect). It's
+		// a tube, not a region, so stroke it at ~tube thickness instead of
+		// filling the interior solid black, which turned every open run (and
+		// every closed loop) into a blob in the inline preview. fill-vs-stroke
+		// is irrelevant to the validator and print pipeline — both parse path
+		// geometry, not paint (validate.ExtractMMPolylines).
+		strokeMM := diameterMM
+		if strokeMM <= 0 {
+			strokeMM = defaultPreviewStrokeMM
+		}
+		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="%s" stroke-linecap="round" stroke-linejoin="round"%s%s%s d="`, fmtFloat(strokeMM), diameterAttr, dbAttr, faceAttr)
 	}
 	for j, idx := range indices {
 		cmd := "L"
@@ -381,4 +403,3 @@ func arcLengthOf(indices []int, points [][2]float64) float64 {
 func fmtFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
 }
-
