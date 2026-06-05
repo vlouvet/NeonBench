@@ -6,8 +6,9 @@
 import rowmans from './rowmans.json' with { type: 'json' };
 import rowmand from './rowmand.json' with { type: 'json' };
 import futural from './futural.json' with { type: 'json' };
+import cursive from './cursive.json' with { type: 'json' };
 
-export type FontKey = 'rowmans' | 'rowmand' | 'futural';
+export type FontKey = 'rowmans' | 'rowmand' | 'futural' | 'cursive';
 
 export type Glyph = {
   left: number;
@@ -41,6 +42,11 @@ export type FontEntry = {
    *  Sign convention: NEGATIVE = tighten (shapes move closer), positive
    *  = loosen. Matches per-pair kerning + optical-kern outputs. */
   presetKerning: Record<string, number>;
+  /** If true, `hersheyTextToRuns` will attempt to stitch adjacent glyphs
+   *  into one continuous run using `joinAdjacentGlyphs`. Cursive faces
+   *  set this; all other faces leave glyphs isolated (the historical
+   *  Hershey behaviour). Spaces always interrupt joining regardless. */
+  joinAdjacent?: boolean;
 };
 
 // Pair-kerning preset tables. Values in JHF source units (negative =
@@ -67,6 +73,11 @@ const SANS_PRESET_KERNING: Record<string, number> = {
   To: -1, Ta: -1, Te: -1, Ty: -1, Tr: -1, Yo: -1, Ya: -1, Wo: -1,
 };
 
+// Cursive face uses joining instead of preset kerning — the connecting
+// bridge handles inter-letter spacing automatically. Leave the table
+// empty so the dialog's preset-seed path doesn't fight the joiner.
+const CURSIVE_PRESET_KERNING: Record<string, number> = {};
+
 // Cap-height units per face. All Hershey simplex/duplex faces we ship
 // run from y=-12 (cap top) to y=0 (baseline), so cap-height = 12. Stored
 // per-entry so a future face with different metrics doesn't have to be a
@@ -92,6 +103,14 @@ export const FONTS: Record<FontKey, FontEntry> = {
     capHeightUnits: 12,
     data: futural as FontData,
     presetKerning: SANS_PRESET_KERNING,
+  },
+  cursive: {
+    key: 'cursive',
+    displayName: 'Cursive (connecting script)',
+    capHeightUnits: 12,
+    data: cursive as FontData,
+    presetKerning: CURSIVE_PRESET_KERNING,
+    joinAdjacent: true,
   },
 };
 
