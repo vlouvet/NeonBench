@@ -102,6 +102,7 @@ export default function EditorCanvas({
   hoveredIssueIndex,
   onIssueHover,
   centerOnIssue,
+  focusedElement,
 }: {
   doc: DesignDoc;
   tool: EditorTool;
@@ -144,6 +145,14 @@ export default function EditorCanvas({
   // zoom-in to inspect a region; rescaling-to-fit on every j/k would
   // undo that). A 200 ms cubic ease-out keeps the motion subtle.
   centerOnIssue?: { x: number; y: number; epoch: number } | null;
+  // Clicking a run-detail item name in the sidebar pulses the matching
+  // marker on the canvas. `index` is into the run's electrodes / blockouts /
+  // annotations array, or the effectiveBends() order for kind 'bend'.
+  focusedElement?: {
+    runId: string;
+    kind: 'electrode' | 'blockout' | 'bend' | 'annotation';
+    index: number;
+  } | null;
   // Tier 3 #33a — `opts.additive` is true for Shift / Cmd-Ctrl-click;
   // the parent toggles the run in/out of the selection. Plain click
   // sends opts undefined (parent replaces the selection with [id]).
@@ -2539,6 +2548,50 @@ export default function EditorCanvas({
               );
             });
           })}
+          {/* Sidebar click-to-highlight: a transient pulse ring at the
+              focused run-detail element (electrode / blockout / bend /
+              annotation). Position resolves per kind; non-interactive. */}
+          {(() => {
+            if (!focusedElement) return null;
+            const run = doc.runs.find((r) => r.id === focusedElement.runId);
+            if (!run) return null;
+            const pts = run.polyline.points;
+            let p: readonly [number, number] | null = null;
+            if (focusedElement.kind === 'electrode') {
+              const el = run.electrodes?.[focusedElement.index];
+              if (el && pts[el.point_index]) p = pts[el.point_index];
+            } else if (focusedElement.kind === 'annotation') {
+              const a = run.annotations?.[focusedElement.index];
+              if (a) {
+                const pi = runArcs(run).live[a.live_index];
+                if (pi != null && pts[pi]) p = pts[pi];
+              }
+            } else if (focusedElement.kind === 'bend') {
+              const b = effectiveBends(run, projectDiameterMM)[focusedElement.index];
+              if (b && pts[b.pointIndex]) p = pts[b.pointIndex];
+            } else if (focusedElement.kind === 'blockout') {
+              const bo = run.blockouts?.[focusedElement.index];
+              if (bo) {
+                const live = runArcs(run).live;
+                const mid = Math.round((bo.start_live_index + bo.end_live_index) / 2);
+                const pi = live[mid];
+                if (pi != null && pts[pi]) p = pts[pi];
+              }
+            }
+            if (!p) return null;
+            return (
+              <g pointerEvents="none" className="focus-pulse">
+                <circle
+                  cx={p[0]}
+                  cy={p[1]}
+                  r={markerSizeMM * 1.4}
+                  fill="none"
+                  stroke="#38bdf8"
+                  strokeWidth={2.5 / transform.k}
+                />
+              </g>
+            );
+          })()}
           {/* Tier 3 #28 — validation marker overlay. Rendered last so it
               paints on top of runs/annotations/labels but underneath the
               SVG group's pointer-event delegation order; markers are
