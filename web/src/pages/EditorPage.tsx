@@ -12,6 +12,7 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
 import PrintHost from '../components/PrintHost';
@@ -152,6 +153,7 @@ export default function EditorPage() {
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
   const [hersheyOpen, setHersheyOpen] = useState(false);
+  const [channelLetterOpen, setChannelLetterOpen] = useState(false);
   // Tier 3 #62 — housing-picker modal target. Non-null when the
   // operator right-clicked an electrode pin; carries enough context
   // (run id + electrode index within run.electrodes) for the modal
@@ -176,6 +178,12 @@ export default function EditorPage() {
     paper: 'letter',
     landscape: false,
     stripsOnly: false,
+    // Tier 2 #73 — opt-out for the trade-default mirrored print.
+    // Default false means "leave the mirror on" (operators bend
+    // against the back of the glass and need the pattern mirrored);
+    // checking the popover's "Print front-facing (un-mirrored)" box
+    // flips this to true and the URL builder emits ?mirror=0.
+    frontFacing: false,
   });
   const printGroupRef = useRef<HTMLDivElement | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
@@ -1114,6 +1122,38 @@ export default function EditorPage() {
     setHersheyOpen(false);
   }
 
+  // Insert the Channel Letter Wizard's runs (Tier 2 #71). The wizard
+  // emits them centered on (0,0); we translate so their bbox center
+  // lands on the current view-box center, exactly the same pattern as
+  // insertHersheyText. Goes through editDoc → insertChannelLetterRuns
+  // so it's a single undo step regardless of how many letters fired.
+  function insertChannelLetterWizardOutput(runs: DesignRun[]) {
+    if (!doc || runs.length === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const r of runs) {
+      for (const [x, y] of r.polyline.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    const [vx, vy, vw, vh] = doc.view_box_mm;
+    const cx = vx + vw / 2;
+    const cy = vy + vh / 2;
+    const dx = Number.isFinite(minX) ? cx - (minX + maxX) / 2 : 0;
+    const dy = Number.isFinite(minY) ? cy - (minY + maxY) / 2 : 0;
+    const translated = runs.map<DesignRun>((r) => ({
+      ...r,
+      polyline: {
+        ...r.polyline,
+        points: r.polyline.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+      },
+    }));
+    editDoc((prev) => ops.insertChannelLetterRuns(prev, translated));
+    setChannelLetterOpen(false);
+  }
+
   // Switching the project's tube spec from inside the editor needs to do
   // two things atomically from the user's perspective: persist the new
   // tube_spec_id, then re-run validation against the *new* spec so the
@@ -1291,6 +1331,12 @@ export default function EditorPage() {
             >Add text</button>
             <button
               type="button"
+              className="tool-btn"
+              onClick={() => setChannelLetterOpen(true)}
+              title="Generate a complete channel-letter pattern from text (face outlines + parallel tubes, raceway-split optional)"
+            >Channel letter wizard</button>
+            <button
+              type="button"
               className={tool === 'label' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('label')}
               title="Drop a text label anywhere on the canvas"
@@ -1342,7 +1388,20 @@ export default function EditorPage() {
                   // source of truth (live edits aren't persisted), so we
                   // print whatever was last committed under this `vid`.
                   if (dirty) return;
-                  setPrintSrc(api.printPDFURL(projectId, versionId, printOpts));
+                  // The popover stores `frontFacing` (the affirmative
+                  // form of the opt-out checkbox). printPDFURL accepts
+                  // `mirror` directly — when frontFacing is checked the
+                  // user wants the un-mirrored print (mirror=false);
+                  // unchecked yields the trade-default mirrored print
+                  // (omit the mirror param entirely). Tier 2 #73.
+                  setPrintSrc(
+                    api.printPDFURL(projectId, versionId, {
+                      paper: printOpts.paper,
+                      landscape: printOpts.landscape,
+                      stripsOnly: printOpts.stripsOnly,
+                      mirror: printOpts.frontFacing ? false : undefined,
+                    }),
+                  );
                 }}
                 disabled={dirty || printSrc !== null}
                 title={
@@ -1915,6 +1974,12 @@ export default function EditorPage() {
         <HersheyTextDialog
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
+        />
+      )}
+      {channelLetterOpen && (
+        <ChannelLetterWizardDialog
+          onCancel={() => setChannelLetterOpen(false)}
+          onInsert={(runs) => insertChannelLetterWizardOutput(runs)}
         />
       )}
       {housingTarget && (() => {
