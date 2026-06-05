@@ -231,13 +231,19 @@ A read-only glowing render of any saved version, available regardless of validat
 
 - **Camera presets** — **Front**, **Iso**, **Top**, **Side**. You can also orbit / zoom freely.
 - **Background** — Black / Dark grey / Neutral grey / White.
-- **Wall backing** — toggle on/off and pick **White / Steel grey / Black / Wood**. Tubes stand off
-  the wall at a realistic depth, casting glow onto it.
+- **Wall backing** — toggle on/off (**off by default**) and pick **White / Steel grey / Black /
+  Wood**. Tubes stand off the wall at a realistic depth, casting glow onto it.
 - **Ambient light** — fill level (0–1).
 - **Bloom** — **Intensity**, **Threshold** (which brightness starts to bloom) and **Radius** —
   this is the neon glow halo.
 - **Save PNG** — exports the current view at full canvas resolution.
 - **Reset to defaults**.
+
+> **Depth at crossings.** The preview only lifts a tube in Z where a **jump** is marked (and dips
+> where a **drop** is marked — see §4.1). It does **not** auto-lift at detected crossings. So
+> wherever two tubes cross, mark a **jump-over** on one of them — otherwise the two render coplanar
+> and the glass appears to pass *through* the other tube instead of *over* it. The **Side** camera is
+> the quickest way to confirm a jump lifted (it shows the standoff profile).
 
 ---
 
@@ -294,7 +300,11 @@ fabrication. NeonBench correctly keeps flagging it; electrodes alone don't divid
 Using the construction-mark tools, we add one of each so the pattern is fully annotated:
 
 - **Mark blockout** — a painted span on the long stroke (two clicks bracket it).
-- **Mark double-back**, **Mark support**, **Mark jump**, **Mark drop** — one each on sensible spots.
+- **Mark jump** — at **each tube crossing**. Connected cursive crosses itself (the validator flags
+  four crossings here); a jump-over lifts one tube in Z so it passes *over* the other in 3D instead
+  of through it. *Tip:* hide the warning/error markers (the **Show warnings/errors** toggles) first
+  so the marker glyphs don't intercept the click, then click right on the crossing.
+- **Mark double-back**, **Mark support**, **Mark drop** — one each on sensible spots.
 - The script's curves already auto-generate bends (21 on the long stroke); **Add bend** drops an
   explicit one.
 
@@ -312,8 +322,11 @@ and label it (here: *hot-pink cursive, electrodes + all annotations*).
 
 ### Step 7 — Render in 3D
 
-Open **3D preview** for the saved version. Wall backing (**Wood**) and **Bloom** are on by default.
-Choose the **Front** camera for a readable hero, or **Iso** for an installed-on-the-wall angle:
+Open **3D preview** for the saved version. **Bloom** is on by default; **wall backing is off** — turn
+on **Show wall backing** and pick **Wood** for a storefront look. Choose the **Front** camera for a
+readable hero, or **Iso** for an installed-on-the-wall angle. Because we marked a jump-over at every
+crossing in Step 6, the tube lifts *over* itself at each one rather than rendering as glass through
+glass:
 
 | Front (hero) | Iso (installed angle) |
 |---|---|
