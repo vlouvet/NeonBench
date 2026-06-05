@@ -684,7 +684,7 @@ func checkMinLeadIn(polylines []Polyline, limits Limits) []Issue {
 				Rule:     RuleMinLeadIn,
 				Severity: SeverityWarning,
 				Message: fmt.Sprintf(
-					"electrode lead-in %.1fmm below recommended minimum %.1fmm — short lead-ins crack at the seal under handling and thermal cycling",
+					"run-end lead-in %.1fmm below recommended minimum %.1fmm — the straight section at this run end (where an electrode will sit) is too short; short lead-ins crack at the seal under handling and thermal cycling",
 					length, limitMM),
 				XMM: pts[ep.start].X,
 				YMM: pts[ep.start].Y,
