@@ -134,6 +134,23 @@ func UpdateDesignVersionReport(ctx context.Context, db *sql.DB, id int64, report
 	return GetDesignVersion(ctx, db, id)
 }
 
+// UpdateDesignVersionLabel replaces the label for a version. An empty string
+// clears the label to NULL (renders as "(no label)"). Returns ErrNotFound if
+// no row matched.
+func UpdateDesignVersionLabel(ctx context.Context, db *sql.DB, id int64, label string) (DesignVersion, error) {
+	res, err := db.ExecContext(ctx,
+		`UPDATE design_versions SET label = NULLIF(?, '') WHERE id = ?`,
+		label, id)
+	if err != nil {
+		return DesignVersion{}, fmt.Errorf("update design_version label: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return DesignVersion{}, ErrNotFound
+	}
+	return GetDesignVersion(ctx, db, id)
+}
+
 // LatestDesignVersion returns the most recent version for a project, or
 // ErrNotFound if none exist.
 func LatestDesignVersion(ctx context.Context, db *sql.DB, projectID int64) (DesignVersion, error) {

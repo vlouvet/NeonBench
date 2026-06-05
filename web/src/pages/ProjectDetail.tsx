@@ -662,6 +662,16 @@ export default function ProjectDetail() {
                 >
                   3D preview
                 </Link>
+                <VersionLabelEditor
+                  version={v}
+                  projectId={projectId}
+                  onRenamed={(updated) =>
+                    setVersions((vs) =>
+                      vs.map((x) => (x.id === updated.id ? updated : x)),
+                    )
+                  }
+                  onError={(msg) => setError(msg)}
+                />
                 <button
                   type="button"
                   className="btn-danger"
@@ -781,6 +791,89 @@ function ExportAsMenu({
         aria-hidden="true"
       />
     </span>
+  );
+}
+
+// VersionLabelEditor is the per-row rename affordance for a design version
+// (Bug #05). Labels were previously settable only at save time, so versions
+// piled up as "(no label)" with no way to fix them. "Rename" swaps in an
+// input that commits on blur / Enter (Escape cancels); an empty value clears
+// the label. The PATCH returns the updated version, which the parent splices
+// back into its list.
+function VersionLabelEditor({
+  version,
+  projectId,
+  onRenamed,
+  onError,
+}: {
+  version: DesignVersion;
+  projectId: number;
+  onRenamed: (updated: DesignVersion) => void;
+  onError: (msg: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(version.label ?? '');
+  const [busy, setBusy] = useState(false);
+  const current = version.label ?? '';
+
+  async function commit() {
+    if (busy) return;
+    const next = draft.trim();
+    if (next === current) {
+      setEditing(false);
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.updateDesignVersionLabel(projectId, version.id, next);
+      onRenamed(updated);
+      setEditing(false);
+    } catch (e) {
+      onError(`Rename v${version.version_no}: ${(e as Error).message}`);
+      setDraft(current);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        className="btn-secondary"
+        onClick={() => {
+          setDraft(current);
+          setEditing(true);
+        }}
+        title={`Rename v${version.version_no}`}
+      >
+        Rename
+      </button>
+    );
+  }
+
+  return (
+    <input
+      autoFocus
+      type="text"
+      value={draft}
+      maxLength={120}
+      disabled={busy}
+      placeholder="(no label)"
+      aria-label={`Label for v${version.version_no}`}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          setDraft(current);
+          setEditing(false);
+        }
+      }}
+    />
   );
 }
 

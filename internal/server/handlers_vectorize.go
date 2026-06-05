@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/storage"
@@ -405,6 +406,53 @@ func (s *apiServer) handleGetDesignVersion(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, v)
+}
+
+type updateDesignVersionReq struct {
+	// Label is required (the only mutable field here). An empty / whitespace
+	// string clears the label to NULL — "(no label)". A nil pointer means the
+	// client omitted the field, which is a 400 rather than a silent no-op.
+	Label *string `json:"label"`
+}
+
+// handleUpdateDesignVersion renames an existing design version (Bug #05). The
+// label was previously settable only at create time, so versions accumulated
+// as "(no label)" with no way to fix them.
+func (s *apiServer) handleUpdateDesignVersion(w http.ResponseWriter, r *http.Request) {
+	pid, ok := pathID(w, r, "id")
+	if !ok {
+		return
+	}
+	vid, ok := pathID(w, r, "vid")
+	if !ok {
+		return
+	}
+	var req updateDesignVersionReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if req.Label == nil {
+		writeError(w, http.StatusBadRequest, "label is required")
+		return
+	}
+	// Confirm the version belongs to this project before mutating so a stale
+	// URL can't reach across projects (mirrors GET / DELETE).
+	v, err := storage.GetDesignVersion(r.Context(), s.db, vid)
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	if v.ProjectID != pid {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	updated, err := storage.UpdateDesignVersionLabel(r.Context(), s.db, vid, strings.TrimSpace(*req.Label))
+	if err != nil {
+		writeStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
 }
 
 func (s *apiServer) handleDeleteDesignVersion(w http.ResponseWriter, r *http.Request) {

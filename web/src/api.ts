@@ -569,6 +569,13 @@ export const api = {
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}`),
   deleteDesignVersion: (projectId: number, versionId: number) =>
     req<void>(`/api/projects/${projectId}/design_versions/${versionId}`, { method: 'DELETE' }),
+  // Bug #05: rename an existing version. Empty string clears the label.
+  updateDesignVersionLabel: (projectId: number, versionId: number, label: string) =>
+    req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label }),
+    }),
   revalidate: (projectId: number, versionId: number) =>
     req<DesignVersion>(`/api/projects/${projectId}/design_versions/${versionId}/validate`, {
       method: 'POST',
