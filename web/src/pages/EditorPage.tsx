@@ -747,6 +747,14 @@ export default function EditorPage() {
     editDoc((prev) => ops.moveVertices(prev, runId, writes));
   }
 
+  // Drag-to-resize handles (feat-editor-scale-handles). The canvas scales
+  // every selected run about a shared anchor from a drag snapshot and hands
+  // back the absolute new points for each run; we replace them in one editDoc
+  // so the live drag coalesces to a single undo step.
+  function scaleRuns(updates: { runId: string; points: [number, number][] }[]) {
+    editDoc((prev) => ops.setRunsPoints(prev, updates));
+  }
+
   // Tier 3 #48 — vertex-merge on drop committer. The canvas only fires
   // this when the dropped vertex landed inside the snap-to-vertex
   // radius of `keepIndex` — kicking the dropped vertex's references
@@ -1611,6 +1619,7 @@ export default function EditorPage() {
           onDeleteDimension={deleteDimension}
           onMoveVertex={moveVertex}
           onMoveVertices={moveVertices}
+          onScaleRuns={scaleRuns}
           onMergeVertices={mergeVerticesOnRun}
           onDeleteVertex={deleteVertex}
           onInsertVertex={insertVertex}
