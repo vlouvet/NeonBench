@@ -627,15 +627,35 @@ export const api = {
   // backend toggle (PR #51); the popover wires it up here so the
   // operator can request a returns-only PDF without the main pattern
   // pages.
+  //
+  // Tier 2 #73 adds the `mirror` option. The trade default is
+  // MIRRORED (operators bend against the back of the glass tube
+  // while reading the pattern), so the URL omits the `mirror` param
+  // when the option is undefined OR true — the server's default is
+  // mirrored, and emitting `?mirror=1` would just duplicate that
+  // intent. Only an explicit `mirror: false` adds `?mirror=0`, which
+  // tells the server to skip the horizontal flip and emit a
+  // front-facing pattern (for marketing renders or design review).
   printPDFURL: (
     projectId: number,
     versionId: number,
-    opts: { paper?: string; landscape?: boolean; stripsOnly?: boolean } = {},
+    opts: {
+      paper?: string;
+      landscape?: boolean;
+      stripsOnly?: boolean;
+      // When undefined or true, the URL omits the mirror param and
+      // the server's trade-default mirror engages. When explicitly
+      // false, the URL adds `?mirror=0` and the server emits the
+      // front-facing pattern. See internal/printpdf/render.go's
+      // Options.Mirror for the trade-default rationale.
+      mirror?: boolean;
+    } = {},
   ) => {
     const params = new URLSearchParams();
     if (opts.paper) params.set('paper', opts.paper);
     if (opts.landscape) params.set('landscape', '1');
     if (opts.stripsOnly) params.set('strips_only', '1');
+    if (opts.mirror === false) params.set('mirror', '0');
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
@@ -644,7 +664,44 @@ export const api = {
   // in millimeters, no page layout.
   dxfURL: (projectId: number, versionId: number) =>
     `/api/projects/${projectId}/design_versions/${versionId}/print.dxf`,
+  // Vector-graphics export URLs (Tier 3 #80). SVG / EPS / AI are
+  // sibling formats: SVG is the richest (per-run groups, dedicated
+  // annotation layers); EPS is the procedural PostScript flavour;
+  // AI is the EPS bytes served at .ai (Illustrator opens it
+  // natively — the file format converged historically). All three
+  // accept the same `?mirror=1` flag as the PDF / DXF exports so the
+  // backside view round-trips through any of the four CAM targets.
+  exportSVGURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'svg', opts),
+  exportEPSURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'eps', opts),
+  exportAIURL: (
+    projectId: number,
+    versionId: number,
+    opts: { mirror?: boolean } = {},
+  ) => buildExportURL(projectId, versionId, 'ai', opts),
 };
+
+// buildExportURL — shared helper for the three vector-graphics URL
+// builders (SVG / EPS / AI). Keeps the call sites tiny and ensures the
+// three formats encode the `mirror` flag identically.
+function buildExportURL(
+  projectId: number,
+  versionId: number,
+  ext: 'svg' | 'eps' | 'ai',
+  opts: { mirror?: boolean },
+): string {
+  const params = new URLSearchParams();
+  if (opts.mirror) params.set('mirror', '1');
+  const qs = params.toString();
+  return `/api/projects/${projectId}/design_versions/${versionId}/export.${ext}${qs ? `?${qs}` : ''}`;
+}
 
 export const PAPER_OPTIONS = [
   { value: 'letter', label: 'US Letter (8.5 × 11 in)' },

@@ -63,6 +63,19 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("strips_only") == "1" {
 		opts.StripsOnly = true
 	}
+	// mirror=0 opts out of the trade-default mirrored print (Tier 2
+	// #73). The trade default is MIRRORED — the bender works against
+	// the back of the glass tube while reading the printed pattern,
+	// so the geometry must be flipped left-to-right relative to the
+	// front-facing design. Operators wanting a front-facing print for
+	// marketing renders or design review pass ?mirror=0; absence of
+	// the parameter (or any other value) preserves the mirrored
+	// trade default. Pointer-bool semantics here match the rest of
+	// the print-options surface — see printpdf.Options.Mirror.
+	if r.URL.Query().Get("mirror") == "0" {
+		mirrorOff := false
+		opts.Mirror = &mirrorOff
+	}
 	opts.ProjectName = project.Name
 	if v.Label != nil {
 		opts.DesignVersionLabel = fmt.Sprintf("v%d — %s", v.VersionNo, *v.Label)

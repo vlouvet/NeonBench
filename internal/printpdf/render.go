@@ -62,6 +62,40 @@ type Options struct {
 	// (a zero-page PDF is technically invalid; failing loud lets the
 	// caller's iframe surface the error).
 	StripsOnly bool
+	// Mirror, when non-nil, controls whether the pattern's coordinate
+	// space is horizontally flipped before rendering (Tier 2 #73). The
+	// trade convention is that the bender works against the BACK of
+	// the glass tube while looking at the printed pattern, so the
+	// printed image must be mirrored relative to the front-facing
+	// design ("the layout is reversed automatically when it comes in"
+	// — NeonWizard operator quote).
+	//
+	// Pointer-bool semantics mirror the pattern from Tier 3 #33c so
+	// the zero value ("unspecified") means "use the trade default of
+	// MIRRORED." Nil → mirrored. &true → mirrored. &false → front-
+	// facing (un-mirrored), used for marketing renders and front-side
+	// review. MirrorOn() centralizes the resolution so call sites
+	// don't have to repeat the nil-check.
+	//
+	// Scope: mirroring applies to the main tile pages and the bend-
+	// list summary page (the front-face pattern surfaces the bender
+	// reads against the back of the glass). Channel-letter return-
+	// strip pages and raceway-strip pages are unfolded perimeter
+	// patterns rendered in their own 1D coordinate space — mirroring
+	// them would invert arc-length direction without operator
+	// benefit, so those pages render the same regardless of the flag.
+	Mirror *bool
+}
+
+// MirrorOn resolves the pointer-bool Mirror field to a plain bool with
+// the trade-default substitution applied: nil → true (mirrored). Use
+// this everywhere the renderer needs to branch on mirror state so the
+// "nil means default" rule stays in one place.
+func (o Options) MirrorOn() bool {
+	if o.Mirror == nil {
+		return true
+	}
+	return *o.Mirror
 }
 
 // DefaultOptions returns conservative paper-template defaults.
@@ -147,6 +181,7 @@ func Render(svg []byte, opts Options) ([]byte, error) {
 	pdf.SetCreator("NeonBench", false)
 	pdf.SetTitle(opts.ProjectName, false)
 
+	mirrored := opts.MirrorOn()
 	for r := 0; r < rows; r++ {
 		for c := 0; c < cols; c++ {
 			pdf.AddPage()
@@ -159,21 +194,31 @@ func Render(svg []byte, opts Options) ([]byte, error) {
 			pdf.SetDrawColor(0, 0, 0)
 			pdf.SetLineWidth(opts.StrokeMM)
 
-			// Draw polylines transformed: world (mm) -> page (mm)
-			// page_x = (world_x - tileX) + margin
-			// page_y = (world_y - tileY) + margin
+			// World (mm) -> page (mm) projection. When mirroring is on
+			// (the trade default for back-side bending — Tier 2 #73)
+			// we additionally flip X around the tile's right edge so
+			// the printed pattern reads correctly through the back of
+			// the glass. The flip is applied per-coordinate rather
+			// than as a gofpdf TransformBegin/MirrorHorizontal pair
+			// so the polyline geometry mirrors without inverting any
+			// text glyphs we draw on top — the text labels remain
+			// readable left-to-right at their (now-mirrored) anchor.
+			toPage := makePageProjector(tileX, tileY, opts.MarginMM, contentW, mirrored)
+
 			for _, pl := range polylines {
 				if len(pl.Points) < 2 {
 					continue
 				}
 				start := pl.Points[0]
-				pdf.MoveTo(start.X-tileX+opts.MarginMM, start.Y-tileY+opts.MarginMM)
+				sx, sy := toPage(start.X, start.Y)
+				pdf.MoveTo(sx, sy)
 				for i := 1; i < len(pl.Points); i++ {
 					p := pl.Points[i]
-					pdf.LineTo(p.X-tileX+opts.MarginMM, p.Y-tileY+opts.MarginMM)
+					px, py := toPage(p.X, p.Y)
+					pdf.LineTo(px, py)
 				}
 				if pl.Closed {
-					pdf.LineTo(start.X-tileX+opts.MarginMM, start.Y-tileY+opts.MarginMM)
+					pdf.LineTo(sx, sy)
 				}
 				pdf.DrawPath("D") // stroke only
 			}
@@ -296,15 +341,27 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	// StripsOnly skips the main tile pages entirely — the operator only
 	// wants the metal-strip pages, post-fabrication. The strip pages
 	// themselves are still emitted below by the unchanged emit calls.
+	mirrored := opts.MirrorOn()
 	if !opts.StripsOnly {
 		for r := 0; r < rows; r++ {
 			for c := 0; c < cols; c++ {
 				pdf.AddPage()
 				tileX := bbox[0] + float64(c)*stepW
 				tileY := bbox[1] + float64(r)*stepH
-				toPage := func(x, y float64) (float64, float64) {
-					return x - tileX + opts.MarginMM, y - tileY + opts.MarginMM
-				}
+				// World (mm) -> page (mm) projection. When mirroring
+				// is on (the trade default for back-side bending —
+				// Tier 2 #73) we additionally flip X around the
+				// tile's right edge so the printed pattern reads
+				// correctly through the back of the glass. The flip
+				// is applied per-coordinate rather than as a gofpdf
+				// TransformBegin/MirrorHorizontal pair so the polyline
+				// geometry mirrors without inverting any text glyphs
+				// we draw on top — bend-number labels, dimension
+				// notes, and free-text labels remain readable
+				// left-to-right at their (now-mirrored) anchor
+				// positions. See Options.Mirror for the trade-default
+				// rationale and front-facing opt-out.
+				toPage := makePageProjector(tileX, tileY, opts.MarginMM, contentW, mirrored)
 
 				pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
 				pdf.SetDrawColor(0, 0, 0)
@@ -489,6 +546,51 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		return nil, fmt.Errorf("write pdf: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// makePageProjector returns a world-mm → page-mm coordinate projector
+// for one tile of the main pattern. The non-mirrored projection is the
+// trivial translation `(x-tileX+margin, y-tileY+margin)`. The mirrored
+// projection (Tier 2 #73, the trade default for back-side bending)
+// flips X within the tile's content rectangle:
+//
+//	mirrored_page_x = margin + contentW - (x - tileX)
+//	              = (contentW + tileX + margin) - x
+//
+// Both projections share the same Y mapping; we only mirror horizontally.
+// The flip happens at the per-coordinate level rather than as a
+// `pdf.TransformBegin / TransformMirrorHorizontal` pair so the polyline
+// geometry mirrors without dragging the text glyphs along — bend-number
+// labels, dimension notes, and free-text labels emitted via `pdf.Text`
+// at the mirrored anchor position still read left-to-right (the
+// operator views them through the back of the glass tube and they look
+// the same as if the printed page were folded face-down).
+//
+// `contentW` is the page's content width in mm (paper width minus
+// twice the margin); the caller has already computed it for the tile-
+// overlay drawer so we accept it as an argument rather than recomputing
+// here. Tiles at the right edge of a multi-tile design will not have
+// exactly `contentW` mm of design in them, but the per-coordinate flip
+// is anchored to the tile's *page* rectangle, not the design's bbox,
+// so the printout stays inside the page bounds (and matches the
+// non-mirrored layout's clipping rectangle).
+func makePageProjector(tileX, tileY, marginMM, contentW float64, mirrored bool) func(x, y float64) (float64, float64) {
+	if !mirrored {
+		return func(x, y float64) (float64, float64) {
+			return x - tileX + marginMM, y - tileY + marginMM
+		}
+	}
+	// Precompute the constant component so the per-vertex math is a
+	// single subtraction. `right = marginMM + contentW + tileX`, then
+	// `mirrored_x = right - x`. Symmetric with the non-mirrored path's
+	// `(x - tileX) + marginMM` re-arranged: at x = tileX (left edge of
+	// the design tile) we get `right - tileX = marginMM + contentW`
+	// (right edge of the page content area), at x = tileX + contentW
+	// we get `marginMM` (left edge of the page content area).
+	right := marginMM + contentW + tileX
+	return func(x, y float64) (float64, float64) {
+		return right - x, y - tileY + marginMM
+	}
 }
 
 func docBBox(doc *designdoc.Doc) [4]float64 {
