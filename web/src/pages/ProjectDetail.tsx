@@ -450,52 +450,59 @@ export default function ProjectDetail() {
           spec={allSpecs.find((s) => s.id === project.tube_spec_id) ?? null}
           onSave={(body) => handleTubeSpecEdit(project.tube_spec_id, body)}
         />
-        {' · '}
-        <TubeEndGapField
-          value={project.tube_end_gap_mm}
-          onSave={async (next) => {
-            const updated = await api.updateProject(projectId, { tube_end_gap_mm: next });
-            setProject(updated);
-          }}
-          onError={(msg) => setError(msg)}
-        />
-        {' · '}
-        <ChannelLetterDepthField
-          value={project.channel_letter_depth_mm}
-          onSave={async (next) => {
-            const updated = await api.updateProject(projectId, {
-              channel_letter_depth_mm: next,
-            });
-            setProject(updated);
-          }}
-          onError={(msg) => setError(msg)}
-        />
-        {' · '}
-        <StripOverlapField
-          value={project.strip_overlap_mm}
-          onSave={async (next) => {
-            const updated = await api.updateProject(projectId, {
-              strip_overlap_mm: next,
-            });
-            setProject(updated);
-          }}
-          onError={(msg) => setError(msg)}
-        />
-        {' · '}
-        <FacePerimeterStrictModeField
-          value={project.face_perimeter_strict_mode}
-          onSave={async (next) => {
-            const updated = await api.updateProject(projectId, {
-              face_perimeter_strict_mode: next,
-            });
-            setProject(updated);
-          }}
-          onError={(msg) => setError(msg)}
-        />
         {' · Units: '}
         {project.units}
         {' · Created '}
         {new Date(project.created_at).toLocaleString()}
+        {/* Bug #04: the production defaults are rarely touched, so tuck them
+            behind a collapsed disclosure instead of crowding the header. The
+            tube spec + units/created stay visible above. */}
+        <details className="production-defaults">
+          <summary>Production defaults</summary>
+          <div className="production-defaults-body">
+            <TubeEndGapField
+              value={project.tube_end_gap_mm}
+              onSave={async (next) => {
+                const updated = await api.updateProject(projectId, { tube_end_gap_mm: next });
+                setProject(updated);
+              }}
+              onError={(msg) => setError(msg)}
+            />
+            {' · '}
+            <ChannelLetterDepthField
+              value={project.channel_letter_depth_mm}
+              onSave={async (next) => {
+                const updated = await api.updateProject(projectId, {
+                  channel_letter_depth_mm: next,
+                });
+                setProject(updated);
+              }}
+              onError={(msg) => setError(msg)}
+            />
+            {' · '}
+            <StripOverlapField
+              value={project.strip_overlap_mm}
+              onSave={async (next) => {
+                const updated = await api.updateProject(projectId, {
+                  strip_overlap_mm: next,
+                });
+                setProject(updated);
+              }}
+              onError={(msg) => setError(msg)}
+            />
+            {' · '}
+            <FacePerimeterStrictModeField
+              value={project.face_perimeter_strict_mode}
+              onSave={async (next) => {
+                const updated = await api.updateProject(projectId, {
+                  face_perimeter_strict_mode: next,
+                });
+                setProject(updated);
+              }}
+              onError={(msg) => setError(msg)}
+            />
+          </div>
+        </details>
       </div>
       <div className="meta project-settings job-fields">
         <ProjectMetaField
