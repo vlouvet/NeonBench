@@ -119,9 +119,12 @@ describe('hersheyTextToRuns', () => {
     expect(firstLineCount).toBeGreaterThan(0);
     expect(secondLineCount).toBeGreaterThan(0);
     // And every second-line y must be at least 100 (cap top of line 2).
+    // Tolerance is 2mm rather than 0: Bug #07 smoothing splines each curved
+    // glyph stroke and can bow ~1.3mm past the original cap-top vertex. That
+    // sub-2% deviation doesn't affect the baseline separation under test.
     for (const r of runs) {
       for (const [, y] of r.points) {
-        if (y >= 87.5) expect(y).toBeGreaterThanOrEqual(100 - 0.01);
+        if (y >= 87.5) expect(y).toBeGreaterThanOrEqual(100 - 2);
       }
     }
   });
@@ -145,8 +148,9 @@ describe('hersheyTextToRuns', () => {
       }
     }
     // Cap top of 'B' on the second baseline is at originY + capHeight*2.0 -
-    // capHeight = 100.
-    expect(line2Min).toBeCloseTo(100, 1);
+    // capHeight = 100. Within 2mm: Bug #07 smoothing can bow the bowl ~1.3mm
+    // past the original cap-top vertex.
+    expect(Math.abs(line2Min - 100)).toBeLessThan(2);
   });
 
   it('multi-line: empty line advances the baseline without emitting strokes', () => {
@@ -164,7 +168,9 @@ describe('hersheyTextToRuns', () => {
     });
     let maxY = -Infinity;
     for (const r of runs) for (const [, y] of r.points) if (y > maxY) maxY = y;
-    expect(maxY).toBeCloseTo(475, 0);
+    // Within 2mm: Bug #07 smoothing can bow the 'B' bowl ~1.3mm past the
+    // original lowest vertex.
+    expect(Math.abs(maxY - 475)).toBeLessThan(2);
 
     const justA = hersheyTextToRuns({ text: 'A', capHeightMM: 100, originX: 0, originY: 0 });
     const justB = hersheyTextToRuns({ text: 'B', capHeightMM: 100, originX: 0, originY: 0 });
