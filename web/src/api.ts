@@ -619,15 +619,35 @@ export const api = {
   // backend toggle (PR #51); the popover wires it up here so the
   // operator can request a returns-only PDF without the main pattern
   // pages.
+  //
+  // Tier 2 #73 adds the `mirror` option. The trade default is
+  // MIRRORED (operators bend against the back of the glass tube
+  // while reading the pattern), so the URL omits the `mirror` param
+  // when the option is undefined OR true — the server's default is
+  // mirrored, and emitting `?mirror=1` would just duplicate that
+  // intent. Only an explicit `mirror: false` adds `?mirror=0`, which
+  // tells the server to skip the horizontal flip and emit a
+  // front-facing pattern (for marketing renders or design review).
   printPDFURL: (
     projectId: number,
     versionId: number,
-    opts: { paper?: string; landscape?: boolean; stripsOnly?: boolean } = {},
+    opts: {
+      paper?: string;
+      landscape?: boolean;
+      stripsOnly?: boolean;
+      // When undefined or true, the URL omits the mirror param and
+      // the server's trade-default mirror engages. When explicitly
+      // false, the URL adds `?mirror=0` and the server emits the
+      // front-facing pattern. See internal/printpdf/render.go's
+      // Options.Mirror for the trade-default rationale.
+      mirror?: boolean;
+    } = {},
   ) => {
     const params = new URLSearchParams();
     if (opts.paper) params.set('paper', opts.paper);
     if (opts.landscape) params.set('landscape', '1');
     if (opts.stripsOnly) params.set('strips_only', '1');
+    if (opts.mirror === false) params.set('mirror', '0');
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
