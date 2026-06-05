@@ -46,6 +46,13 @@ export interface RunSegment {
   // tube out of plane at jump locations. Empty array (the common
   // case) means the segment renders flat at Z=0.
   jumpPolylineIndices: number[];
+  // Indices INTO `points` (segment-local) for each `kind: 'drop_bend'`
+  // annotation that falls inside this segment's slice. Tier 3 #77 —
+  // distinct from `jumpPolylineIndices` because drop-bends use a
+  // different lift kernel (0.5× diameter instead of 2.5×) and are
+  // explicitly not clustered with jumps. Empty array (the common
+  // case) means no drop-bend dips on this segment.
+  dropBendPolylineIndices: number[];
 }
 
 /**
@@ -73,32 +80,45 @@ export function splitRunBySegments(run: DesignRun): RunSegment[] {
   const wholeRunIsLive =
     segs.length === 1 && !segs[0].isBlockout && arcs.liveClosed;
 
-  // Translate `kind: 'jump'` annotations from live-arc index to
-  // polyline index once. A jump's `live_index` is a position in the
-  // live arc; the polyline index it maps to is `liveIndices[live_index]`.
-  // Out-of-range live indices (from edits that orphaned an annotation)
-  // are silently skipped — `liftPointsAtJumps` already handles
-  // out-of-range polyline indices, but filtering here keeps the
-  // per-segment `jumpPolylineIndices` lists honest.
+  // Translate `kind: 'jump'` and `kind: 'drop_bend'` annotations from
+  // live-arc index to polyline index once. Each annotation's
+  // `live_index` is a position in the live arc; the polyline index it
+  // maps to is `liveIndices[live_index]`. Out-of-range live indices
+  // (from edits that orphaned an annotation) are silently skipped —
+  // `liftPointsAtJumps` already handles out-of-range polyline indices,
+  // but filtering here keeps the per-segment index lists honest.
+  //
+  // Tier 3 #77 — jumps and drop-bends live in separate arrays
+  // because they map to different lift kernels and intentionally
+  // do not cluster together.
   const jumpPolylineIdxs: number[] = [];
+  const dropBendPolylineIdxs: number[] = [];
   const annotations = run.annotations ?? [];
   for (const a of annotations) {
-    if (a.kind !== 'jump') continue;
     if (a.live_index < 0 || a.live_index >= liveIndices.length) continue;
-    jumpPolylineIdxs.push(liveIndices[a.live_index]);
+    if (a.kind === 'jump') {
+      jumpPolylineIdxs.push(liveIndices[a.live_index]);
+    } else if (a.kind === 'drop_bend') {
+      dropBendPolylineIdxs.push(liveIndices[a.live_index]);
+    }
   }
 
   return segs
     .filter((s) => s.liveIndices.length >= 2)
     .map((s) => {
-      // Per-segment: include only jumps whose polyline index falls
-      // inside this segment's slice. Translate to a segment-local
-      // (zero-based) index so the renderer can hand it straight to
-      // `liftPointsAtJumps` without further translation.
+      // Per-segment: include only jumps / drop-bends whose polyline
+      // index falls inside this segment's slice. Translate to a
+      // segment-local (zero-based) index so the renderer can hand it
+      // straight to `liftPointsAtJumps` without further translation.
       const segLocalJumps: number[] = [];
       for (const ji of jumpPolylineIdxs) {
         const localIdx = s.liveIndices.indexOf(ji);
         if (localIdx >= 0) segLocalJumps.push(localIdx);
+      }
+      const segLocalDropBends: number[] = [];
+      for (const di of dropBendPolylineIdxs) {
+        const localIdx = s.liveIndices.indexOf(di);
+        if (localIdx >= 0) segLocalDropBends.push(localIdx);
       }
       return {
         points: s.liveIndices.map((idx) => points[idx]),
@@ -107,6 +127,7 @@ export function splitRunBySegments(run: DesignRun): RunSegment[] {
         // closed tube. Any blockout breaks the loop into open arcs.
         closed: wholeRunIsLive,
         jumpPolylineIndices: segLocalJumps,
+        dropBendPolylineIndices: segLocalDropBends,
       };
     });
 }

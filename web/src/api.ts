@@ -218,7 +218,15 @@ export type Blockout = {
 };
 
 export type Annotation = {
-  kind: 'jump' | 'support' | 'doubleback';
+  // Tier 3 #77 — `drop_bend` is the fourth annotation kind: a localized
+  // out-of-plane offset where the tube dips slightly behind the
+  // substrate (NW's "drop bend" — distinct trade vocabulary from a
+  // jump's horseshoe-over-an-obstacle). The 3D preview lifts the tube
+  // by 0.5× diameter at drop-bend points vs. 2.5× for jumps so the
+  // visual reads as a subtle dip rather than a clear bridge. Pure-
+  // additive JSON; old design blobs without this value deserialize
+  // cleanly to one of the three pre-existing kinds.
+  kind: 'jump' | 'support' | 'doubleback' | 'drop_bend';
   live_index: number;
 };
 

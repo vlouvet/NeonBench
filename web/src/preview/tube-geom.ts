@@ -69,46 +69,96 @@ export const JUMP_LIFT_HEIGHT_MULT = 2.5;
 export const JUMP_LIFT_SPAN_MULT = 4.0;
 export const JUMP_LIFT_CLUSTER_GAP_MULT = 4.0;
 
+// Drop-bend lift constants (Tier 3 #77). A `kind: 'drop_bend'`
+// annotation is the trade convention for "the tube dips slightly
+// out of plane here so it can drop behind the substrate at a sharp
+// angle the bender flames specifically." Visually distinct from a
+// jump: a drop is a *subtle* dip, not a clear horseshoe.
+//
+//   HEIGHT = 0.5 × diameter (≈ 6 mm of lift on a 12 mm spec). One
+//     fifth of a jump's HEIGHT so the two read distinctly side by
+//     side in the same preview.
+//   SPAN   = 4.0 × diameter — same falloff width as a jump, so a
+//     drop's kernel shape matches a jump's. Different HEIGHT, same
+//     "raised-cosine bump" silhouette.
+//
+// No cluster threshold for drops: drops are vertex-specific bend
+// callouts (not crossing entry/exit pairs), so two adjacent drops
+// should read as two separate dips, not a plateau. Drop-bends ALSO
+// do not cluster with jumps — they're a different geometric
+// semantic and live in their own lift kernel input array.
+//
+// Composition: when a polyline carries both jump and drop-bend
+// annotations, the final Z at each point is `max(jumpLift, dropLift)`,
+// not the sum. A jump and a drop at the same vertex thus render as
+// "jump wins" (taller) rather than 3× height. This matches user
+// mental model: kinds are stacked semantically, not additively.
+export const DROP_BEND_LIFT_HEIGHT_MULT = 0.5;
+export const DROP_BEND_LIFT_SPAN_MULT = 4.0;
+
 /**
- * Pure helper for the Tier 3 #68 jump-lift feature. Returns 3D points
- * with Z lifted by a tabletop kernel centered on each cluster of
- * jumps in the segment.
+ * Pure helper for the Tier 3 #68 jump-lift + Tier 3 #77 drop-bend
+ * feature. Returns 3D points with Z lifted by a tabletop kernel
+ * centered on each jump cluster, then max-composed with the drop-bend
+ * kernel centered on each drop-bend point.
  *
  * Distance is **arc length** along the polyline (sum of segment
  * lengths from the point to the cluster's bounds), NOT Euclidean —
  * so the lift follows the tube's path even around tight corners.
  *
- * Clustering: any two jumps whose arc-distance is less than
- * `JUMP_LIFT_CLUSTER_GAP_MULT × diameter` collapse into a single
- * cluster. The cluster's plateau region runs from the leftmost to
- * the rightmost jump; points inside the plateau lift to full HEIGHT,
- * points within `halfSpan` outside the plateau cosine-fall toward 0,
- * and points beyond stay at Z=0. This matches user mental model
- * (mark entry + exit of a crossing → one continuous bridge over
- * the obstacle, not two peaks with a valley between).
+ * **Jumps** (`jumpIndicesInSegment`):
+ *   Any two jumps whose arc-distance is less than
+ *   `JUMP_LIFT_CLUSTER_GAP_MULT × diameter` collapse into a single
+ *   cluster. The cluster's plateau region runs from the leftmost to
+ *   the rightmost jump; points inside the plateau lift to full HEIGHT
+ *   (`JUMP_LIFT_HEIGHT_MULT × diameter`), points within `halfSpan`
+ *   outside the plateau cosine-fall toward 0, and points beyond stay
+ *   at Z=0. This matches user mental model (mark entry + exit of a
+ *   crossing → one continuous bridge over the obstacle, not two
+ *   peaks with a valley between). A single-jump cluster has start ===
+ *   end, so the plateau is a single point and the kernel reduces to
+ *   the classic raised-cosine.
  *
- * A single-jump cluster has start === end, so the plateau is a
- * single point and the kernel reduces to the classic raised-cosine.
+ * **Drop-bends** (`dropBendIndicesInSegment`, Tier 3 #77):
+ *   No clustering — drop-bends are vertex-specific bend callouts and
+ *   should read as independent dips. Each drop-bend lifts the local
+ *   neighborhood by `DROP_BEND_LIFT_HEIGHT_MULT × diameter` (0.5× —
+ *   one fifth of a jump's height) with the same raised-cosine falloff
+ *   over `DROP_BEND_LIFT_SPAN_MULT × diameter`. Drop-bends are
+ *   **deliberately not clustered with jumps**: they're a different
+ *   geometric semantic, so a jump-adjacent-to-drop renders as the
+ *   jump's full horseshoe plus a separate subtle dip — not merged.
  *
- * Empty `jumpIndicesInSegment`, zero diameter, or single-point
- * polylines all short-circuit to the unlifted (Z=0) form.
+ * **Composition**: when a polyline carries both kinds the final Z is
+ * `max(jumpLift, dropLift)` per point, not the sum. A jump and a
+ * drop at the same vertex thus render as "jump wins" (taller) rather
+ * than 3× height. This matches user mental model: kinds are stacked
+ * semantically, not additively.
+ *
+ * Empty index arrays, zero diameter, or single-point polylines all
+ * short-circuit to the unlifted (Z=0) form.
  */
 export function liftPointsAtJumps(
   points: ReadonlyArray<readonly [number, number]>,
   jumpIndicesInSegment: ReadonlyArray<number>,
   diameterMM: number,
+  dropBendIndicesInSegment: ReadonlyArray<number> = [],
 ): [number, number, number][] {
   if (
     points.length === 0 ||
-    jumpIndicesInSegment.length === 0 ||
+    (jumpIndicesInSegment.length === 0 && dropBendIndicesInSegment.length === 0) ||
     diameterMM <= 0
   ) {
     return points.map(([x, y]) => [x, y, 0]);
   }
-  const span = JUMP_LIFT_SPAN_MULT * diameterMM;
-  const halfSpan = span / 2;
-  const height = JUMP_LIFT_HEIGHT_MULT * diameterMM;
+  const jumpSpan = JUMP_LIFT_SPAN_MULT * diameterMM;
+  const jumpHalfSpan = jumpSpan / 2;
+  const jumpHeight = JUMP_LIFT_HEIGHT_MULT * diameterMM;
   const clusterGap = JUMP_LIFT_CLUSTER_GAP_MULT * diameterMM;
+
+  const dropSpan = DROP_BEND_LIFT_SPAN_MULT * diameterMM;
+  const dropHalfSpan = dropSpan / 2;
+  const dropHeight = DROP_BEND_LIFT_HEIGHT_MULT * diameterMM;
 
   // Cumulative arc length from index 0 to index i.
   const arcAt: number[] = [0];
@@ -123,38 +173,62 @@ export function liftPointsAtJumps(
   for (const j of jumpIndicesInSegment) {
     if (j >= 0 && j < points.length) jumpArcs.push(arcAt[j]);
   }
-  if (jumpArcs.length === 0) {
-    return points.map(([x, y]) => [x, y, 0]);
-  }
   jumpArcs.sort((a, b) => a - b);
 
   // Cluster jumps whose gap is below the threshold into one tabletop.
-  const clusters: { start: number; end: number }[] = [];
+  // Drop-bends are explicitly excluded from clustering — they live in
+  // their own kernel pass and never merge with jumps.
+  const jumpClusters: { start: number; end: number }[] = [];
   for (const ja of jumpArcs) {
-    const last = clusters[clusters.length - 1];
+    const last = jumpClusters[jumpClusters.length - 1];
     if (last && ja - last.end <= clusterGap) {
       last.end = ja;
     } else {
-      clusters.push({ start: ja, end: ja });
+      jumpClusters.push({ start: ja, end: ja });
     }
+  }
+
+  // Drop-bends: single-point kernels, no clustering.
+  const dropArcs: number[] = [];
+  for (const di of dropBendIndicesInSegment) {
+    if (di >= 0 && di < points.length) dropArcs.push(arcAt[di]);
+  }
+
+  if (jumpClusters.length === 0 && dropArcs.length === 0) {
+    return points.map(([x, y]) => [x, y, 0]);
   }
 
   return points.map(([x, y], i) => {
     const arc = arcAt[i];
     let z = 0;
-    for (const c of clusters) {
+    // Jump clusters (tabletop plateaus).
+    for (const c of jumpClusters) {
       let d: number;
       if (arc < c.start) d = c.start - arc;
       else if (arc > c.end) d = arc - c.end;
-      else d = 0; // inside the plateau between two clustered jumps
-      if (d >= halfSpan) continue;
+      else d = 0;
+      if (d >= jumpHalfSpan) continue;
       let lift: number;
       if (d === 0) {
-        lift = height;
+        lift = jumpHeight;
       } else {
-        const k = (d / halfSpan) * (Math.PI / 2);
+        const k = (d / jumpHalfSpan) * (Math.PI / 2);
         const cosine = Math.cos(k);
-        lift = height * cosine * cosine;
+        lift = jumpHeight * cosine * cosine;
+      }
+      if (lift > z) z = lift;
+    }
+    // Drop-bends (independent raised-cosine bumps, max-composed).
+    for (const da of dropArcs) {
+      const d = Math.abs(arc - da);
+      if (d >= dropHalfSpan) continue;
+      let lift: number;
+      if (d === 0) {
+        lift = dropHeight;
+      } else {
+        const k = (d / dropHalfSpan) * (Math.PI / 2);
+        const cosine = Math.cos(k);
+        lift = dropHeight * cosine * cosine;
       }
       if (lift > z) z = lift;
     }

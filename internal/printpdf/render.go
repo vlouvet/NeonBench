@@ -708,6 +708,32 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 			}
 			y += 2
 		}
+		// Tier 3 #77 — special-bend callouts. JUMP and DROP entries
+		// emit one row per annotation, ordered by arc length so the
+		// bender encounters them in the same order they walk the tube.
+		// Distinct kinds (vs. the auto-detected geometric bends above)
+		// because the bender needs to plan flame technique differently
+		// for a horseshoe lift over an obstacle vs. a localized drop
+		// behind the substrate. Skipped silently when the run carries
+		// no jump or drop annotations.
+		if specials := specialBendsForRun(run); len(specials) > 0 {
+			pdf.SetFont("Helvetica", "B", 9)
+			pdf.Text(mx+4, y, "Special bends:")
+			y += 5
+			pdf.SetFont("Helvetica", "", 9)
+			for _, s := range specials {
+				line := fmt.Sprintf("  %s.%s   arc %6.1fmm   %s",
+					shortRunID(run.ID), s.tag, s.arcMM, s.label)
+				pdf.Text(mx+4, y, line)
+				y += 5
+				// Page break inside the special-bend list too.
+				if y > opts.Paper.HeightMM-mx-15 {
+					pdf.AddPage()
+					y = mx + 8
+				}
+			}
+			y += 2
+		}
 		// Tier 3 #62 — per-run "Housings" subsection. Lists every
 		// electrode that has a configured housing (HousingType != "")
 		// with its bore diameter and mounting elevation. Skipped when
@@ -729,6 +755,96 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 			pdf.AddPage()
 			y = mx + 8
 		}
+	}
+}
+
+// specialBend is one "JUMP" or "DROP" entry in the bend-list summary.
+// Tier 3 #77 — distinct from the geometric bends (which the bender
+// produces by heating-and-shaping the existing tube curve) because
+// these are operator-authored callouts the bender must actively
+// flame in. Sorted by ArcLengthMM so the bender walks the tube in
+// physical order on the shop floor.
+type specialBend struct {
+	tag    string  // short code printed in the row (e.g. "J1", "D2")
+	label  string  // human-readable kind: "JUMP" or "DROP"
+	arcMM  float64 // arc length from the start of the live arc
+}
+
+// specialBendsForRun returns the JUMP and DROP annotations on a run,
+// ordered by arc length along the live arc. Returns nil when the run
+// carries no jump or drop_bend annotations so the caller can elide the
+// "Special bends:" subsection entirely.
+//
+// Out-of-range LiveIndex values are silently dropped (defensive — the
+// editor and storage validation should already prevent it). The arc-
+// length walk mirrors EffectiveBends' logic: sum Euclidean distances
+// between consecutive live-arc points.
+func specialBendsForRun(run designdoc.Run) []specialBend {
+	if len(run.Annotations) == 0 {
+		return nil
+	}
+	liveIdx, _ := designdoc.LiveArcIndices(run)
+	n := len(liveIdx)
+	if n < 2 {
+		return nil
+	}
+	// arcAt[i] = cumulative arc length from live-arc point 0 to i.
+	arcAt := make([]float64, n)
+	pts := run.Polyline.Points
+	for i := 1; i < n; i++ {
+		a := pts[liveIdx[i-1]]
+		b := pts[liveIdx[i]]
+		dx := b[0] - a[0]
+		dy := b[1] - a[1]
+		arcAt[i] = arcAt[i-1] + math.Hypot(dx, dy)
+	}
+	var out []specialBend
+	var jumpCount, dropCount int
+	for _, a := range run.Annotations {
+		if a.LiveIndex < 0 || a.LiveIndex >= n {
+			continue
+		}
+		switch a.Kind {
+		case "jump":
+			jumpCount++
+			out = append(out, specialBend{
+				tag:   fmt.Sprintf("J%d", jumpCount),
+				label: "JUMP",
+				arcMM: arcAt[a.LiveIndex],
+			})
+		case "drop_bend":
+			dropCount++
+			out = append(out, specialBend{
+				tag:   fmt.Sprintf("D%d", dropCount),
+				label: "DROP",
+				arcMM: arcAt[a.LiveIndex],
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	// Sort by arc length so the bender walks the tube in physical
+	// order. Stable sort keeps J1/J2/... and D1/D2/... numbering
+	// monotonic when two annotations land at the same arc position.
+	sortSpecials(out)
+	return out
+}
+
+// sortSpecials sorts specials by ArcLengthMM ascending; stable on
+// equal-arc-length to keep J1 < J2 / D1 < D2 numbering monotonic.
+// Implemented as an insertion sort because annotation counts are tiny
+// (typically < 10 per run) and avoiding a sort.Slice import keeps the
+// dependency surface lean.
+func sortSpecials(s []specialBend) {
+	for i := 1; i < len(s); i++ {
+		v := s[i]
+		j := i - 1
+		for j >= 0 && s[j].arcMM > v.arcMM {
+			s[j+1] = s[j]
+			j--
+		}
+		s[j+1] = v
 	}
 }
 

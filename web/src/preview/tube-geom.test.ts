@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type * as THREE from 'three';
 import {
+  DROP_BEND_LIFT_HEIGHT_MULT,
+  DROP_BEND_LIFT_SPAN_MULT,
   JUMP_LIFT_HEIGHT_MULT,
   JUMP_LIFT_SPAN_MULT,
   liftPointsAtJumps,
@@ -249,5 +251,130 @@ describe('liftPointsAtJumps', () => {
 
   it('returns an empty array for an empty input polyline', () => {
     expect(liftPointsAtJumps([], [5], D)).toEqual([]);
+  });
+});
+
+// Tier 3 #77 — drop-bend annotations lift the tube subtly out of
+// plane (0.5× diameter vs 2.5× for jumps), with the same raised-
+// cosine kernel but a different HEIGHT_MULT. Drop-bends do not
+// cluster with jumps; composition is max() per point.
+describe('liftPointsAtJumps — drop-bend kernel (Tier 3 #77)', () => {
+  const D = 12;
+  const DROP_HEIGHT = DROP_BEND_LIFT_HEIGHT_MULT * D; // 6 mm on a 12-mm tube
+  const JUMP_HEIGHT = JUMP_LIFT_HEIGHT_MULT * D; // 30 mm
+  const DROP_HALF_SPAN = (DROP_BEND_LIFT_SPAN_MULT * D) / 2; // 24 mm
+
+  const linePoints = (count: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i < count; i++) out.push([i, 0]);
+    return out;
+  };
+
+  it('lifts a drop-bend point to 0.5× diameter (not the jump height)', () => {
+    const pts = linePoints(60);
+    const dropIdx = 30;
+    const lifted = liftPointsAtJumps(pts, [], D, [dropIdx]);
+    expect(lifted[dropIdx][2]).toBeCloseTo(DROP_HEIGHT, 6);
+    // Sanity: the lift must NOT equal the jump height. Drop bends
+    // are subtle dips, not horseshoes.
+    expect(lifted[dropIdx][2]).toBeLessThan(JUMP_HEIGHT);
+  });
+
+  it('falls smoothly to zero at half-span', () => {
+    const pts = linePoints(60);
+    const dropIdx = 30;
+    const lifted = liftPointsAtJumps(pts, [], D, [dropIdx]);
+    // Mid-falloff: non-zero, below peak.
+    const halfwayIdx = dropIdx + Math.floor(DROP_HALF_SPAN / 2);
+    expect(lifted[halfwayIdx][2]).toBeGreaterThan(0);
+    expect(lifted[halfwayIdx][2]).toBeLessThan(DROP_HEIGHT);
+    // Beyond the half-span: identically zero.
+    const farIdx = dropIdx + Math.ceil(DROP_HALF_SPAN);
+    if (farIdx < pts.length) {
+      expect(lifted[farIdx][2]).toBe(0);
+    }
+  });
+
+  it('does NOT cluster with jumps even when adjacent', () => {
+    // Place a jump and a drop within the jump-cluster gap (cluster
+    // gap = 48 mm). If drop-bends clustered with jumps as a SAME-KIND
+    // pair, every point in the interval [jumpIdx, dropIdx] would
+    // lift to FULL jump HEIGHT (plateau at 30 mm). Spec is the
+    // opposite: drop-bends are a separate semantic, so the kernel
+    // between them follows the jump-cosine FALLOFF (decreasing away
+    // from jumpIdx) rather than holding at full jump height. The
+    // jump's lift dominates here because its tail (cosine over a
+    // 24 mm half-span) is taller than the drop's own peak (6 mm),
+    // but the falloff shape proves the two kinds didn't merge.
+    const pts = linePoints(60);
+    const jumpIdx = 20;
+    const dropIdx = 30; // 10 mm away, would have clustered if same-kind
+    const lifted = liftPointsAtJumps(pts, [jumpIdx], D, [dropIdx]);
+    expect(lifted[jumpIdx][2]).toBeCloseTo(JUMP_HEIGHT, 6);
+    // No plateau: the value at dropIdx is the jump cosine at d=10mm
+    // (a fraction of JUMP_HEIGHT), STRICTLY less than JUMP_HEIGHT.
+    // If the kinds had merged into a same-kind cluster, dropIdx
+    // would equal JUMP_HEIGHT.
+    expect(lifted[dropIdx][2]).toBeLessThan(JUMP_HEIGHT);
+    // It's also at least DROP_HEIGHT (the drop's own peak is part
+    // of the max composition).
+    expect(lifted[dropIdx][2]).toBeGreaterThanOrEqual(DROP_HEIGHT);
+    // Midpoint between jump and drop: same cosine-falloff regime,
+    // strictly below JUMP_HEIGHT (no plateau).
+    const midIdx = 25;
+    expect(lifted[midIdx][2]).toBeLessThan(JUMP_HEIGHT);
+    expect(lifted[midIdx][2]).toBeGreaterThan(0);
+  });
+
+  it('isolated drop-bend reaches its full DROP_HEIGHT (no jump interference)', () => {
+    // The "does NOT cluster" test verifies the geometric semantic
+    // when both kinds are present; this companion test confirms
+    // that a drop-bend's peak does hit DROP_HEIGHT when no jump is
+    // overshadowing it. Together the two assertions prove the
+    // drop-bend kernel is a real, independent contribution to the
+    // max composition (not a no-op).
+    const pts = linePoints(40);
+    const dropIdx = 20;
+    const lifted = liftPointsAtJumps(pts, [], D, [dropIdx]);
+    expect(lifted[dropIdx][2]).toBeCloseTo(DROP_HEIGHT, 6);
+  });
+
+  it('composes via max() at a coincident jump + drop vertex (jump wins)', () => {
+    // When both annotations land on the same vertex, the final lift
+    // is the JUMP height (taller), not the sum. Operator-friendly:
+    // a jump-with-an-incidental-drop reads as a clear horseshoe.
+    const pts = linePoints(40);
+    const sharedIdx = 20;
+    const lifted = liftPointsAtJumps(pts, [sharedIdx], D, [sharedIdx]);
+    expect(lifted[sharedIdx][2]).toBeCloseTo(JUMP_HEIGHT, 6);
+    // Not 2.5× + 0.5× = 3× diameter.
+    expect(lifted[sharedIdx][2]).toBeLessThan(JUMP_HEIGHT + DROP_HEIGHT - 0.1);
+  });
+
+  it('returns Z=0 everywhere when both index arrays are empty', () => {
+    const lifted = liftPointsAtJumps(linePoints(10), [], D, []);
+    for (const [, , z] of lifted) expect(z).toBe(0);
+  });
+
+  it('returns Z=0 everywhere when diameter is zero', () => {
+    const lifted = liftPointsAtJumps(linePoints(10), [], 0, [5]);
+    for (const [, , z] of lifted) expect(z).toBe(0);
+  });
+
+  it('silently skips out-of-range drop-bend indices', () => {
+    const pts = linePoints(10);
+    const lifted = liftPointsAtJumps(pts, [], D, [-1, 999]);
+    for (const [, , z] of lifted) expect(z).toBe(0);
+  });
+
+  it('produces independent dips for two drop-bends far apart', () => {
+    const pts = linePoints(120);
+    const d1 = 30;
+    const d2 = 90; // > 2 × half-span apart
+    const lifted = liftPointsAtJumps(pts, [], D, [d1, d2]);
+    expect(lifted[d1][2]).toBeCloseTo(DROP_HEIGHT, 6);
+    expect(lifted[d2][2]).toBeCloseTo(DROP_HEIGHT, 6);
+    // Halfway between: outside both half-spans, identically zero.
+    expect(lifted[60][2]).toBe(0);
   });
 });
