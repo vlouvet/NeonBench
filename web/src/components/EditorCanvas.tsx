@@ -58,6 +58,12 @@ type StagedBlockout = { runId: string; liveIndex: number };
 const MIN_SCALE = 0.05;
 const MAX_SCALE = 200;
 
+// feat-editor-scale-handles — resize handle size (screen px, divided by the
+// zoom so it stays constant on screen) and the smallest the selection bbox may
+// be scaled to on either axis (mm), to avoid collapsing a run to a point.
+const RESIZE_HANDLE_PX = 9;
+const MIN_RESIZE_MM = 2;
+
 export default function EditorCanvas({
   doc,
   tool,
@@ -79,6 +85,7 @@ export default function EditorCanvas({
   onDeleteDimension,
   onMoveVertex,
   onMoveVertices,
+  onScaleRuns,
   onMergeVertices,
   onDeleteVertex,
   onInsertVertex,
@@ -167,6 +174,11 @@ export default function EditorCanvas({
   // single-vertex `onMoveVertex` path so the existing tests don't
   // need re-wiring.
   onMoveVertices: (runId: string, writes: { pointIndex: number; x: number; y: number }[]) => void;
+  // feat-editor-scale-handles — drag-to-resize. The canvas scales every
+  // selected run about a shared anchor (from a drag snapshot) and submits the
+  // absolute new points for each run as one batch; editDoc coalesces the live
+  // drag into a single undo entry.
+  onScaleRuns: (updates: { runId: string; points: [number, number][] }[]) => void;
   // Tier 3 #48 — vertex-merge on drop. Surfaced when a node-edit drag
   // releases inside the snap-to-vertex radius of another vertex on the
   // same run. The canvas picks `keepIndex` (the un-dragged target) and
@@ -400,6 +412,21 @@ export default function EditorCanvas({
   } | null>(null);
   const [connectHover, setConnectHover] = useState<[number, number] | null>(null);
   const dragRef = useRef<{ startX: number; startY: number; tx: number; ty: number; moved: boolean } | null>(null);
+
+  // feat-editor-scale-handles — in-progress resize gesture. Holds the anchor
+  // (the fixed opposite corner/edge), the dragged handle's original world
+  // position, which axes scale, and a snapshot of every selected run's points
+  // so each move scales from the original geometry (no compounding).
+  const resizeDragRef = useRef<{
+    anchorX: number;
+    anchorY: number;
+    handleX0: number;
+    handleY0: number;
+    scaleX: boolean;
+    scaleY: boolean;
+    uniform: boolean;
+    snapshots: Map<string, [number, number][]>;
+  } | null>(null);
 
   // Tier 3 #48 — vertex drag dispatch. The NodeHandle's `onMove`
   // callback routes through here so a single-vertex drag still goes
@@ -1608,6 +1635,134 @@ export default function EditorCanvas({
     return bestId;
   }
 
+  // feat-editor-scale-handles — axis-aligned bbox of the current selection
+  // (Select tool, ≥1 run). null when there's nothing to resize or the
+  // selection is too thin on an axis (resizing it would divide by zero).
+  const selectionResizeBox = useMemo(() => {
+    if (tool !== 'select' || selectedRunIds.length === 0) return null;
+    const ids = new Set(selectedRunIds);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const run of doc.runs) {
+      if (!ids.has(run.id)) continue;
+      for (const [x, y] of run.polyline.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    if (!Number.isFinite(minX)) return null;
+    if (maxX - minX < MIN_RESIZE_MM || maxY - minY < MIN_RESIZE_MM) return null;
+    return { minX, minY, maxX, maxY };
+  }, [doc.runs, selectedRunIds, tool]);
+
+  // The 8 handles for a box: corners scale both axes, edge midpoints one. Each
+  // carries its world position, the fixed anchor (opposite corner/edge), which
+  // axes it scales, and a resize cursor.
+  function resizeHandlesFor(box: {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+  }) {
+    const { minX, minY, maxX, maxY } = box;
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    return [
+      { id: 'nw', x: minX, y: minY, ax: maxX, ay: maxY, sx: true, sy: true, cursor: 'nwse-resize' },
+      { id: 'n', x: cx, y: minY, ax: cx, ay: maxY, sx: false, sy: true, cursor: 'ns-resize' },
+      { id: 'ne', x: maxX, y: minY, ax: minX, ay: maxY, sx: true, sy: true, cursor: 'nesw-resize' },
+      { id: 'e', x: maxX, y: cy, ax: minX, ay: cy, sx: true, sy: false, cursor: 'ew-resize' },
+      { id: 'se', x: maxX, y: maxY, ax: minX, ay: minY, sx: true, sy: true, cursor: 'nwse-resize' },
+      { id: 's', x: cx, y: maxY, ax: cx, ay: minY, sx: false, sy: true, cursor: 'ns-resize' },
+      { id: 'sw', x: minX, y: maxY, ax: maxX, ay: minY, sx: true, sy: true, cursor: 'nesw-resize' },
+      { id: 'w', x: minX, y: cy, ax: maxX, ay: cy, sx: true, sy: false, cursor: 'ew-resize' },
+    ] as const;
+  }
+
+  function beginResize(
+    e: React.PointerEvent<SVGRectElement>,
+    handle: { x: number; y: number; ax: number; ay: number; sx: boolean; sy: boolean },
+  ) {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // a handle press must not start a canvas pan
+    const ids = new Set(selectedRunIds);
+    const snapshots = new Map<string, [number, number][]>();
+    for (const run of doc.runs) {
+      if (!ids.has(run.id)) continue;
+      snapshots.set(
+        run.id,
+        run.polyline.points.map((p) => [p[0], p[1]] as [number, number]),
+      );
+    }
+    if (snapshots.size === 0) return;
+    resizeDragRef.current = {
+      anchorX: handle.ax,
+      anchorY: handle.ay,
+      handleX0: handle.x,
+      handleY0: handle.y,
+      scaleX: handle.sx,
+      scaleY: handle.sy,
+      uniform: e.shiftKey && handle.sx && handle.sy,
+      snapshots,
+    };
+    try {
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    } catch {
+      // Non-capturable pointer (rare) — the drag still works via the handle's
+      // own move/up handlers; capture just keeps it smooth if the cursor
+      // leaves the handle.
+    }
+  }
+
+  function onResizeMove(e: React.PointerEvent<SVGRectElement>) {
+    const drag = resizeDragRef.current;
+    if (!drag) return;
+    const w = clientToWorld(e.clientX, e.clientY);
+    if (!w) return;
+    const [wx, wy] = w;
+    const denomX = drag.handleX0 - drag.anchorX;
+    const denomY = drag.handleY0 - drag.anchorY;
+    let sx = drag.scaleX && Math.abs(denomX) > 1e-6 ? (wx - drag.anchorX) / denomX : 1;
+    let sy = drag.scaleY && Math.abs(denomY) > 1e-6 ? (wy - drag.anchorY) / denomY : 1;
+    // Min-size + no-flip clamp: the factor stays at/above a small positive
+    // floor so a run can't collapse or mirror.
+    if (drag.scaleX) sx = Math.max(sx, MIN_RESIZE_MM / Math.abs(denomX));
+    if (drag.scaleY) sy = Math.max(sy, MIN_RESIZE_MM / Math.abs(denomY));
+    if (drag.uniform) {
+      const s = Math.max(sx, sy);
+      sx = s;
+      sy = s;
+    }
+    const updates: { runId: string; points: [number, number][] }[] = [];
+    for (const [runId, pts] of drag.snapshots) {
+      updates.push({
+        runId,
+        points: pts.map(
+          ([x, y]) =>
+            [drag.anchorX + (x - drag.anchorX) * sx, drag.anchorY + (y - drag.anchorY) * sy] as [
+              number,
+              number,
+            ],
+        ),
+      });
+    }
+    onScaleRuns(updates);
+  }
+
+  function endResize(e: React.PointerEvent<SVGRectElement>) {
+    if (!resizeDragRef.current) return;
+    resizeDragRef.current = null;
+    try {
+      (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+    } catch {
+      // pointer already released — ignore
+    }
+  }
+
   return (
     <div ref={containerRef} className={`editor-canvas tool-${tool}`}>
       <svg
@@ -2411,6 +2566,46 @@ export default function EditorCanvas({
               onHoverLeave={() => onIssueHover?.(null)}
             />
           ))}
+          {/* feat-editor-scale-handles — selection bbox + drag-to-resize
+              handles. The outer group is pointer-transparent so clicks inside
+              the box still reach the geometry; each handle re-enables pointer
+              events for its own drag. Sizes divide by the zoom so the chrome
+              stays a constant screen size. */}
+          {selectionResizeBox && (
+            <g className="resize-overlay" pointerEvents="none">
+              <rect
+                x={selectionResizeBox.minX}
+                y={selectionResizeBox.minY}
+                width={selectionResizeBox.maxX - selectionResizeBox.minX}
+                height={selectionResizeBox.maxY - selectionResizeBox.minY}
+                fill="none"
+                stroke="#3b82f6"
+                strokeWidth={1 / transform.k}
+                strokeDasharray={`${4 / transform.k} ${3 / transform.k}`}
+              />
+              {resizeHandlesFor(selectionResizeBox).map((h) => {
+                const s = RESIZE_HANDLE_PX / transform.k;
+                return (
+                  <rect
+                    key={h.id}
+                    x={h.x - s / 2}
+                    y={h.y - s / 2}
+                    width={s}
+                    height={s}
+                    fill="#ffffff"
+                    stroke="#3b82f6"
+                    strokeWidth={1 / transform.k}
+                    style={{ cursor: h.cursor }}
+                    pointerEvents="all"
+                    onPointerDown={(e) => beginResize(e, h)}
+                    onPointerMove={onResizeMove}
+                    onPointerUp={endResize}
+                    onPointerCancel={endResize}
+                  />
+                );
+              })}
+            </g>
+          )}
         </g>
       </svg>
       <div className="canvas-toolbar">

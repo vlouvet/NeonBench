@@ -2582,3 +2582,50 @@ describe('renameLegacyRunIds', () => {
     expect(next.runs[0].notes).toBe('15kV');
   });
 });
+
+describe('scale ops (resize handles)', () => {
+  it('scalePoints scales about the origin anchor', () => {
+    const out = ops.scalePoints(
+      [
+        [0, 0],
+        [10, 0],
+        [10, 10],
+      ],
+      2,
+      3,
+      0,
+      0,
+    );
+    expect(out).toEqual([
+      [0, 0],
+      [20, 0],
+      [20, 30],
+    ]);
+  });
+
+  it('scalePoints keeps the anchor fixed and supports non-uniform scale', () => {
+    const anchor: [number, number] = [10, 10];
+    const out = ops.scalePoints([[10, 10], [20, 10], [10, 30]], 2, 0.5, anchor[0], anchor[1]);
+    expect(out[0]).toEqual([10, 10]); // anchor unmoved
+    expect(out[1]).toEqual([30, 10]); // x: 10 + (20-10)*2
+    expect(out[2]).toEqual([10, 20]); // y: 10 + (30-10)*0.5
+  });
+
+  it('setRunsPoints replaces only the named runs, leaving others untouched', () => {
+    const doc = makeDoc();
+    const newPts: [number, number][] = [
+      [1, 1],
+      [2, 2],
+    ];
+    const next = ops.setRunsPoints(doc, [{ runId: 'run-1', points: newPts }]);
+    expect(next.runs[0].polyline.points).toEqual(newPts);
+    expect(next.runs[1]).toBe(doc.runs[1]); // run-2 reference unchanged
+    expect(next).not.toBe(doc);
+  });
+
+  it('setRunsPoints is a no-op for unknown run ids', () => {
+    const doc = makeDoc();
+    expect(ops.setRunsPoints(doc, [{ runId: 'nope', points: [[0, 0]] }])).toBe(doc);
+    expect(ops.setRunsPoints(doc, [])).toBe(doc);
+  });
+});

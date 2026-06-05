@@ -2341,3 +2341,42 @@ export function setGroupLocked(
   next[idx] = replacement;
   return { ...doc, groups: next };
 }
+
+// scalePoints scales a list of points about an anchor: p' = anchor + (p -
+// anchor) * s. Used by the editor's drag-to-resize handles (feat-editor-scale-
+// handles). Pure and stateless so the canvas can scale from a drag snapshot.
+export function scalePoints(
+  points: [number, number][],
+  sx: number,
+  sy: number,
+  anchorX: number,
+  anchorY: number,
+): [number, number][] {
+  return points.map(([x, y]) => [
+    anchorX + (x - anchorX) * sx,
+    anchorY + (y - anchorY) * sy,
+  ]);
+}
+
+// setRunsPoints replaces the polyline points of one or more runs in a single
+// new doc — used by the resize-handle drag, which scales every selected run
+// about a shared anchor and commits them together (one undo step via the
+// editDoc coalescing). Electrodes / bends / blockouts reference point indices,
+// not coordinates, so they follow the moved points without extra work. Runs
+// not in `updates`, and unknown run ids, are left untouched.
+export function setRunsPoints(
+  doc: DesignDoc,
+  updates: { runId: string; points: [number, number][] }[],
+): DesignDoc {
+  if (updates.length === 0) return doc;
+  const byId = new Map(updates.map((u) => [u.runId, u.points]));
+  let changed = false;
+  const nextRuns = doc.runs.map((r) => {
+    const pts = byId.get(r.id);
+    if (!pts) return r;
+    changed = true;
+    return { ...r, polyline: { ...r.polyline, points: pts } };
+  });
+  if (!changed) return doc;
+  return { ...doc, runs: nextRuns };
+}
