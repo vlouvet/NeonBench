@@ -669,6 +669,13 @@ export default function ProjectDetail() {
                 >
                   3D preview
                 </Link>
+                <Link
+                  to={`/projects/${projectId}/versions/${v.id}/estimate`}
+                  className="btn-secondary"
+                  title={`Quantity takeoff and estimate for v${v.version_no}`}
+                >
+                  Estimate
+                </Link>
                 <VersionLabelEditor
                   version={v}
                   projectId={projectId}

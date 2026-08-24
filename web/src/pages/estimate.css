@@ -1,0 +1,168 @@
+/* Estimate route styles.
+ *
+ * Scoped to its own file rather than added to App.css: two open PRs are
+ * editing App.css concurrently, and this feature has no reason to collide
+ * with either of them.
+ */
+
+.est-page {
+  padding: 1rem;
+  max-width: 72rem;
+}
+
+.est-muted {
+  color: var(--text-muted, #888);
+  font-size: 0.85rem;
+}
+
+/* The provisional banner. An estimate missing its most expensive line must not
+ * be distinguishable from a complete one only by a number someone has to
+ * notice, so this is loud on purpose. */
+.est-banner {
+  border: 1px solid #c87800;
+  background: #fff3e0;
+  color: #663c00;
+  padding: 0.6rem 0.8rem;
+  border-radius: 4px;
+  margin: 0.75rem 0;
+  line-height: 1.4;
+}
+
+.est-quantities {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.25rem 1.5rem;
+  margin: 0.5rem 0 1rem;
+}
+
+.est-quantities > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px dotted var(--border, #ddd);
+  padding: 0.2rem 0;
+}
+
+.est-quantities dt {
+  color: var(--text-muted, #666);
+}
+
+.est-quantities dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.est-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.est-table th,
+.est-table td {
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border, #eee);
+  text-align: left;
+  vertical-align: top;
+}
+
+.est-table th {
+  font-weight: 600;
+  border-bottom-width: 2px;
+}
+
+.est-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* An unpriced line is tinted and its cells say so in words. A dash alone
+ * reads as "no charge" at a glance. */
+.est-row-unpriced {
+  background: #fff8e7;
+}
+
+.est-unpriced {
+  color: #a35c00;
+  font-style: italic;
+}
+
+.est-chip {
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: var(--border, #eee);
+  color: var(--text-muted, #666);
+  font-size: 0.72rem;
+}
+
+.est-totals {
+  margin: 1rem 0;
+  max-width: 26rem;
+  margin-left: auto;
+}
+
+.est-total-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 2rem;
+  padding: 0.2rem 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.est-total-big {
+  font-size: 1.25rem;
+  border-top: 2px solid var(--border, #ccc);
+  padding-top: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.est-scalars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.6rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.est-scalar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.82rem;
+}
+
+.est-scalar input {
+  padding: 0.25rem 0.35rem;
+}
+
+.est-input-sm {
+  width: 6.5rem;
+  padding: 0.15rem 0.3rem;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.est-ratecard {
+  border: 1px solid var(--border, #ddd);
+  border-radius: 4px;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.est-ratecard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.est-card-picker {
+  font-size: 0.85rem;
+}
+
+.est-note {
+  font-size: 0.82rem;
+  color: var(--text-muted, #666);
+  line-height: 1.45;
+  max-width: 46rem;
+}
