@@ -10,9 +10,9 @@ import (
 )
 
 type createDesignVersionFromDocReq struct {
-	BasedOnVID int64          `json:"based_on_vid,omitempty"`
-	Label      string         `json:"label,omitempty"`
-	Doc        designdoc.Doc  `json:"design_doc"`
+	BasedOnVID int64         `json:"based_on_vid,omitempty"`
+	Label      string        `json:"label,omitempty"`
+	Doc        designdoc.Doc `json:"design_doc"`
 }
 
 type validateDocReq struct {
