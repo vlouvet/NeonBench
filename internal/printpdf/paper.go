@@ -3,7 +3,7 @@ package printpdf
 // Paper describes a sheet of paper in millimeters (always portrait;
 // orientation is a separate flag at render time).
 type Paper struct {
-	Name             string
+	Name              string
 	WidthMM, HeightMM float64
 }
 

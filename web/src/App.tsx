@@ -4,6 +4,7 @@ import Layout from './components/Layout';
 import ProjectList from './pages/ProjectList';
 import ProjectDetail from './pages/ProjectDetail';
 import EditorPage from './pages/EditorPage';
+import EstimatePage from './pages/EstimatePage';
 import './App.css';
 
 // Tier 3 #57 — code-split the 3D preview route. The preview pulls in
@@ -37,6 +38,11 @@ export default function App() {
           <Route index element={<ProjectList />} />
           <Route path="projects/:id" element={<ProjectDetail />} />
           <Route path="projects/:id/edit/:vid" element={<EditorPage />} />
+          {/* Tier 2 #81 — takeoff + estimate. Its own route rather than an
+            * editor panel: it keeps the feature out of EditorCanvas.tsx and
+            * EditorPage.tsx, and it matches how the work is done — a takeoff
+            * is read when quoting, not while bending. */}
+          <Route path="projects/:id/versions/:vid/estimate" element={<EstimatePage />} />
           {/* Phase 3 #1 — read-only 3D preview route. Currently renders a
             * spinning green wireframe cube placeholder; subsequent Phase 3
             * specs replace the placeholder with extruded tube geometry,

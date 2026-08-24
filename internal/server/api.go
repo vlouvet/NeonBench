@@ -43,6 +43,19 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("POST /api/projects/{id}/design_versions/{vid}/validate", s.handleRevalidate)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.pdf", s.handlePrintPDF)
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/print.dxf", s.handlePrintDXF)
+
+	// Tier 2 #81 — takeoff (quantities, no money) and estimate (quantities x
+	// a rate card). The quote sheet is a separate emitter from print.pdf on
+	// purpose: a pattern goes to the bench and a quote goes to the customer.
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/takeoff", s.handleTakeoff)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/estimate", s.handleEstimate)
+	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/estimate.pdf", s.handleEstimatePDF)
+	mux.HandleFunc("PUT /api/projects/{id}/design_versions/{vid}/estimate_inputs", s.handleUpdateEstimateInputs)
+
+	mux.HandleFunc("GET /api/rate_cards", s.handleListRateCards)
+	mux.HandleFunc("GET /api/rate_cards/{id}", s.handleGetRateCard)
+	mux.HandleFunc("PATCH /api/rate_cards/{id}", s.handlePatchRateCard)
+	mux.HandleFunc("PATCH /api/rate_cards/{id}/items/{iid}", s.handlePatchRateCardItem)
 	// Vector-graphics flavors (Tier 3 #80) — SVG / EPS / AI.
 	// SVG is the rich format (per-run groups, dedicated annotation
 	// layers); EPS is the procedural sibling; AI is EPS-bytes-with-

@@ -28,12 +28,12 @@ const currentBundleSchema = 1
 // Keeps an explicit schema version so future loaders can branch on
 // it without parsing the rest first.
 type bundleManifest struct {
-	Bundle      string             `json:"bundle"`             // "neonbench"
-	Schema      int                `json:"schema"`             // bundle schema version
-	ExportedAt  string             `json:"exported_at"`        // ISO timestamp
-	Project     bundleProject      `json:"project"`
-	TubeSpec    storage.TubeSpec   `json:"tube_spec"`
-	Versions    []bundleVersionRef `json:"versions"`           // newest first
+	Bundle     string             `json:"bundle"`      // "neonbench"
+	Schema     int                `json:"schema"`      // bundle schema version
+	ExportedAt string             `json:"exported_at"` // ISO timestamp
+	Project    bundleProject      `json:"project"`
+	TubeSpec   storage.TubeSpec   `json:"tube_spec"`
+	Versions   []bundleVersionRef `json:"versions"` // newest first
 }
 
 type bundleProject struct {

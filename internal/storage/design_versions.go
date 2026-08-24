@@ -168,3 +168,39 @@ func LatestDesignVersion(ctx context.Context, db *sql.DB, projectID int64) (Desi
 	}
 	return v, nil
 }
+
+// GetEstimateInputs returns the version's saved estimate inputs as raw JSON.
+// An empty string means none have been saved — a brand-new version, or one
+// created before this column existed. Callers treat both identically.
+func GetEstimateInputs(ctx context.Context, db *sql.DB, id int64) (string, error) {
+	var raw sql.NullString
+	err := db.QueryRowContext(ctx,
+		`SELECT estimate_inputs_json FROM design_versions WHERE id = ?`, id).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("get estimate_inputs: %w", err)
+	}
+	return raw.String, nil
+}
+
+// SetEstimateInputs stores the version's estimate inputs. Passing an empty
+// string clears them back to NULL rather than storing "" — an absent input set
+// and an empty one mean the same thing to the estimator, and keeping one
+// representation stops the two drifting apart.
+func SetEstimateInputs(ctx context.Context, db *sql.DB, id int64, raw string) error {
+	var v any
+	if raw != "" {
+		v = raw
+	}
+	res, err := db.ExecContext(ctx,
+		`UPDATE design_versions SET estimate_inputs_json = ? WHERE id = ?`, v, id)
+	if err != nil {
+		return fmt.Errorf("set estimate_inputs: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

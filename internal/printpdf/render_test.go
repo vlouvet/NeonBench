@@ -69,7 +69,7 @@ func TestMakePageProjectorIdentity(t *testing.T) {
 	// Tile at world (10, 20), 100 mm content width, 5 mm margin.
 	proj := makePageProjector(10, 20, 5, 100, false)
 	cases := []struct {
-		x, y     float64
+		x, y         float64
 		wantX, wantY float64
 	}{
 		// At the tile's top-left corner the page coordinate is (margin, margin).

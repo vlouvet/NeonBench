@@ -693,6 +693,51 @@ export const api = {
     versionId: number,
     opts: { mirror?: boolean } = {},
   ) => buildExportURL(projectId, versionId, 'ai', opts),
+
+  // Tier 2 #81 — takeoff + estimate.
+  //
+  // The takeoff carries no rates, so it resolves for a shop that has never
+  // filled in a rate card: "how much 12mm do I order" does not need a price.
+  getTakeoff: (projectId: number, versionId: number, rateCardId?: number) =>
+    req<Takeoff>(
+      `/api/projects/${projectId}/design_versions/${versionId}/takeoff` +
+        (rateCardId ? `?rate_card_id=${rateCardId}` : ''),
+    ),
+  getEstimate: (projectId: number, versionId: number, rateCardId?: number) =>
+    req<EstimateResponse>(
+      `/api/projects/${projectId}/design_versions/${versionId}/estimate` +
+        (rateCardId ? `?rate_card_id=${rateCardId}` : ''),
+    ),
+  saveEstimateInputs: (projectId: number, versionId: number, body: EstimateInputs) =>
+    req<EstimateInputs>(
+      `/api/projects/${projectId}/design_versions/${versionId}/estimate_inputs`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
+  estimatePDFURL: (projectId: number, versionId: number, rateCardId?: number) =>
+    `/api/projects/${projectId}/design_versions/${versionId}/estimate.pdf` +
+    (rateCardId ? `?rate_card_id=${rateCardId}` : ''),
+
+  listRateCards: () => req<RateCard[]>('/api/rate_cards'),
+  getRateCard: (id: number) => req<RateCard>(`/api/rate_cards/${id}`),
+  patchRateCard: (id: number, body: Partial<RateCardScalars>) =>
+    req<RateCard>(`/api/rate_cards/${id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  // `unit_cost: null` CLEARS a rate back to unpriced; omitting the key leaves
+  // it alone. The server distinguishes the two, and so must every caller —
+  // sending `undefined` where `null` was meant silently keeps a wrong price.
+  patchRateCardItem: (cardId: number, itemId: number, body: RateCardItemPatch) =>
+    req<RateCard>(`/api/rate_cards/${cardId}/items/${itemId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
 };
 
 // buildExportURL — shared helper for the three vector-graphics URL
@@ -718,3 +763,154 @@ export const PAPER_OPTIONS = [
   { value: 'a3', label: 'A3 (297 × 420 mm)' },
   { value: 'a2', label: 'A2 (420 × 594 mm)' },
 ] as const;
+
+
+// ---------------------------------------------------------------------------
+// Tier 2 #81 — takeoff + estimate types
+//
+// These mirror internal/takeoff and internal/estimate. All pricing arithmetic
+// lives on the server; the frontend renders what it is given. The repo already
+// pays for one duplicated algorithm (bends.ts <-> bends.go) and a second one
+// here would let a quote on screen disagree with the quote on the PDF.
+// ---------------------------------------------------------------------------
+
+export type TakeoffLine = {
+  kind: string;
+  qualifier?: string;
+  label: string;
+  qty: number;
+  unit: string;
+  /** 'derived' from the drawing, or 'manual' from the inputs form. */
+  source: 'derived' | 'manual';
+  /** Whole purchasable units (sticks, sheets) where stock is indivisible. */
+  purchase_qty?: number;
+  purchase_unit?: string;
+};
+
+export type TakeoffSummary = {
+  run_count: number;
+  jumper_count: number;
+  bend_count: number;
+  splice_count: number;
+  stick_count: number;
+  electrode_count: number;
+  electrode_pairs: number;
+  pumped_sections: number;
+  housing_count: number;
+  support_count: number;
+  jump_count: number;
+  net_tube_ft: number;
+  gross_glass_ft: number;
+  jumper_ft: number;
+  blockout_ft: number;
+  return_strip_ft: number;
+  backing_bbox_sq_ft: number;
+  backing_sheets: number;
+  /** True when the backing area is the design's bounding box, which
+   *  overestimates a panel cut to the sign's silhouette. Say so in the UI. */
+  backing_is_bbox: boolean;
+  fabrication_hours: number;
+};
+
+export type Takeoff = {
+  summary: TakeoffSummary;
+  lines: TakeoffLine[];
+  yield: { stick_length_mm: number; stick_waste_mm: number; sheet_area_sq_ft: number };
+  lead_in_mm: number;
+};
+
+export type PricedLine = TakeoffLine & {
+  sku?: string;
+  /** null means no rate exists yet. Never render this as zero. */
+  unit_cost: number | null;
+  unpriced: boolean;
+  /** A rate exists but is quoted in a unit the line is not measured in. */
+  unit_mismatch?: boolean;
+  draw_cost: number;
+  order_qty?: number;
+  purchase_cost?: number;
+  min_order_dominates?: boolean;
+};
+
+export type Estimate = {
+  lines: PricedLine[];
+  material_cost: number;
+  labour_cost: number;
+  cost_subtotal: number;
+  markup_multiplier: number;
+  price: number;
+  implied_margin_pct: number;
+  purchase_cost: number;
+  unpriced_count: number;
+  unpriced_kinds?: string[];
+  unit_mismatch_kinds?: string[];
+  is_provisional: boolean;
+  min_order_dominates: boolean;
+  rate_card_id: number;
+  rate_card_name: string;
+  rate_card_updated_at?: string;
+  currency: string;
+};
+
+export type EstimateResponse = { takeoff: Takeoff; estimate: Estimate };
+
+export type RateCardItem = {
+  id: number;
+  kind: string;
+  qualifier?: string;
+  sku?: string;
+  label: string;
+  unit: string;
+  /** null = unpriced. Distinct from 0, which means deliberately free. */
+  unit_cost: number | null;
+  min_qty?: number;
+  pack_fee?: number;
+};
+
+export type RateCardScalars = {
+  name: string;
+  currency: string;
+  markup_multiplier: number;
+  labour_rate_per_hour: number;
+  labour_setup_minutes: number;
+  labour_minutes_per_foot: number;
+  stick_length_mm: number;
+  stick_waste_mm: number;
+  sheet_area_sq_ft: number;
+};
+
+export type RateCard = RateCardScalars & {
+  id: number;
+  source?: string;
+  synced_at?: string;
+  updated_at?: string;
+  items: RateCardItem[];
+};
+
+export type RateCardItemPatch = {
+  label?: string;
+  sku?: string;
+  unit?: string;
+  /** null clears the rate; omit the key to leave it unchanged. */
+  unit_cost?: number | null;
+  min_qty?: number;
+  pack_fee?: number;
+};
+
+export type EstimateMiscLine = { label: string; qty: number; unit: string };
+
+export type EstimateInputs = {
+  transformer_count?: number;
+  transformer_qualifier?: string;
+  gas_qualifier?: string;
+  gas_fill_sections?: number;
+  gto_cable_ft?: number;
+  tube_support_count?: number;
+  boot_endcap_count?: number;
+  standoff_set_count?: number;
+  backing_sq_ft?: number;
+  install_hours?: number;
+  design_hours?: number;
+  freight?: number;
+  misc?: EstimateMiscLine[];
+};

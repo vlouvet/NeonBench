@@ -765,9 +765,9 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 // flame in. Sorted by ArcLengthMM so the bender walks the tube in
 // physical order on the shop floor.
 type specialBend struct {
-	tag    string  // short code printed in the row (e.g. "J1", "D2")
-	label  string  // human-readable kind: "JUMP" or "DROP"
-	arcMM  float64 // arc length from the start of the live arc
+	tag   string  // short code printed in the row (e.g. "J1", "D2")
+	label string  // human-readable kind: "JUMP" or "DROP"
+	arcMM float64 // arc length from the start of the live arc
 }
 
 // specialBendsForRun returns the JUMP and DROP annotations on a run,
