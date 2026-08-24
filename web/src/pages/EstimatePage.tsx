@@ -218,7 +218,8 @@ function Row({
   );
 }
 
-function LineRow({ line, currency }: { line: PricedLine; currency: string }) {
+/** Exported for testing — rendered in isolation via renderToStaticMarkup. */
+export function LineRow({ line, currency }: { line: PricedLine; currency: string }) {
   const desc =
     line.label + (line.qualifier ? ` (${line.qualifier})` : '') + (line.sku ? ` · ${line.sku}` : '');
   return (
@@ -261,7 +262,8 @@ function LineRow({ line, currency }: { line: PricedLine; currency: string }) {
   );
 }
 
-function Quantities({ summary }: { summary: TakeoffSummary }) {
+/** Exported for testing — see LineRow. */
+export function Quantities({ summary }: { summary: TakeoffSummary }) {
   return (
     <>
       <h2>Quantities</h2>
