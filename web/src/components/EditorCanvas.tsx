@@ -437,6 +437,15 @@ export default function EditorCanvas({
     snapshots: Map<string, [number, number][]>;
   } | null>(null);
 
+  // Drag-to-move: the center grab handle translates every selected run by the
+  // world-space delta from the press point. Reuses onScaleRuns (it just
+  // applies new point arrays) so a gesture coalesces into one undo entry.
+  const moveDragRef = useRef<{
+    startX: number;
+    startY: number;
+    snapshots: Map<string, [number, number][]>;
+  } | null>(null);
+
   // Tier 3 #48 — vertex drag dispatch. The NodeHandle's `onMove`
   // callback routes through here so a single-vertex drag still goes
   // through `onMoveVertex` (preserving every existing test that pins
@@ -1772,6 +1781,56 @@ export default function EditorCanvas({
     }
   }
 
+  function beginMove(e: React.PointerEvent<SVGGElement>) {
+    if (e.button !== 0) return;
+    e.stopPropagation(); // a handle press must not start a canvas pan
+    const w = clientToWorld(e.clientX, e.clientY);
+    if (!w) return;
+    const ids = new Set(selectedRunIds);
+    const snapshots = new Map<string, [number, number][]>();
+    for (const run of doc.runs) {
+      if (!ids.has(run.id)) continue;
+      snapshots.set(
+        run.id,
+        run.polyline.points.map((p) => [p[0], p[1]] as [number, number]),
+      );
+    }
+    if (snapshots.size === 0) return;
+    moveDragRef.current = { startX: w[0], startY: w[1], snapshots };
+    try {
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    } catch {
+      // non-capturable pointer — the handle's own move/up still drive the drag
+    }
+  }
+
+  function onMoveDrag(e: React.PointerEvent<SVGGElement>) {
+    const drag = moveDragRef.current;
+    if (!drag) return;
+    const w = clientToWorld(e.clientX, e.clientY);
+    if (!w) return;
+    const dx = w[0] - drag.startX;
+    const dy = w[1] - drag.startY;
+    const updates: { runId: string; points: [number, number][] }[] = [];
+    for (const [runId, pts] of drag.snapshots) {
+      updates.push({
+        runId,
+        points: pts.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+      });
+    }
+    onScaleRuns(updates);
+  }
+
+  function endMove(e: React.PointerEvent<SVGGElement>) {
+    if (!moveDragRef.current) return;
+    moveDragRef.current = null;
+    try {
+      (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+    } catch {
+      // pointer already released — ignore
+    }
+  }
+
   return (
     <div ref={containerRef} className={`editor-canvas tool-${tool}`}>
       <svg
@@ -2657,6 +2716,51 @@ export default function EditorCanvas({
                   />
                 );
               })}
+              {/* Center grab handle — drag to translate the whole selection. */}
+              {(() => {
+                const cx = (selectionResizeBox.minX + selectionResizeBox.maxX) / 2;
+                const cy = (selectionResizeBox.minY + selectionResizeBox.maxY) / 2;
+                const r = (RESIZE_HANDLE_PX + 5) / transform.k;
+                const a = r * 0.62; // arm length of the move glyph
+                const h = a * 0.42; // arrowhead size
+                const glyph = [
+                  // shafts
+                  `M${cx} ${cy - a}L${cx} ${cy + a}`,
+                  `M${cx - a} ${cy}L${cx + a} ${cy}`,
+                  // arrowheads (up, down, left, right)
+                  `M${cx - h} ${cy - a + h}L${cx} ${cy - a}L${cx + h} ${cy - a + h}`,
+                  `M${cx - h} ${cy + a - h}L${cx} ${cy + a}L${cx + h} ${cy + a - h}`,
+                  `M${cx - a + h} ${cy - h}L${cx - a} ${cy}L${cx - a + h} ${cy + h}`,
+                  `M${cx + a - h} ${cy - h}L${cx + a} ${cy}L${cx + a - h} ${cy + h}`,
+                ].join('');
+                return (
+                  <g
+                    className="move-handle"
+                    pointerEvents="all"
+                    onPointerDown={beginMove}
+                    onPointerMove={onMoveDrag}
+                    onPointerUp={endMove}
+                    onPointerCancel={endMove}
+                  >
+                    <circle
+                      cx={cx}
+                      cy={cy}
+                      r={r}
+                      fill="#ffffff"
+                      stroke="#3b82f6"
+                      strokeWidth={1.25 / transform.k}
+                    />
+                    <path
+                      d={glyph}
+                      fill="none"
+                      stroke="#3b82f6"
+                      strokeWidth={1.4 / transform.k}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </g>
+                );
+              })()}
             </g>
           )}
         </g>

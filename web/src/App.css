@@ -584,6 +584,13 @@
   height: 100%;
   background: #fafafa;
 }
+/* Center grab handle on a selection — drag to move the run(s). */
+.move-handle {
+  cursor: grab;
+}
+.move-handle:active {
+  cursor: grabbing;
+}
 .canvas-toolbar {
   position: absolute;
   bottom: 0.5rem;
