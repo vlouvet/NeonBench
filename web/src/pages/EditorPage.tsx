@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -15,6 +15,7 @@ import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
+import { SectionHeader, CategoryIcon, type IconKind } from '../components/PanelSection';
 import PrintHost from '../components/PrintHost';
 import PrintPopover, { type PrintPopoverValues } from '../components/PrintPopover';
 import ValidationReportView, {
@@ -152,6 +153,32 @@ export default function EditorPage() {
   } | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
+  // Right-panel width (resizable via the left-edge drag handle), persisted
+  // to localStorage and clamped to a sane range.
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const v = Number(localStorage.getItem('nb.editorSidebarWidth'));
+    return Number.isFinite(v) && v >= 280 && v <= 680 ? v : 340;
+  });
+  const sidebarResizeRef = useRef<{ startX: number; startW: number } | null>(null);
+  // Collapsed per-run section keys (electrodes / blockouts / bends /
+  // annotations). Component-local — the selected run changes often, so
+  // persisting this would mostly surprise the operator.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // focusedElement — clicking an item name in a run-detail list pulses the
+  // matching marker on the canvas. Transient: auto-clears after a beat so the
+  // pulse reads as a "there it is" cue, not a sticky selection.
+  const [focusedElement, setFocusedElement] = useState<{
+    runId: string;
+    kind: 'electrode' | 'blockout' | 'bend' | 'annotation';
+    index: number;
+  } | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
+  // Persist the sidebar width whenever it settles.
+  useEffect(() => {
+    localStorage.setItem('nb.editorSidebarWidth', String(sidebarWidth));
+  }, [sidebarWidth]);
   const [hersheyOpen, setHersheyOpen] = useState(false);
   const [channelLetterOpen, setChannelLetterOpen] = useState(false);
   // Tier 3 #62 — housing-picker modal target. Non-null when the
@@ -1301,6 +1328,53 @@ export default function EditorPage() {
     }
   }
 
+  function beginSidebarResize(e: ReactPointerEvent) {
+    sidebarResizeRef.current = { startX: e.clientX, startW: sidebarWidth };
+    try {
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {
+      /* setPointerCapture can throw in test/jsdom — ignore */
+    }
+    e.preventDefault();
+  }
+  function onSidebarResizeMove(e: ReactPointerEvent) {
+    const st = sidebarResizeRef.current;
+    if (!st) return;
+    // Handle is on the panel's LEFT edge, so dragging left (clientX down)
+    // widens the panel.
+    const next = Math.min(680, Math.max(280, st.startW - (e.clientX - st.startX)));
+    setSidebarWidth(next);
+  }
+  function endSidebarResize(e: ReactPointerEvent) {
+    if (!sidebarResizeRef.current) return;
+    sidebarResizeRef.current = null;
+    try {
+      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleSection(key: string) {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // Pulse a run-detail item's marker on the canvas. Auto-clears after a beat.
+  function focusElementOnCanvas(
+    runId: string,
+    kind: 'electrode' | 'blockout' | 'bend' | 'annotation',
+    index: number,
+  ) {
+    setFocusedElement({ runId, kind, index });
+    if (focusTimerRef.current) window.clearTimeout(focusTimerRef.current);
+    focusTimerRef.current = window.setTimeout(() => setFocusedElement(null), 2600);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -1638,8 +1712,22 @@ export default function EditorPage() {
           hoveredIssueIndex={hoveredIssueIndex}
           onIssueHover={setHoveredIssueIndex}
           centerOnIssue={centerOnIssue}
+          focusedElement={focusedElement}
         />
-        <aside className="editor-sidebar">
+        <div
+          className="editor-sidebar-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize panel · double-click to reset"
+          onPointerDown={beginSidebarResize}
+          onPointerMove={onSidebarResizeMove}
+          onPointerUp={endSidebarResize}
+          onDoubleClick={() => setSidebarWidth(340)}
+        />
+        <aside
+          className="editor-sidebar"
+          style={{ flexBasis: sidebarWidth, width: sidebarWidth }}
+        >
           {/* Tier 3 #47 — Validation issue list lives at the top of
               the sidebar so it's adjacent to the canvas markers
               they're linked to. Severity filter, hover linking, and
@@ -2019,28 +2107,84 @@ export default function EditorPage() {
                 </button>
               )}
               {(selectedRun.electrodes?.length ?? 0) > 0 && (
-                <button type="button" className="btn-secondary" onClick={clearElectrodesOnSelected}>
-                  Clear electrodes
-                </button>
+                <>
+                  <SectionHeader
+                    icon="electrode"
+                    collapsed={collapsedSections.has('electrodes')}
+                    onToggle={() => toggleSection('electrodes')}
+                  >
+                    Electrodes · {selectedRun.electrodes!.length}
+                  </SectionHeader>
+                  {!collapsedSections.has('electrodes') && (
+                    <>
+                      <ul className="panel-item-list">
+                        {selectedRun.electrodes!.map((el, ei) => (
+                          <li key={ei}>
+                            <button
+                              type="button"
+                              className={`focus-link${
+                                focusedElement?.runId === selectedRun.id &&
+                                focusedElement.kind === 'electrode' &&
+                                focusedElement.index === ei
+                                  ? ' active'
+                                  : ''
+                              }`}
+                              onClick={() => focusElementOnCanvas(selectedRun.id, 'electrode', ei)}
+                            >
+                              Electrode #{ei + 1}
+                              <span className="meta"> @ pt {el.point_index}</span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                      <button type="button" className="btn-secondary" onClick={clearElectrodesOnSelected}>
+                        Clear electrodes
+                      </button>
+                    </>
+                  )}
+                </>
               )}
               {(selectedRun.blockouts?.length ?? 0) > 0 && (
                 <>
-                  <h5 className="meta">Blockouts</h5>
-                  <ul className="blockout-list">
-                    {selectedRun.blockouts!.map((b, bi) => (
-                      <li key={bi}>
-                        <span className="meta">[{b.start_live_index}, {b.end_live_index}]</span>
-                        <button
-                          type="button"
-                          className="btn-link"
-                          onClick={() => deleteBlockout(selectedRun.id, bi)}
-                        >Remove</button>
-                      </li>
-                    ))}
-                  </ul>
-                  <button type="button" className="btn-secondary" onClick={clearBlockoutsOnSelected}>
-                    Clear blockouts
-                  </button>
+                  <SectionHeader
+                    icon="blockout"
+                    collapsed={collapsedSections.has('blockouts')}
+                    onToggle={() => toggleSection('blockouts')}
+                  >
+                    Blockouts · {selectedRun.blockouts!.length}
+                  </SectionHeader>
+                  {!collapsedSections.has('blockouts') && (
+                    <>
+                      <ul className="panel-item-list">
+                        {selectedRun.blockouts!.map((b, bi) => (
+                          <li key={bi}>
+                            <button
+                              type="button"
+                              className={`focus-link${
+                                focusedElement?.runId === selectedRun.id &&
+                                focusedElement.kind === 'blockout' &&
+                                focusedElement.index === bi
+                                  ? ' active'
+                                  : ''
+                              }`}
+                              onClick={() => focusElementOnCanvas(selectedRun.id, 'blockout', bi)}
+                            >
+                              Blockout #{bi + 1}
+                              <span className="meta"> [{b.start_live_index}, {b.end_live_index}]</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-link"
+                              onClick={() => deleteBlockout(selectedRun.id, bi)}
+                            >Remove</button>
+                          </li>
+                        ))}
+                      </ul>
+                      <button type="button" className="btn-secondary" onClick={clearBlockoutsOnSelected}>
+                        Clear blockouts
+                      </button>
+                    </>
+                  )}
                 </>
               )}
               {(() => {
@@ -2053,55 +2197,101 @@ export default function EditorPage() {
                     </p>
                   );
                 }
+                const collapsed = collapsedSections.has('bends');
                 return (
                   <>
-                    <h5 className="meta">
+                    <SectionHeader
+                      icon="bend"
+                      collapsed={collapsed}
+                      onToggle={() => toggleSection('bends')}
+                    >
                       Bends · {bends.length} · total{' '}
                       {bends.reduce((acc, b) => acc + b.angleDeg, 0).toFixed(0)}°
                       {isManual ? ' · manual' : ' · auto'}
-                    </h5>
-                    <ul className="blockout-list">
-                      {bends.map((b, bi) => (
-                        <li key={bi}>
-                          <span className="meta">
-                            #{bi + 1} @ {b.arcLengthMM.toFixed(1)}mm · {b.angleDeg.toFixed(0)}° · r={b.radiusMM > 0 && Number.isFinite(b.radiusMM) ? `${b.radiusMM.toFixed(1)}mm` : '∞'}
-                          </span>
+                    </SectionHeader>
+                    {!collapsed && (
+                      <>
+                        <ul className="panel-item-list">
+                          {bends.map((b, bi) => (
+                            <li key={bi}>
+                              <button
+                                type="button"
+                                className={`focus-link${
+                                  focusedElement?.runId === selectedRun.id &&
+                                  focusedElement.kind === 'bend' &&
+                                  focusedElement.index === bi
+                                    ? ' active'
+                                    : ''
+                                }`}
+                                onClick={() => focusElementOnCanvas(selectedRun.id, 'bend', bi)}
+                              >
+                                #{bi + 1}
+                                <span className="meta"> @ {b.arcLengthMM.toFixed(1)}mm · {b.angleDeg.toFixed(0)}° · r={b.radiusMM > 0 && Number.isFinite(b.radiusMM) ? `${b.radiusMM.toFixed(1)}mm` : '∞'}</span>
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-link"
+                                onClick={() => deleteBend(selectedRun.id, bi)}
+                              >Remove</button>
+                            </li>
+                          ))}
+                        </ul>
+                        {isManual && (
                           <button
                             type="button"
-                            className="btn-link"
-                            onClick={() => deleteBend(selectedRun.id, bi)}
-                          >Remove</button>
-                        </li>
-                      ))}
-                    </ul>
-                    {isManual && (
-                      <button
-                        type="button"
-                        className="btn-secondary"
-                        onClick={resetBendsOnSelected}
-                      >Reset to auto</button>
+                            className="btn-secondary"
+                            onClick={resetBendsOnSelected}
+                          >Reset to auto</button>
+                        )}
+                      </>
                     )}
                   </>
                 );
               })()}
               {(selectedRun.annotations?.length ?? 0) > 0 && (
                 <>
-                  <h5 className="meta">Annotations</h5>
-                  <ul className="blockout-list">
-                    {selectedRun.annotations!.map((a, ai) => (
-                      <li key={ai}>
-                        <span className="meta">{a.kind} @ live {a.live_index}</span>
-                        <button
-                          type="button"
-                          className="btn-link"
-                          onClick={() => deleteAnnotation(selectedRun.id, ai)}
-                        >Remove</button>
-                      </li>
-                    ))}
-                  </ul>
-                  <button type="button" className="btn-secondary" onClick={clearAnnotationsOnSelected}>
-                    Clear annotations
-                  </button>
+                  <SectionHeader
+                    icon="annotation"
+                    collapsed={collapsedSections.has('annotations')}
+                    onToggle={() => toggleSection('annotations')}
+                  >
+                    Annotations · {selectedRun.annotations!.length}
+                  </SectionHeader>
+                  {!collapsedSections.has('annotations') && (
+                    <>
+                      <ul className="panel-item-list">
+                        {selectedRun.annotations!.map((a, ai) => (
+                          <li key={ai}>
+                            <button
+                              type="button"
+                              className={`focus-link${
+                                focusedElement?.runId === selectedRun.id &&
+                                focusedElement.kind === 'annotation' &&
+                                focusedElement.index === ai
+                                  ? ' active'
+                                  : ''
+                              }`}
+                              onClick={() => focusElementOnCanvas(selectedRun.id, 'annotation', ai)}
+                            >
+                              <span className="focus-link-icon">
+                                <CategoryIcon kind={a.kind as IconKind} />
+                              </span>
+                              {a.kind}
+                              <span className="meta"> @ live {a.live_index}</span>
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-link"
+                              onClick={() => deleteAnnotation(selectedRun.id, ai)}
+                            >Remove</button>
+                          </li>
+                        ))}
+                      </ul>
+                      <button type="button" className="btn-secondary" onClick={clearAnnotationsOnSelected}>
+                        Clear annotations
+                      </button>
+                    </>
+                  )}
                 </>
               )}
             </div>

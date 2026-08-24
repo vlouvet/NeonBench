@@ -535,19 +535,45 @@
   cursor: progress;
 }
 .editor-layout {
-  display: grid;
-  grid-template-columns: 1fr 240px;
-  gap: 1rem;
+  display: flex;
+  gap: 0;
   flex: 1;
   min-height: 0;
 }
 .editor-canvas {
   position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
   cursor: grab;
+}
+/* Drag handle between the canvas and the right panel. A thin hit-strip with
+   a centred grip; widens its visual line on hover. */
+.editor-sidebar-resizer {
+  flex: 0 0 10px;
+  align-self: stretch;
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+.editor-sidebar-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--border);
+  border-radius: 2px;
+}
+.editor-sidebar-resizer:hover::before,
+.editor-sidebar-resizer:active::before {
+  background: #38bdf8;
+  width: 3px;
 }
 .editor-canvas:active {
   cursor: grabbing;
@@ -584,6 +610,7 @@
 }
 
 .editor-sidebar {
+  flex: 0 0 auto;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -592,6 +619,97 @@
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+}
+/* Collapsible per-run section header (electrodes / blockouts / bends /
+   annotations). Looks like a label row, behaves like a disclosure button. */
+.panel-section-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0.2rem 0;
+  margin: 0;
+  color: var(--text-muted, #9aa0aa);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  text-align: left;
+}
+.panel-section-header:hover {
+  color: var(--text, #e6e6e6);
+}
+.panel-section-header svg {
+  flex: 0 0 auto;
+}
+.panel-section-chevron {
+  width: 0.8em;
+  display: inline-block;
+  font-size: 0.7rem;
+}
+.panel-section-label {
+  flex: 1 1 auto;
+  text-transform: none;
+  letter-spacing: 0;
+}
+/* Clickable item rows that focus (pulse) the marker on the canvas. */
+.panel-item-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.panel-item-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+.focus-link {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 1 1 auto;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 0.15rem 0.35rem;
+  color: var(--text, #e6e6e6);
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+.focus-link:hover {
+  border-color: var(--border);
+  background: rgba(56, 189, 248, 0.08);
+}
+.focus-link.active {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.16);
+}
+.focus-link-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+/* Canvas pulse ring for the focused element (sidebar click-to-highlight). */
+@keyframes focus-pulse-ring {
+  0% {
+    stroke-opacity: 1;
+  }
+  70% {
+    stroke-opacity: 0.15;
+  }
+  100% {
+    stroke-opacity: 1;
+  }
+}
+.focus-pulse circle {
+  animation: focus-pulse-ring 0.9s ease-in-out infinite;
 }
 .editor-sidebar h3,
 .editor-sidebar h4 {
