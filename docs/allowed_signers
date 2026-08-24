@@ -1,0 +1,20 @@
+# NeonBench release-signing key — OpenSSH allowed_signers format.
+#
+# Use this to verify the detached signature over a release's SHA256SUMS:
+#
+#   ssh-keygen -Y verify -f docs/allowed_signers \
+#     -I louvetvicente@gmail.com -n file \
+#     -s SHA256SUMS.sig < SHA256SUMS
+#
+# The key is hardware-backed (FIDO2 / YubiKey Security Key NFC): the private
+# half never leaves the authenticator and every signature needs a physical
+# touch. That is what the signature attests — "the key holder vouched for these
+# bytes" — and nothing more. It does NOT make the binaries code-signed, so
+# Windows SmartScreen still warns. See the README's "Downloads and trust".
+#
+# fingerprint: SHA256:BwjB7xoV0U94xza5wGG9ZfLPgDl+hDpLKv9A5HVKgvQ
+#
+# `scripts/sign-release.sh --check` asserts the fingerprint above still matches
+# the key below, so this comment cannot silently drift.
+
+louvetvicente@gmail.com sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAlSY+1ApsU6RFW5Km25UjcAm39Dj6Eg58GxX2pzq1BOAAAABHNzaDo=
