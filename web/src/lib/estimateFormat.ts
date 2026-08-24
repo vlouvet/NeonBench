@@ -72,10 +72,16 @@ export function provisionalMessage(e: Estimate): string | null {
   if (!e.is_provisional) return null;
   const n = e.unpriced_count;
   const kinds = e.unpriced_kinds?.length ? ` (${e.unpriced_kinds.join(', ')})` : '';
+  // A wrong-unit rate is called out separately. Saying "no rate yet" about a
+  // line that already has one sends the reader hunting for the wrong thing.
+  const mismatch = e.unit_mismatch_kinds?.length
+    ? ` Rates for ${e.unit_mismatch_kinds.join(', ')} are quoted in the wrong unit — a price ` +
+      'exists but cannot be applied until it is converted to the unit the line is measured in.'
+    : '';
   return (
-    `${n} ${plural(n, 'line')} ${n === 1 ? 'has' : 'have'} no rate yet${kinds}. ` +
-    'Those lines are excluded from the total, not counted as free — so the real cost is ' +
-    'higher than the figure shown.'
+    `${n} ${plural(n, 'line')} ${n === 1 ? 'is' : 'are'} excluded${kinds}. ` +
+    'Excluded lines are not counted as free — so the real cost is higher than the figure ' +
+    `shown.${mismatch}`
   );
 }
 

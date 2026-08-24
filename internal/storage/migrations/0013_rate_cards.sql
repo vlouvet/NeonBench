@@ -99,7 +99,11 @@ INSERT INTO rate_card_items (rate_card_id, kind, qualifier, sku, label, unit, mi
     (1, 'boot_endcap',     '',            'MAT-M61', 'Silicone boots / endcaps',  'each', 0),
     (1, 'standoff_set',    '',            'MAT-M46', 'Standoffs',                 'set',  0),
     (1, 'backing',         '',            'MAT-M40', 'Backing panel',             'ft2',  0),
-    (1, 'blockout_paint',  '',            'MAT-M62', 'Blockout paint',            'L',    0),
+    -- Paint is SOLD by the gallon but CONSUMED per linear foot of tube, so
+    -- the rate here is per foot: the operator works the coverage out once and
+    -- enters the result. Seeding the supplier's per-litre unit instead would
+    -- trip the unit-mismatch guard forever and leave the line unpriceable.
+    (1, 'blockout_paint',  '',            'MAT-M62', 'Blockout paint (per ft of tube)', 'ft', 0),
     (1, 'freight',         '',            NULL,      'Freight / delivery',        'each', 0),
     (1, 'misc',            '',            NULL,      'Miscellaneous',             'each', 0);
 

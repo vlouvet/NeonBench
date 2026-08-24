@@ -71,9 +71,12 @@ func RenderEstimate(t takeoff.Takeoff, e estimate.Estimate, opts EstimateOptions
 	pdf.Ln(2)
 
 	if e.IsProvisional {
-		drawBanner(pdf, usable, fmt.Sprintf(
-			"PROVISIONAL — %d UNPRICED LINE%s (%s)",
-			e.UnpricedCount, plural(e.UnpricedCount), strings.Join(e.UnpricedKinds, ", ")))
+		msg := fmt.Sprintf("PROVISIONAL — %d EXCLUDED LINE%s (%s)",
+			e.UnpricedCount, plural(e.UnpricedCount), strings.Join(e.UnpricedKinds, ", "))
+		if len(e.UnitMismatchKinds) > 0 {
+			msg += " · WRONG UNIT: " + strings.Join(e.UnitMismatchKinds, ", ")
+		}
+		drawBanner(pdf, usable, msg)
 	}
 
 	drawQuantities(pdf, usable, t)
@@ -197,11 +200,17 @@ func drawPricedLines(pdf *gofpdf.Fpdf, usable float64, e estimate.Estimate) {
 			desc += " · " + l.SKU
 		}
 		rate, cost, buy := "—", "—", ""
-		if l.Unpriced {
+		switch {
+		case l.UnitMismatch:
+			// Distinct from unpriced: a rate exists, it is just in the
+			// wrong unit. Saying "unpriced" would send someone hunting
+			// for a price that is already on the card.
+			rate, cost = "WRONG UNIT", "excluded"
+		case l.Unpriced:
 			// Spelled out on the line itself. A dash alone reads as "no
 			// charge" at a glance, which is exactly the wrong inference.
 			rate, cost = "UNPRICED", "excluded"
-		} else {
+		default:
 			if l.UnitCost != nil {
 				rate = fmt.Sprintf("%.4f", *l.UnitCost)
 			}

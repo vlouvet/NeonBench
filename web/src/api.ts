@@ -824,6 +824,8 @@ export type PricedLine = TakeoffLine & {
   /** null means no rate exists yet. Never render this as zero. */
   unit_cost: number | null;
   unpriced: boolean;
+  /** A rate exists but is quoted in a unit the line is not measured in. */
+  unit_mismatch?: boolean;
   draw_cost: number;
   order_qty?: number;
   purchase_cost?: number;
@@ -841,6 +843,7 @@ export type Estimate = {
   purchase_cost: number;
   unpriced_count: number;
   unpriced_kinds?: string[];
+  unit_mismatch_kinds?: string[];
   is_provisional: boolean;
   min_order_dominates: boolean;
   rate_card_id: number;

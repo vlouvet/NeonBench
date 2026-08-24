@@ -47,6 +47,19 @@ func artechCard() RateCard {
 }
 
 // tubeRun builds a straight run of a given net length with two electrodes.
+// setItem replaces the rate for a kind. findItem returns the FIRST match, so
+// appending a second item for a kind that artechCard already carries would be
+// silently ignored.
+func setItem(card *RateCard, kind, unit string, cost *float64) {
+	for i := range card.Items {
+		if card.Items[i].Kind == kind {
+			card.Items[i].Unit, card.Items[i].UnitCost = unit, cost
+			return
+		}
+	}
+	card.Items = append(card.Items, RateCardItem{Kind: kind, Unit: unit, UnitCost: cost})
+}
+
 func tubeRun(mm float64, colour string) designdoc.Run {
 	return designdoc.Run{
 		ID:         "r",
@@ -291,5 +304,82 @@ func TestEmptyTakeoffPricesToZero(t *testing.T) {
 	got := Price(takeoff.Takeoff{}, artechCard())
 	if got.CostSubtotal != 0 || got.Price != 0 || got.IsProvisional {
 		t.Errorf("empty takeoff produced %+v", got)
+	}
+}
+
+// A rate quoted in the wrong unit is worse than no rate: it produces a
+// confident number that means nothing. Blockout paint is the real case —
+// suppliers sell it by the gallon, the takeoff measures it in linear feet of
+// tube, and multiplying the two is meaningless without a coverage figure.
+func TestUnitMismatchIsExcludedNotMultiplied(t *testing.T) {
+	card := artechCard()
+	// Priced, but per litre against a line measured in feet.
+	setItem(&card, takeoff.KindBlockoutPaint, "L", f(27.7381))
+	d := &designdoc.Doc{Runs: []designdoc.Run{{
+		ID: "r", Color: "green",
+		Polyline:   designdoc.Polyline{Points: [][2]float64{{0, 0}, {500, 0}, {1000, 0}}},
+		Electrodes: []designdoc.Electrode{{PointIndex: 0}, {PointIndex: 2}},
+		Blockouts:  []designdoc.Blockout{{StartLiveIndex: 0, EndLiveIndex: 2}},
+	}}}
+	got := priceDoc(d, card, takeoff.Inputs{})
+
+	var paint *PricedLine
+	for i := range got.Lines {
+		if got.Lines[i].Kind == takeoff.KindBlockoutPaint {
+			paint = &got.Lines[i]
+		}
+	}
+	if paint == nil {
+		t.Fatal("no blockout line")
+	}
+	if !paint.UnitMismatch {
+		t.Error("a per-litre rate against a per-foot line was not flagged")
+	}
+	if !paint.Unpriced || paint.DrawCost != 0 {
+		t.Errorf("mismatched line still priced: unpriced=%v cost=%v", paint.Unpriced, paint.DrawCost)
+	}
+	if !got.IsProvisional {
+		t.Error("estimate not marked provisional despite a mismatched unit")
+	}
+	if len(got.UnitMismatchKinds) == 0 {
+		t.Error("mismatch kind not reported, so nobody can find the rate to fix")
+	}
+}
+
+// Matching units must still price normally — the check must not reject
+// everything.
+func TestMatchingUnitPricesNormally(t *testing.T) {
+	card := artechCard()
+	setItem(&card, takeoff.KindBlockoutPaint, "ft", f(2.0))
+	d := &designdoc.Doc{Runs: []designdoc.Run{{
+		ID:        "r",
+		Polyline:  designdoc.Polyline{Points: [][2]float64{{0, 0}, {500, 0}, {1000, 0}}},
+		Blockouts: []designdoc.Blockout{{StartLiveIndex: 0, EndLiveIndex: 2}},
+	}}}
+	got := priceDoc(d, card, takeoff.Inputs{})
+	for _, l := range got.Lines {
+		if l.Kind == takeoff.KindBlockoutPaint {
+			if l.Unpriced || l.UnitMismatch {
+				t.Errorf("matching units rejected: %+v", l)
+			}
+			near(t, l.DrawCost, 1000/takeoff.MMPerFoot*2.0, "blockout cost")
+		}
+	}
+}
+
+// An item with no unit recorded is treated as compatible: the check exists to
+// catch a wrong unit, not to force every rate card to be fully annotated.
+func TestBlankItemUnitIsNotAMismatch(t *testing.T) {
+	card := artechCard()
+	setItem(&card, takeoff.KindBlockoutPaint, "", f(2.0))
+	d := &designdoc.Doc{Runs: []designdoc.Run{{
+		ID:        "r",
+		Polyline:  designdoc.Polyline{Points: [][2]float64{{0, 0}, {500, 0}, {1000, 0}}},
+		Blockouts: []designdoc.Blockout{{StartLiveIndex: 0, EndLiveIndex: 2}},
+	}}}
+	for _, l := range priceDoc(d, card, takeoff.Inputs{}).Lines {
+		if l.Kind == takeoff.KindBlockoutPaint && l.Unpriced {
+			t.Error("an unannotated unit was treated as a mismatch")
+		}
 	}
 }

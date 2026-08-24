@@ -94,10 +94,19 @@ type PricedLine struct {
 	SKU      string   `json:"sku,omitempty"`
 	UnitCost *float64 `json:"unit_cost"`
 
-	// Unpriced means no rate matched, or the matched rate has no cost yet.
-	// Unpriced lines contribute nothing to any total — they are excluded,
-	// not zeroed, and the estimate is marked provisional because of them.
+	// Unpriced means no rate matched, the matched rate has no cost yet, or
+	// the rate is quoted in a unit the line is not measured in. Unpriced
+	// lines contribute nothing to any total — they are excluded, not
+	// zeroed, and the estimate is marked provisional because of them.
 	Unpriced bool `json:"unpriced"`
+
+	// UnitMismatch means a rate exists but is quoted in the wrong unit —
+	// blockout paint sold by the litre against a line measured in linear
+	// feet, say. Multiplying those gives a confident number that means
+	// nothing, so the line is excluded exactly like an unpriced one and
+	// flagged separately so the fix is obvious: the rate card needs a
+	// coverage figure (litres per foot), not a different price.
+	UnitMismatch bool `json:"unit_mismatch,omitempty"`
 
 	// DrawCost is what the sign consumes: Qty x UnitCost. This is the
 	// estimate's basis, and it is the honest number when the material is
@@ -134,6 +143,8 @@ type Estimate struct {
 
 	UnpricedCount int      `json:"unpriced_count"`
 	UnpricedKinds []string `json:"unpriced_kinds,omitempty"`
+	// UnitMismatchKinds lists the kinds whose rate is in the wrong unit.
+	UnitMismatchKinds []string `json:"unit_mismatch_kinds,omitempty"`
 	// IsProvisional is true whenever any line lacks a rate. A provisional
 	// estimate still shows a total, because a partial number is useful, but
 	// it must be labelled everywhere it appears.
@@ -194,6 +205,7 @@ func Price(t takeoff.Takeoff, card RateCard) Estimate {
 	}
 
 	seenUnpriced := map[string]bool{}
+	seenMismatch := map[string]bool{}
 
 	for _, l := range t.Lines {
 		pl := PricedLine{Line: l}
@@ -215,15 +227,21 @@ func Price(t takeoff.Takeoff, card RateCard) Estimate {
 		}
 
 		it := findItem(card.Items, l.Kind, l.Qualifier)
-		if it == nil || it.UnitCost == nil {
+		mismatch := it != nil && it.Unit != "" && it.Unit != l.Unit
+		if it == nil || it.UnitCost == nil || mismatch {
 			pl.Unpriced = true
+			pl.UnitMismatch = mismatch
 			if it != nil {
 				pl.SKU = it.SKU
 			}
 			e.UnpricedCount++
-			if key := l.Kind; !seenUnpriced[key] {
-				seenUnpriced[key] = true
-				e.UnpricedKinds = append(e.UnpricedKinds, key)
+			if !seenUnpriced[l.Kind] {
+				seenUnpriced[l.Kind] = true
+				e.UnpricedKinds = append(e.UnpricedKinds, l.Kind)
+			}
+			if mismatch && !seenMismatch[l.Kind] {
+				seenMismatch[l.Kind] = true
+				e.UnitMismatchKinds = append(e.UnitMismatchKinds, l.Kind)
 			}
 			e.Lines = append(e.Lines, pl)
 			continue

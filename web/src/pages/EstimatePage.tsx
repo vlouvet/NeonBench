@@ -238,9 +238,12 @@ function LineRow({ line, currency }: { line: PricedLine; currency: string }) {
       </td>
       {line.unpriced ? (
         // Spelled out rather than dashed. A dash reads as "no charge" at a
-        // glance, which is exactly the wrong inference to invite.
+        // glance, which is exactly the wrong inference to invite. A wrong-unit
+        // rate is named separately — it needs converting, not entering.
         <>
-          <td className="est-num est-unpriced">unpriced</td>
+          <td className="est-num est-unpriced">
+            {line.unit_mismatch ? 'wrong unit' : 'unpriced'}
+          </td>
           <td className="est-num est-unpriced">excluded</td>
         </>
       ) : (

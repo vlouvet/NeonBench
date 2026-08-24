@@ -123,13 +123,28 @@ describe('provisionalMessage', () => {
     );
     // "Provisional" alone does not tell a reader whether the total is high or
     // low. Excluded-not-free is the whole point of the warning.
-    expect(msg).toContain('excluded from the total, not counted as free');
+    expect(msg).toContain('not counted as free');
     expect(msg).toContain('higher than the figure shown');
     expect(msg).toContain('tube, electrode');
   });
 
   it('agrees with itself on one unpriced line', () => {
     const msg = provisionalMessage(estimate({ is_provisional: true, unpriced_count: 1 }));
-    expect(msg).toContain('1 line has no rate yet');
+    expect(msg).toContain('1 line is excluded');
+  });
+
+  // A wrong-unit rate needs converting, not entering. Calling it "no rate yet"
+  // sends the reader looking for a price that is already on the card.
+  it('names a wrong-unit rate as its own problem', () => {
+    const msg = provisionalMessage(
+      estimate({
+        is_provisional: true,
+        unpriced_count: 1,
+        unpriced_kinds: ['blockout_paint'],
+        unit_mismatch_kinds: ['blockout_paint'],
+      }),
+    );
+    expect(msg).toContain('quoted in the wrong unit');
+    expect(msg).toContain('a price exists');
   });
 });
