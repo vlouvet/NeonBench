@@ -131,8 +131,8 @@ deliberately doesn't buy one. Verify the checksum instead.
 
 ### Downloads and trust
 
-Every release publishes a `.sha256` beside each binary. Compare them before the
-first run:
+Every release publishes a `.sha256` beside each binary. Comparing that pair is
+the simplest check for a single download:
 
 ```powershell
 certutil -hashfile neonbench-windows-amd64.exe SHA256
@@ -141,6 +141,10 @@ type neonbench-windows-amd64.exe.sha256
 
 The hashes must match. PowerShell equivalent:
 `Get-FileHash neonbench-windows-amd64.exe -Algorithm SHA256`.
+
+Releases also carry a combined `SHA256SUMS` listing every platform's binary in
+one file — useful when verifying more than one download, and the single file a
+maintainer signature will cover once provenance signing lands.
 
 ### Where your data lives
 
