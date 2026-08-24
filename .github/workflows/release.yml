@@ -134,8 +134,31 @@ jobs:
           find dist -type f \( -name 'neonbench-*' -o -name '*.sha256' \) -exec cp {} release/ \;
           ls -lh release/
 
+      # One file to sign beats five. The maintainer detached-signs SHA256SUMS
+      # with the YubiKey after the release publishes (CI can't reach the key —
+      # see specs/active/tier1-yubikey-provenance-unsigned-disclaimer.md), so
+      # per-file .sha256 alone would mean five signatures or an unsigned gap.
+      #
+      # The per-file .sha256 files stay: they're the friendlier check for a
+      # non-developer verifying one download, and the README points at them.
+      #
+      # `sha256sum -c` here is a real gate, not decoration — it proves the
+      # binaries that survived the artifact upload/download round-trip still
+      # match the hashes computed in the build jobs, before either is published.
+      - name: Build and verify SHA256SUMS
+        working-directory: release
+        run: |
+          cat neonbench-*.sha256 | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
+
+      # SHA256SUMS needs its own entry: it does not match `neonbench-*`, so
+      # listing only that glob would silently publish a release without it.
       - uses: softprops/action-gh-release@v2
         with:
-          files: release/neonbench-*
+          files: |
+            release/neonbench-*
+            release/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true
