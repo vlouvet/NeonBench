@@ -62,12 +62,14 @@ jobs:
   # the `test` context by name; matrixing would rename it to `test (ubuntu-latest)`
   # and break the required-checks contract.
   #
-  # Trimmed scope: this job exists to verify the *Go pipeline* runs on Windows
-  # (path separators, CRLF, Git Bash compatibility, build flags). It deliberately
-  # skips Node / npm / vitest / frontend build — those are platform-independent
-  # and the `test` job already covers them on Linux. We stub web/dist/index.html
-  # so //go:embed all:dist compiles; the embed isn't actually served during
-  # `go test` (integration tests use registerAPI directly, not the SPA fallback).
+  # Scope: Windows is the only platform where users are handed a bare .exe, so
+  # this job gates the *shipped artifact*, not just "does Go compile". It builds
+  # the real frontend — so //go:embed all:dist embeds the actual Vite bundle
+  # rather than a stub — then boots the binary to cover what `go test` cannot:
+  # %APPDATA% resolution, goose migrations against a Windows SQLite path, and
+  # the embedded SPA being served for real. ESLint and vitest stay Linux-only in
+  # `test`; they are platform-independent and duplicating them here only burns
+  # CI minutes.
   windows-smoke:
     runs-on: windows-latest
     steps:
@@ -79,13 +81,20 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Stub web/dist/ so //go:embed all:dist resolves without a frontend build.
-      # Real frontend output is verified by the `test` job.
-      - name: Stub web/dist for embed
-        shell: bash
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # Replaces the previous stubbed web/dist/index.html. The smoke-run below
+      # asserts a hashed /assets/*.js bundle serves, which a stub cannot satisfy.
+      - name: Build frontend
         run: |
-          mkdir -p web/dist
-          echo "<!doctype html><title>stub</title>" > web/dist/index.html
+          npm ci
+          npm run build
+        working-directory: web
 
       - name: go vet
         run: go vet ./...
@@ -94,10 +103,18 @@ jobs:
         shell: bash
         run: go test $(go list ./... | grep -v '/web/node_modules/')
 
-      - name: Cross-compile binary (smoke)
+      - name: Build binary
         shell: bash
         env:
           CGO_ENABLED: '0'
         run: |
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w" -o dist/neonbench.exe ./cmd/neonbench
+          go build -trimpath \
+            -ldflags="-s -w -X 'github.com/vlouvet/neonbench/internal/version.Version=ci-smoke'" \
+            -o dist/neonbench.exe ./cmd/neonbench
+
+      # Boot the artifact a Windows user would actually download. No -DataDir,
+      # so this exercises real %APPDATA% resolution on an ephemeral runner.
+      - name: Smoke-run the binary
+        shell: pwsh
+        run: ./scripts/windows-smoke.ps1 -Exe dist/neonbench.exe
