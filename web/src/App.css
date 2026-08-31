@@ -1563,3 +1563,71 @@
 .report-severity-filter input[type='checkbox'] {
   cursor: pointer;
 }
+
+/* Tier 3 #76 — node-edit context menu. Fixed-positioned against the
+   viewport because it anchors to a clientX/clientY from the right-click,
+   not to a position inside the scrolling editor layout. */
+.node-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 13rem;
+  max-width: 18rem;
+  padding: 0.25rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.node-context-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.05rem;
+  width: 100%;
+  padding: 0.35rem 0.55rem;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover and keyboard focus share one highlight so arrowing through the
+   menu looks the same as mousing through it. */
+.node-context-menu-item.is-active,
+.node-context-menu-item:hover {
+  background: #26262e;
+  color: var(--accent);
+}
+
+.node-context-menu-item.is-destructive {
+  color: #d9635a;
+}
+.node-context-menu-item.is-destructive.is-active,
+.node-context-menu-item.is-destructive:hover {
+  background: #33232a;
+  color: #ff7a6e;
+}
+
+.node-context-menu-hint {
+  font-size: 0.6875rem;
+  color: var(--muted);
+}
+/* The hint must not compete with the label for attention when the row is
+   highlighted, but it also must not vanish. */
+.node-context-menu-item.is-active .node-context-menu-hint,
+.node-context-menu-item:hover .node-context-menu-hint {
+  color: #a8a8b2;
+}
+
+.node-context-menu-rule {
+  height: 1px;
+  margin: 0.25rem 0.35rem;
+  background: var(--border);
+}

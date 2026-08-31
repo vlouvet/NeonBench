@@ -1,6 +1,18 @@
 # Tier 3 #76 — Unified context menu on node-edit
 
-> **Status:** active · drafted 2026-05-09 · branch `task/3-unified-node-context-menu` · NW parity (node double-click menu)
+> **Status:** SHIPPED 2026-08-31 · branch `task/3-unified-node-context-menu` · NW parity (node double-click menu)
+
+> **Corrections on merge.**
+> 1. The spec says to reuse alt+click for trackpad parity. Alt+click on a node
+>    handle already means *split run here* (Tier 3 #25), and shift+click means
+>    *delete vertex* — reusing alt would have overloaded a shipped gesture.
+>    Right-click is the affordance; macOS turns ctrl+click and a two-finger tap
+>    into a `contextmenu` event, so trackpad parity comes for free.
+> 2. "Convert to arc / to line" is deferred to Tier 3 #78, as the spec itself
+>    anticipates.
+> 3. Inapplicable actions are omitted rather than greyed out — the deliverable
+>    says "returns only items applicable to context"; the manual-smoke section
+>    said "disabled" in one line. The deliverable won.
 
 ## Goal
 

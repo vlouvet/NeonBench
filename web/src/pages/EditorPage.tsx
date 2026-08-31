@@ -1711,6 +1711,7 @@ export default function EditorPage() {
           onPlaceElectrode={placeElectrode}
           onDeleteElectrode={deleteElectrode}
           onElectrodeContextMenu={openHousingPicker}
+          onSetTool={setTool}
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
