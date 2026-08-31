@@ -1,6 +1,6 @@
 # Tier 2 — Editor right-panel: resize, collapsible sections, category icons, click-to-highlight
 
-> **Status:** active · drafted 2026-06-05 · branch `task/2-editor-panel-resize-highlight` · requested by user
+> **Status:** shipped #126 (15ac670) · drafted 2026-06-05 · branch `task/2-editor-panel-resize-highlight` · requested by user
 
 ## Goal
 
