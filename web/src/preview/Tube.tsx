@@ -7,7 +7,9 @@ import { splitRunBySegments, type RunSegment } from './segment-split';
 import {
   DEFAULT_TUBE_DIAMETER_MM,
   TUBE_RADIAL_SEGMENTS,
+  AUTO_CROSSING_LIFT_SPAN_MULT,
   crossingArcPositions,
+  densifyAroundArcs,
   liftPointsAtJumps,
   polylineToCurve,
   tubeSegmentCount,
@@ -144,11 +146,20 @@ function TubeSegment({
     const crossingArcs = crossingPoints?.length
       ? crossingArcPositions(segment.points, crossingPoints, radius * 0.5)
       : [];
+    // Z can only be expressed at vertices that exist. A crossing halfway along
+    // a two-point line (Line / Rect tools) has none nearby, so without this the
+    // lift silently evaluates to zero and the glass still interpenetrates.
+    const halfSpan = (AUTO_CROSSING_LIFT_SPAN_MULT * radius * 2) / 2;
+    const dense = crossingArcs.length
+      ? densifyAroundArcs(segment.points, crossingArcs, halfSpan, halfSpan / 6)
+      : null;
+    const pts = dense ? dense.points : segment.points;
+    const remap = (i: number) => (dense ? (dense.indexMap[i] ?? i) : i);
     const lifted = liftPointsAtJumps(
-      segment.points,
-      segment.jumpPolylineIndices,
+      pts,
+      segment.jumpPolylineIndices.map(remap),
       radius * 2,
-      segment.dropBendPolylineIndices,
+      segment.dropBendPolylineIndices.map(remap),
       crossingArcs,
     );
     const curve = polylineToCurve(lifted, segment.closed);

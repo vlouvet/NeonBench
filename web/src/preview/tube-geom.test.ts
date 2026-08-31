@@ -7,7 +7,9 @@ import {
   JUMP_LIFT_SPAN_MULT,
   liftPointsAtJumps,
   crossingArcPositions,
+  densifyAroundArcs,
   AUTO_CROSSING_LIFT_HEIGHT_MULT,
+  AUTO_CROSSING_LIFT_SPAN_MULT,
   polylineToCurve,
   tubeSegmentCount,
   TUBE_SEGMENTS_MAX,
@@ -458,5 +460,61 @@ describe('crossingArcPositions', () => {
   it('handles degenerate input', () => {
     expect(crossingArcPositions([[0, 0]], [[0, 0]], 1)).toEqual([]);
     expect(crossingArcPositions(linePoints(5), [], 1)).toEqual([]);
+  });
+});
+
+// The bug that survived the first round of tests: Z can only be expressed at
+// vertices that exist, so a crossing halfway along a TWO-POINT line got no
+// lift at all and the glass still interpenetrated. Dense vectorised polylines
+// hid it; Line/Rect output does not.
+describe('densifyAroundArcs (sparse-polyline lift)', () => {
+  const D = 12;
+  const halfSpan = (AUTO_CROSSING_LIFT_SPAN_MULT * D) / 2;
+
+  it('a crossing mid-way along a two-point line still lifts above one diameter', () => {
+    const sparse: [number, number][] = [[0, 0], [200, 0]];
+    const arc = 100;
+    // Without densifying, the only vertices are at arc 0 and 200 — both far
+    // outside the falloff, so every Z is 0 and the tubes still intersect.
+    const flat = liftPointsAtJumps(sparse, [], D, [], [arc]);
+    expect(Math.max(...flat.map((p) => p[2]))).toBe(0);
+
+    const { points } = densifyAroundArcs(sparse, [arc], halfSpan, halfSpan / 6);
+    const lifted = liftPointsAtJumps(points, [], D, [], [arc]);
+    expect(Math.max(...lifted.map((p) => p[2]))).toBeGreaterThan(D);
+  });
+
+  it('keeps the original vertices, and indexMap points at them', () => {
+    const pts: [number, number][] = [[0, 0], [100, 0], [200, 0]];
+    const { points, indexMap } = densifyAroundArcs(pts, [50], halfSpan, halfSpan / 6);
+    expect(indexMap).toHaveLength(pts.length);
+    pts.forEach((orig, i) => expect(points[indexMap[i]]).toEqual(orig));
+  });
+
+  it('inserted points lie on the original path', () => {
+    const pts: [number, number][] = [[0, 0], [200, 0]];
+    const { points } = densifyAroundArcs(pts, [100], halfSpan, halfSpan / 6);
+    // Straight line along y=0: every inserted point must stay on it.
+    expect(points.every((p) => Math.abs(p[1]) < 1e-9)).toBe(true);
+    expect(points.length).toBeGreaterThan(pts.length);
+  });
+
+  it('only subdivides near the crossing, not the whole run', () => {
+    const long: [number, number][] = [[0, 0], [10000, 0]];
+    const { points } = densifyAroundArcs(long, [5000], halfSpan, halfSpan / 6);
+    // A 10 m run with one crossing must not become thousands of points.
+    expect(points.length).toBeLessThan(30);
+  });
+
+  it('is a no-op without crossings', () => {
+    const pts: [number, number][] = [[0, 0], [100, 0]];
+    const { points, indexMap } = densifyAroundArcs(pts, [], halfSpan, halfSpan / 6);
+    expect(points).toEqual(pts);
+    expect(indexMap).toEqual([0, 1]);
+  });
+
+  it('handles degenerate input', () => {
+    expect(densifyAroundArcs([[1, 1]], [0], halfSpan, 1).points).toEqual([[1, 1]]);
+    expect(densifyAroundArcs([[0, 0], [0, 0]], [0], halfSpan, 1).points).toHaveLength(2);
   });
 });
