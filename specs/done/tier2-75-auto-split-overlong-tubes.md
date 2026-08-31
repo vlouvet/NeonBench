@@ -1,6 +1,13 @@
 # Tier 2 #75 — Auto-split overlong tubes
 
-> **Status:** active · drafted 2026-05-09 · branch `task/2-auto-split-overlong-tubes` · NW parity (max-tube-length ergonomics)
+> **Status:** SHIPPED 2026-08-31 · branch `task/2-auto-split-overlong-tubes` · NW parity (max-tube-length ergonomics)
+
+> **Correction on merge.** This spec calls the limit `MaxRunLengthMM` and the rule
+> a warning. Neither is what the code has: the field is `max_segment_length_mm`
+> (`storage.TubeSpec`), the rule is `RuleMaxSegmentLength` in
+> `internal/validate/rules.go`, and it emits `SeverityError`, not a warning. The
+> deliverable is unchanged — the auto-fix is what was missing — but nothing in
+> the shipped code uses the names below.
 
 ## Goal
 

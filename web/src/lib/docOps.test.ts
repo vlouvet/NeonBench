@@ -2668,3 +2668,189 @@ describe('clearRunDiametersMatching', () => {
     expect(doc.runs[0].tube_diameter_mm).toBe(10);
   });
 });
+
+// Tier 2 #75 — the max_segment_length validator tells the operator a tube is
+// too long and then leaves them to walk every warning and splitRun by hand.
+// These pin the geometry, because "evenly by arc length" is the whole claim.
+describe('autoSplitOverlongTubes', () => {
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 4000, 4000],
+    runs,
+  });
+
+  // A straight run along +X of exactly `lengthMM`, sampled at `n` vertices.
+  function lineDoc(lengthMM: number, n = 2): DesignDoc {
+    const points: [number, number][] = [];
+    for (let i = 0; i < n; i++) points.push([(i / (n - 1)) * lengthMM, 0]);
+    return docOf([{ id: 'r1', polyline: { points, closed: false } }]);
+  }
+
+  const lengthsOf = (doc: DesignDoc) =>
+    doc.runs.map((r) => ops.polylineLengthMM(r.polyline.points, !!r.polyline.closed));
+
+  it('splits 1500mm into 2 pieces of ~750mm against a 1000mm limit', () => {
+    const res = ops.autoSplitOverlongTubes(lineDoc(1500), 1000);
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(2);
+    expect(res.doc.runs).toHaveLength(2);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(750, 6);
+  });
+
+  it('splits 2500mm into 3 pieces of ~833mm against a 1000mm limit', () => {
+    const res = ops.autoSplitOverlongTubes(lineDoc(2500), 1000);
+    expect(res.piecesCreated).toBe(3);
+    expect(res.doc.runs).toHaveLength(3);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(2500 / 3, 6);
+  });
+
+  it('splits 3500mm into 4 pieces against a 1000mm limit', () => {
+    const res = ops.autoSplitOverlongTubes(lineDoc(3500), 1000);
+    expect(res.piecesCreated).toBe(4);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(875, 6);
+  });
+
+  // The postcondition the button actually promises. An exact multiple is the
+  // dangerous case: nominal piece length lands *on* the limit, and the
+  // validator's test is a strict `>`, so a picometre of float drift would
+  // hand the operator back the same error they just clicked to clear.
+  it('leaves no run over the limit, including at exact multiples', () => {
+    for (const [len, limit] of [[2000, 1000], [3000, 1000], [1000, 500], [2400, 800]]) {
+      const res = ops.autoSplitOverlongTubes(lineDoc(len), limit);
+      for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(limit);
+    }
+  });
+
+  it('is idempotent — a second pass over the split doc is a no-op', () => {
+    const first = ops.autoSplitOverlongTubes(lineDoc(2500), 1000);
+    const second = ops.autoSplitOverlongTubes(first.doc, 1000);
+    expect(second.runsSplit).toBe(0);
+    expect(second.doc).toBe(first.doc);
+  });
+
+  it('leaves compliant runs untouched and returns the input doc', () => {
+    const doc = lineDoc(900);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.runsSplit).toBe(0);
+    expect(res.doc).toBe(doc);
+  });
+
+  // Arc length, not endpoint distance: this run doubles back on itself, so
+  // its Euclidean span is 0 while its arc length is 2000mm.
+  it('measures arc length, not the straight-line span', () => {
+    const doc = docOf([
+      { id: 'r1', polyline: { points: [[0, 0], [1000, 0], [0, 0]], closed: false } },
+    ]);
+    const res = ops.autoSplitOverlongTubes(doc, 900);
+    expect(res.piecesCreated).toBe(3);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(2000 / 3, 6);
+  });
+
+  // Cuts land mid-segment on a serpentine, so the pieces must still come out
+  // even — this is what "evenly distributed along arc length" has to mean.
+  it('cuts mid-segment when the split point falls between vertices', () => {
+    const doc = docOf([
+      {
+        id: 'r1',
+        polyline: { points: [[0, 0], [1000, 0], [1000, 1000], [0, 1000]], closed: false },
+      },
+    ]);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.piecesCreated).toBe(3);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(1000, 6);
+  });
+
+  // A decorative closed loop has no electrodes; the spec says open it into N
+  // arcs and let the operator place electrodes afterwards.
+  it('opens an electrodeless closed loop and splits it into open arcs', () => {
+    const pts: [number, number][] = [[0, 0], [1000, 0], [1000, 1000], [0, 1000]];
+    const doc = docOf([{ id: 'r1', polyline: { points: pts, closed: true } }]);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    // Perimeter is 4000mm including the closing segment.
+    expect(res.piecesCreated).toBe(4);
+    expect(res.doc.runs.every((r) => r.polyline.closed === false)).toBe(true);
+    expect(res.doc.runs.every((r) => (r.electrodes?.length ?? 0) === 0)).toBe(true);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(1000, 6);
+  });
+
+  // Which piece inherits which electrode has no non-arbitrary answer once the
+  // live arc is gone, so we decline and say so rather than mangling it.
+  it('skips a closed run that carries electrodes, and reports the skip', () => {
+    const pts: [number, number][] = [[0, 0], [1000, 0], [1000, 1000], [0, 1000]];
+    const doc = docOf([
+      {
+        id: 'r1',
+        polyline: { points: pts, closed: true },
+        electrodes: [{ point_index: 0 }, { point_index: 2 }],
+      },
+    ]);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.runsSplit).toBe(0);
+    expect(res.skippedClosedWithElectrodes).toBe(1);
+    expect(res.doc.runs).toHaveLength(1);
+    expect(res.doc.runs[0].polyline.closed).toBe(true);
+  });
+
+  it('splits only the violating runs in a mixed doc', () => {
+    const doc = docOf([
+      { id: 'short', polyline: { points: [[0, 0], [500, 0]], closed: false } },
+      { id: 'long', polyline: { points: [[0, 50], [2500, 50]], closed: false } },
+      { id: 'alsoshort', polyline: { points: [[0, 99], [100, 99]], closed: false } },
+    ]);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.runsSplit).toBe(1);
+    expect(res.doc.runs).toHaveLength(5);
+    // The compliant runs keep their ids and their position in the list.
+    expect(res.doc.runs[0].id).toBe('short');
+    expect(res.doc.runs[4].id).toBe('alsoshort');
+  });
+
+  it('carries color, diameter and notes onto every piece', () => {
+    const doc = docOf([
+      {
+        id: 'r1',
+        polyline: { points: [[0, 0], [2500, 0]], closed: false },
+        color: '#ff0066',
+        tube_diameter_mm: 15,
+        notes: 'ruby 15mm',
+      },
+    ]);
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.doc.runs).toHaveLength(3);
+    for (const r of res.doc.runs) {
+      expect(r.color).toBe('#ff0066');
+      expect(r.tube_diameter_mm).toBe(15);
+      expect(r.notes).toBe('ruby 15mm');
+    }
+  });
+
+  it('does not mutate the input doc', () => {
+    const doc = lineDoc(2500);
+    ops.autoSplitOverlongTubes(doc, 1000);
+    expect(doc.runs).toHaveLength(1);
+    expect(doc.runs[0].polyline.points).toHaveLength(2);
+  });
+
+  it('ignores a non-positive limit rather than splitting forever', () => {
+    const doc = lineDoc(2500);
+    expect(ops.autoSplitOverlongTubes(doc, 0).doc).toBe(doc);
+    expect(ops.autoSplitOverlongTubes(doc, -5).doc).toBe(doc);
+    expect(ops.autoSplitOverlongTubes(doc, Number.NaN).doc).toBe(doc);
+  });
+});
+
+describe('polylineLengthMM', () => {
+  // Mirrors internal/validate/geometry.go — the closing segment counts for a
+  // closed polyline. If these two ever disagree the auto-split "fixes" runs
+  // the validator still flags.
+  it('counts the closing segment only when closed', () => {
+    const square: [number, number][] = [[0, 0], [10, 0], [10, 10], [0, 10]];
+    expect(ops.polylineLengthMM(square, false)).toBeCloseTo(30, 9);
+    expect(ops.polylineLengthMM(square, true)).toBeCloseTo(40, 9);
+  });
+
+  it('is zero for a degenerate polyline', () => {
+    expect(ops.polylineLengthMM([], false)).toBe(0);
+    expect(ops.polylineLengthMM([[5, 5]], true)).toBe(0);
+  });
+});
