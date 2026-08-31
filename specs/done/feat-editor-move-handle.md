@@ -1,6 +1,6 @@
 # feat — Editor center grab handle (drag-to-move runs in Select tool)
 
-> **Status:** active · drafted 2026-06-05 · branch `task/2-move-run-handle` · requested by user
+> **Status:** shipped #127 (319532c) · drafted 2026-06-05 · branch `task/2-move-run-handle` · requested by user
 
 ## Goal
 
