@@ -287,6 +287,40 @@ export function setRunDiameter(doc: DesignDoc, runId: string, diameterMM: number
   });
 }
 
+/**
+ * Drop `tube_diameter_mm` from every run still carrying `oldDiameterMM`, so
+ * those runs inherit the project's tube spec instead of pinning the old value.
+ *
+ * Called when the project's tube spec changes. Runs are *seeded* with the
+ * project diameter at vectorize time (designdoc/convert.go), so most values
+ * are inherited defaults rather than deliberate overrides — and the field is
+ * not cosmetic: it feeds bend clustering (designdoc/bends.go), the takeoff's
+ * glass grouping (takeoff/takeoff.go) and the ø printed on the pattern
+ * (printpdf/render.go). Left stale, a 12mm→8mm switch keeps ordering 12mm
+ * stock and keeps telling the bender 12mm.
+ *
+ * Clearing rather than rewriting means the run reads through to whatever the
+ * project spec currently is, so the next spec change needs no migration at all.
+ * A run deliberately overridden to exactly the old spec's diameter is cleared
+ * too — indistinguishable in the data model, and harmless, since it then
+ * inherits that same number until the spec changes again.
+ *
+ * Returns the input unchanged when nothing matches, so callers can use identity
+ * to decide whether the document actually changed.
+ */
+export function clearRunDiametersMatching(doc: DesignDoc, oldDiameterMM: number): DesignDoc {
+  if (!Number.isFinite(oldDiameterMM) || oldDiameterMM <= 0) return doc;
+  let changed = false;
+  const runs = doc.runs.map((run) => {
+    if (run.tube_diameter_mm !== oldDiameterMM) return run;
+    changed = true;
+    const next = { ...run };
+    delete next.tube_diameter_mm;
+    return next;
+  });
+  return changed ? { ...doc, runs } : doc;
+}
+
 export function setRunNotes(doc: DesignDoc, runId: string, notes: string): DesignDoc {
   return mapRun(doc, runId, (run) => {
     if (notes.trim() === '') {

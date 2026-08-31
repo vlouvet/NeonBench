@@ -1,6 +1,6 @@
 # Bug #10 — Switching tube spec with unsaved edits desyncs the validation summary
 
-> **Status:** active · drafted 2026-06-05 · found via Playwright manual-authoring session (cursive "Salon" build, project 16) · branch (when dispatched) `task/bug-10-spec-switch-revalidate-live-doc`
+> **Status:** shipped · drafted 2026-06-05 · found via Playwright manual-authoring session (cursive "Salon" build, project 16) · branch (when dispatched) `task/bug-10-spec-switch-revalidate-live-doc`
 
 ## Goal
 
@@ -69,6 +69,24 @@ Belt-and-suspenders: add `project?.tube_spec_id` to the live-validate effect's d
 ([EditorPage.tsx:395](../../web/src/pages/EditorPage.tsx#L395)) so any spec change re-triggers a live
 validate while dirty.
 
+**RESOLVED (2026-08-31, confirmed with the user before coding):** yes — but by *clearing* the field,
+not rewriting it. Runs still carrying the **old spec's** diameter have `tube_diameter_mm` deleted so
+they inherit the project spec (`run.tube_diameter_mm ?? projectDiameterMM`); a run overridden to some
+*other* diameter keeps it. Clearing rather than rewriting means the next spec change needs no
+migration at all.
+
+The spec's original framing below understated this. `tube_diameter_mm` is **not** display-only — it
+feeds bend clustering ([designdoc/bends.go:145](../../internal/designdoc/bends.go#L145)), the takeoff's
+glass grouping ([takeoff/takeoff.go:352](../../internal/takeoff/takeoff.go#L352)) and the ø printed on
+the pattern ([printpdf/render.go:677](../../internal/printpdf/render.go#L677)). A stale value orders the
+wrong glass stock and tells the bender the wrong size, so leaving it was not a neutral option. Runs are
+also *seeded* with the project diameter at vectorize time
+([designdoc/convert.go:41](../../internal/designdoc/convert.go#L41)), so most values are inherited
+defaults rather than deliberate overrides — the data model cannot tell the two apart, which is why the
+"matches the old spec" heuristic is the best available discriminator.
+
+<details><summary>Original open question</summary>
+
 **Open question for the implementer (confirm before coding):** should switching the spec also retag
 existing runs' `tube_diameter_mm` to the new spec's diameter? Today they keep their seeded diameter
 (the runs stayed `ø 12 mm` after switching to 8 mm). The run panel notes the per-run diameter is an
@@ -89,3 +107,27 @@ High-confusion, ship-risk: the false "Ready to print · all rules pass" can send
 the bender. Data is not corrupted (the doc is intact; only the report is wrong), and saving a new
 version re-runs live validation and restores the true counts — but the operator has no reason to
 distrust a green summary.
+
+
+## Verification (2026-08-31)
+
+Reproduced and fixed end-to-end with Playwright against real Windows builds of both `main` and the fix
+(`scripts/windows-smoke.ps1`'s host, `.89`), using the spec's own repro shape — a **blank** saved
+version with runs drawn live and left unsaved:
+
+| | before switch | after switch |
+|---|---|---|
+| `main` | `10 errors · 3 warnings · 2 runs · 0.99m` | **`All rules pass · 0 runs · 0.00m`** (2 runs still listed) |
+| fixed | `10 errors · 3 warnings · 2 runs · 0.99m` | `6 errors · 2 warnings · 2 runs · 0.99m` |
+
+The error count *falling* 10 → 6 is the tell that validation genuinely re-ran against the new spec:
+ø12 → ø8 permits a tighter minimum bend radius, so real violations disappear.
+
+An earlier repro attempt that **vectorized** first did not reproduce the bug — the saved version then
+already held the same runs, so revalidating it returned a plausible report and masked the desync. The
+divergence between saved and live is the whole mechanism; any repro must create it.
+
+**Testing note:** the component-level test this spec asks for needs React Testing Library, which the
+repo deliberately does not wire up (see `PanelSection.test.tsx`). Adding it is a new dependency and
+needs agreement per CLAUDE.md, so the unit coverage here is on `clearRunDiametersMatching` in
+`docOps.test.ts`, and the desync itself is covered by the Playwright repro above.
