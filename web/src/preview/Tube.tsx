@@ -7,6 +7,7 @@ import { splitRunBySegments, type RunSegment } from './segment-split';
 import {
   DEFAULT_TUBE_DIAMETER_MM,
   TUBE_RADIAL_SEGMENTS,
+  crossingArcPositions,
   liftPointsAtJumps,
   polylineToCurve,
   tubeSegmentCount,
@@ -52,9 +53,12 @@ import {
 export default function Tube({
   run,
   defaultDiameterMM,
+  crossingPoints,
 }: {
   run: DesignRun;
   defaultDiameterMM?: number;
+  // Bug #09 — doc-space points where this run passes over another tube.
+  crossingPoints?: ReadonlyArray<readonly [number, number]>;
 }) {
   const diameterMM =
     run.tube_diameter_mm ??
@@ -84,6 +88,7 @@ export default function Tube({
           radius={radius}
           color={run.color}
           isJumper={isJumper}
+          crossingPoints={crossingPoints}
         />
       ))}
       {run.electrodes?.map((_, electrodeIdx) => (
@@ -114,11 +119,16 @@ function TubeSegment({
   radius,
   color,
   isJumper,
+  crossingPoints,
 }: {
   segment: RunSegment;
   radius: number;
   color: string | undefined;
   isJumper?: boolean;
+  // Bug #09 — doc-space points where this run passes OVER another tube (or
+  // itself). Localised per segment here rather than threaded through the
+  // live/blockout split, which needs no knowledge of crossings.
+  crossingPoints?: ReadonlyArray<readonly [number, number]>;
 }) {
   const geometry = useMemo(() => {
     if (segment.points.length < 2) return null;
@@ -128,11 +138,18 @@ function TubeSegment({
     // lift kernel (0.5× diameter vs 2.5× for jumps). Composed via
     // max() per-point so a jump-adjacent-to-drop reads as the
     // taller jump silhouette plus a separate subtle dip.
+    // Tolerance is half a radius: generous enough to match a crossing onto the
+    // segment that owns it, tight enough not to claim a crossing on a
+    // different tube passing close by.
+    const crossingArcs = crossingPoints?.length
+      ? crossingArcPositions(segment.points, crossingPoints, radius * 0.5)
+      : [];
     const lifted = liftPointsAtJumps(
       segment.points,
       segment.jumpPolylineIndices,
       radius * 2,
       segment.dropBendPolylineIndices,
+      crossingArcs,
     );
     const curve = polylineToCurve(lifted, segment.closed);
     const segCount = tubeSegmentCount(segment.points);
@@ -148,6 +165,7 @@ function TubeSegment({
     segment.closed,
     segment.jumpPolylineIndices,
     segment.dropBendPolylineIndices,
+    crossingPoints,
     radius,
   ]);
 

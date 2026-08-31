@@ -30,6 +30,7 @@ import * as THREE from 'three';
 import type { DesignDoc, DesignRun, Group } from '../api';
 import { isGroupVisible } from '../api';
 import Tube from './Tube';
+import { findCrossings, overCrossingPointsByRun } from './crossings';
 // `isGroupVisible` is consumed inside `filterVisibleRuns` below.
 import {
   bboxOfDoc,
@@ -468,6 +469,20 @@ export default function Scene({
     return filterVisibleRuns(doc.runs, doc.groups, effectiveGroupId);
   }, [doc, effectiveGroupId]);
 
+  // Bug #09 — tubes may stack at different standoff depths, but glass must
+  // never pass through glass. Detect plan-view crossings and lift one side so
+  // the default render is physically possible without the designer having to
+  // hand-mark a jump at every crossing.
+  //
+  // Computed over the runs actually being drawn, so a hidden run can neither
+  // lift a visible one nor be lifted by it — the render matches what is on
+  // screen. Memoised on visibleRuns because detection is O(segments^2) in the
+  // worst case, though bounding-box rejection makes it near-linear in practice.
+  const overCrossings = useMemo(
+    () => overCrossingPointsByRun(findCrossings(visibleRuns)),
+    [visibleRuns],
+  );
+
   // Live `EffectComposer` handle. `<ComposerBridge>` (rendered inside
   // `<EffectComposer>` when bloom is active) writes into this ref;
   // `<ScreenshotBridge>` reads it and forwards to PreviewPage as part
@@ -622,11 +637,12 @@ export default function Scene({
         doc={doc}
         selectedGroupId={effectiveGroupId}
       />
-      {visibleRuns.map((run) => (
+      {visibleRuns.map((run, i) => (
         <Tube
           key={run.id}
           run={run}
           defaultDiameterMM={defaultDiameterMM}
+          crossingPoints={overCrossings.get(i)}
         />
       ))}
       {/*

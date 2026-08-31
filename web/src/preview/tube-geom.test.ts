@@ -6,6 +6,8 @@ import {
   JUMP_LIFT_HEIGHT_MULT,
   JUMP_LIFT_SPAN_MULT,
   liftPointsAtJumps,
+  crossingArcPositions,
+  AUTO_CROSSING_LIFT_HEIGHT_MULT,
   polylineToCurve,
   tubeSegmentCount,
   TUBE_SEGMENTS_MAX,
@@ -376,5 +378,85 @@ describe('liftPointsAtJumps — drop-bend kernel (Tier 3 #77)', () => {
     expect(lifted[d2][2]).toBeCloseTo(DROP_HEIGHT, 6);
     // Halfway between: outside both half-spans, identically zero.
     expect(lifted[60][2]).toBe(0);
+  });
+});
+
+// Bug #09 — tubes may stack at different standoff depths, but glass must never
+// intersect glass. Two tubes of equal diameter D stop intersecting once their
+// centre lines are D apart, so that is the number these assert against.
+describe('auto-crossing lift (Bug #09)', () => {
+  const D = 8;
+  // 1mm-spaced points along X, so arc position == index.
+  const linePoints = (count: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i < count; i++) out.push([i, 0]);
+    return out;
+  };
+
+
+  it('lifts the crossing point by more than one diameter, so glass cannot intersect', () => {
+    const pts = linePoints(40); // 0..39 along X, 1mm apart
+    const crossingArc = 20;
+    const lifted = liftPointsAtJumps(pts, [], D, [], [crossingArc]);
+    const atCrossing = lifted[20][2];
+    // The whole point: separation from a tube left at Z=0 must exceed D.
+    expect(atCrossing).toBeGreaterThan(D);
+    expect(atCrossing).toBeCloseTo(AUTO_CROSSING_LIFT_HEIGHT_MULT * D);
+  });
+
+  it('is lower than an explicit jump — the designer\'s instruction stays louder', () => {
+    const pts = linePoints(40);
+    const auto = liftPointsAtJumps(pts, [], D, [], [20])[20][2];
+    const jump = liftPointsAtJumps(pts, [20], D)[20][2];
+    expect(auto).toBeLessThan(jump);
+  });
+
+  it('an explicit jump at the same place wins over the auto lift', () => {
+    const pts = linePoints(40);
+    const both = liftPointsAtJumps(pts, [20], D, [], [20])[20][2];
+    const jumpOnly = liftPointsAtJumps(pts, [20], D)[20][2];
+    expect(both).toBeCloseTo(jumpOnly);
+  });
+
+  it('returns to the backing plane away from the crossing', () => {
+    const pts = linePoints(60);
+    const lifted = liftPointsAtJumps(pts, [], D, [], [30]);
+    expect(lifted[0][2]).toBe(0);
+    expect(lifted[59][2]).toBe(0);
+  });
+
+  it('no crossings leaves the tube flat', () => {
+    const pts = linePoints(10);
+    expect(liftPointsAtJumps(pts, [], D, [], []).every((p) => p[2] === 0)).toBe(true);
+  });
+});
+
+describe('crossingArcPositions', () => {
+  // 1mm-spaced points along X, so arc position == index.
+  const linePoints = (count: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i < count; i++) out.push([i, 0]);
+    return out;
+  };
+
+  it('finds the arc position of a crossing that lies on the polyline', () => {
+    const pts = linePoints(20); // along X at y=0
+    expect(crossingArcPositions(pts, [[7.5, 0]], 1)).toEqual([7.5]);
+  });
+
+  it('ignores crossings that belong to a different segment of the run', () => {
+    const pts = linePoints(20);
+    expect(crossingArcPositions(pts, [[7.5, 50]], 1)).toEqual([]);
+  });
+
+  it('measures arc length around a corner, not straight-line distance', () => {
+    // 10mm right, then 10mm down. A crossing at the end is 20mm of arc away.
+    const pts: [number, number][] = [[0, 0], [10, 0], [10, 10]];
+    expect(crossingArcPositions(pts, [[10, 10]], 0.5)[0]).toBeCloseTo(20);
+  });
+
+  it('handles degenerate input', () => {
+    expect(crossingArcPositions([[0, 0]], [[0, 0]], 1)).toEqual([]);
+    expect(crossingArcPositions(linePoints(5), [], 1)).toEqual([]);
   });
 });
