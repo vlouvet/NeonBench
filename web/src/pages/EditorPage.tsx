@@ -532,6 +532,22 @@ export default function EditorPage() {
     return doc.runs.some((r) => /-(a|b)(?:-(a|b))*$/.test(r.id));
   }, [doc]);
 
+  // Tier 2 #75 — how many runs exceed the spec's max segment length, which
+  // gates the auto-split button. Gated on the doc rather than on the
+  // validation report: the report is debounced 500ms behind every edit, so
+  // report-gating leaves the button stale in both directions — disabled just
+  // after the operator draws an overlong tube, enabled for a beat after they
+  // fix one. This measures with the same function the op uses, so an enabled
+  // button always has something to do. Hoisted above the early returns for
+  // the same reason as hasLegacyRunIds.
+  const maxSegmentLengthMM = tubeSpec?.max_segment_length_mm ?? 0;
+  const overlongRunCount = useMemo(() => {
+    if (!doc || !(maxSegmentLengthMM > 0)) return 0;
+    return doc.runs.filter(
+      (r) => ops.polylineLengthMM(r.polyline.points, !!r.polyline.closed) > maxSegmentLengthMM,
+    ).length;
+  }, [doc, maxSegmentLengthMM]);
+
   // nearestRunForPoint: replicates EditorCanvas's nearestRunId so
   // sidebar-click and j/k can reuse the canvas's "click marker →
   // select run" semantics. Iterates run vertices; cheap for typical
@@ -988,6 +1004,40 @@ export default function EditorPage() {
         `Added ${r.added} doublebacks across ${runsAffected.size} runs${skipMsg}.`,
       );
     }
+  }
+
+  // Tier 2 #75 — cut every run over the spec's max segment length into the
+  // fewest equal pieces that fit under it. The validator already flags these
+  // as errors; before this the only remedy was to walk each warning and
+  // splitRun by hand, which on a serpentine means eyeballing where 1/3 of the
+  // arc length falls.
+  function autoSplitOverlong() {
+    if (!doc) return;
+    if (!(maxSegmentLengthMM > 0)) return;
+    let result: ops.AutoSplitResult | null = null;
+    editDoc((prev) => {
+      const r = ops.autoSplitOverlongTubes(prev, maxSegmentLengthMM);
+      result = r;
+      return r.doc;
+    });
+    if (!result) return;
+    const r: ops.AutoSplitResult = result;
+    const parts: string[] = [];
+    if (r.runsSplit > 0) {
+      parts.push(
+        `Split ${r.runsSplit} ${r.runsSplit === 1 ? 'run' : 'runs'} into ${r.piecesCreated} pieces`,
+      );
+    }
+    // Name the skip explicitly. A silent "0 runs split" on a doc that visibly
+    // has an overlong loop would read as the button being broken.
+    if (r.skippedClosedWithElectrodes > 0) {
+      parts.push(
+        `${r.skippedClosedWithElectrodes} closed ${r.skippedClosedWithElectrodes === 1 ? 'run' : 'runs'} skipped (break the loop open first)`,
+      );
+    }
+    setStatusMessage(
+      parts.length > 0 ? `${parts.join(' · ')}.` : 'No runs exceed the max segment length.',
+    );
   }
 
   // Tier 2 #72 — bulk-set a housing on every electrode that doesn't
@@ -1899,6 +1949,23 @@ export default function EditorPage() {
               title="Insert a doubleback U-bend at every open-run electrode termination on the doc. Idempotent — terminations already wearing a hairpin are skipped. Wraps the per-segment Insert doubleback tool. Tier 2 #72."
             >
               Auto-doubleback all
+            </button>
+            {/* Tier 2 #75 — one-click remedy for the max_segment_length
+                validator error. Disabled when the spec carries no limit, or
+                when nothing on the doc exceeds it. */}
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={overlongRunCount === 0}
+              onClick={autoSplitOverlong}
+              title={
+                maxSegmentLengthMM > 0
+                  ? `Split every run longer than ${maxSegmentLengthMM}mm into the fewest equal-arc-length pieces that fit under the limit. Evenly spaced, one undo step. Tier 2 #75.`
+                  : 'This tube spec has no max segment length, so there is nothing to split against.'
+              }
+            >
+              Split overlong tubes
+              {overlongRunCount > 0 ? ` (${overlongRunCount})` : ''}
             </button>
             <button
               type="button"

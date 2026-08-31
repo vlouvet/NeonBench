@@ -2414,3 +2414,270 @@ export function setRunsPoints(
   if (!changed) return doc;
   return { ...doc, runs: nextRuns };
 }
+
+// ---------------------------------------------------------------------------
+// Tier 2 #75 — auto-split overlong tubes
+// ---------------------------------------------------------------------------
+
+// segLenMM is `sqrt(dx*dx + dy*dy)`, NOT Math.hypot. hypot is the more
+// accurate primitive — it rescales to avoid overflow — but the Go
+// validator's `dist()` uses the naive form, and the two can disagree by
+// an ulp. The validator is what decides whether a run is flagged, so the
+// auto-split has to measure the way the validator measures, not the way
+// that is independently more correct. Sign coordinates are millimetres,
+// so hypot's overflow protection buys us nothing here anyway.
+function segLenMM(a: [number, number], b: [number, number]): number {
+  const dx = a[0] - b[0];
+  const dy = a[1] - b[1];
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+// polylineLengthMM returns total arc length. Deliberately mirrors the Go
+// validator's `(*Polyline).Length()` (internal/validate/geometry.go),
+// closing segment included when `closed` — if the two disagree, a run
+// the auto-split believes it fixed can still come back flagged.
+export function polylineLengthMM(points: [number, number][], closed = false): number {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    total += segLenMM(points[i], points[i - 1]);
+  }
+  if (closed && points.length > 1) {
+    total += segLenMM(points[points.length - 1], points[0]);
+  }
+  return total;
+}
+
+// splitRunAtArcLength cuts one OPEN run at `targetMM` measured along its
+// polyline from the first vertex, and returns the two new run ids (head
+// = the piece containing vertex 0). Returns null when the target isn't
+// strictly interior to the run, which is the caller's cue to stop.
+//
+// The cut lands mid-segment in the general case, so we insertVertex
+// first and then splitRun at the vertex we just created. When the target
+// falls on an existing vertex (within EPS) we split there directly
+// rather than inserting a coincident duplicate — a zero-length segment
+// would survive into the bend list as a phantom 0mm run.
+function splitRunAtArcLength(
+  doc: DesignDoc,
+  runId: string,
+  targetMM: number,
+): { doc: DesignDoc; headId: string; tailId: string } | null {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run || run.polyline.closed) return null;
+  const pts = run.polyline.points;
+  const n = pts.length;
+  if (n < 2) return null;
+
+  const EPS = 1e-9;
+  if (targetMM <= EPS) return null;
+
+  // Walk segments, accumulating arc length, until the target lands
+  // inside one. `k` ends as the segment index and `t` the parameter
+  // along it.
+  let acc = 0;
+  let k = -1;
+  let t = 0;
+  for (let i = 0; i < n - 1; i++) {
+    const segLen = segLenMM(pts[i + 1], pts[i]);
+    if (acc + segLen >= targetMM - EPS) {
+      k = i;
+      t = segLen === 0 ? 0 : (targetMM - acc) / segLen;
+      break;
+    }
+    acc += segLen;
+  }
+  if (k < 0) return null; // target past the end of the run
+
+  // splitRun needs 0 < pointIndex < n-1 so each piece keeps >= 2 points.
+  const canSplitAt = (idx: number) => idx > 0 && idx < n - 1;
+
+  let nextDoc: DesignDoc;
+  let splitIndex: number;
+  if (t <= EPS && canSplitAt(k)) {
+    nextDoc = doc;
+    splitIndex = k;
+  } else if (t >= 1 - EPS && canSplitAt(k + 1)) {
+    nextDoc = doc;
+    splitIndex = k + 1;
+  } else {
+    nextDoc = insertVertex(doc, runId, k, Math.min(1, Math.max(0, t)));
+    splitIndex = k + 1; // the vertex insertVertex just placed
+  }
+
+  const before = new Set(nextDoc.runs.map((r) => r.id));
+  const after = splitRun(nextDoc, runId, splitIndex);
+  if (after === nextDoc) return null;
+  // splitRun replaces the source run in place with [head, tail], so the
+  // two fresh ids are the ones that weren't on the doc a moment ago and
+  // they are still adjacent in run order.
+  const fresh = after.runs.filter((r) => !before.has(r.id));
+  if (fresh.length !== 2) return null;
+  return { doc: after, headId: fresh[0].id, tailId: fresh[1].id };
+}
+
+export type AutoSplitResult = {
+  doc: DesignDoc;
+  // Source runs that were over the limit and got cut.
+  runsSplit: number;
+  // Total pieces those runs became (always > runsSplit when runsSplit > 0).
+  piecesCreated: number;
+  // Closed runs carrying electrodes, which we decline to touch — see below.
+  skippedClosedWithElectrodes: number;
+};
+
+// autoSplitOverlongTubes cuts every run longer than `maxLengthMM` into
+// the fewest equal-arc-length pieces that all fit under the limit
+// (Tier 2 #75). One-click counterpart to the `max_segment_length`
+// validator issue, which today only tells the operator to go split by
+// hand.
+//
+// Even spacing, not "split at a natural point". Snapping to the nearest
+// vertex or electrode would produce prettier cuts on some docs and wildly
+// uneven ones on others (a serpentine's vertices cluster at the turns);
+// even spacing is predictable and matches the NW behavior operators
+// already expect. A "snap to nearest vertex" mode is a follow-up.
+//
+// Piece count is `ceil(L / limit)`, then re-checked against the geometry
+// the split actually produced. The edge case is an L that is an exact
+// multiple of the limit: n pieces then have to measure exactly `limit`
+// each, and splitting a segment can only ever add length (the two halves
+// sum to >= the whole once rounded), so at least one piece lands a
+// fraction of a picometre over. The validator's test is a strict `>`, so
+// that run comes back flagged and the button looks broken. There is no
+// way to place n cuts that avoids this — the only fix is one more cut —
+// so if any piece is still over we retry with n+1.
+//
+// Cost: an exactly-divisible tube gets one more piece than it strictly
+// needs. That case does not arise from drawing — it needs L to be an
+// exact float multiple of a round limit — but it is trivial to hit from
+// a script, and a visibly-broken fix button is worse than one extra cut.
+// The postcondition is therefore real rather than nominal: no run on the
+// returned doc exceeds `maxLengthMM`.
+//
+// Closed runs: an electrodeless decorative loop is opened at vertex 0
+// (duplicating it as the last vertex, which preserves every live index)
+// and then split, per spec — the operator places electrodes afterwards.
+// A closed run that already carries electrodes is skipped and counted:
+// its live arc is defined by the walk between those electrodes, and
+// there is no non-arbitrary answer to which piece inherits which
+// electrode. Better to report it than to silently mangle it; the
+// operator can `breakOpen` it and re-run.
+//
+// Locked and hidden groups are not consulted, matching the other
+// doc-wide bulk ops (autoAssignRaceways, autoDoublebackAllTerminations)
+// — `locked` is a canvas click-protect flag, not a write barrier.
+export function autoSplitOverlongTubes(
+  doc: DesignDoc,
+  maxLengthMM: number,
+): AutoSplitResult {
+  const none: AutoSplitResult = {
+    doc,
+    runsSplit: 0,
+    piecesCreated: 0,
+    skippedClosedWithElectrodes: 0,
+  };
+  if (!(maxLengthMM > 0)) return none;
+
+  let out = doc;
+  let runsSplit = 0;
+  let piecesCreated = 0;
+  let skippedClosedWithElectrodes = 0;
+
+  // Snapshot the ids up front: splitting mints new runs, and we don't
+  // want to re-examine pieces we just created (they're under the limit
+  // by construction, and re-entering would risk a runaway on a doc the
+  // arithmetic can't satisfy).
+  const sourceIds = doc.runs.map((r) => r.id);
+
+  for (const sourceId of sourceIds) {
+    const run = out.runs.find((r) => r.id === sourceId);
+    if (!run) continue;
+    const closed = !!run.polyline.closed;
+    const length = polylineLengthMM(run.polyline.points, closed);
+    if (length <= maxLengthMM) continue;
+
+    // Opening a closed loop below is a visible edit in its own right and it
+    // happens BEFORE we know the split will succeed. No input reaches that
+    // bail-out today — every opened loop of >= 3 vertices cuts cleanly — but
+    // if one ever did, the doc would be left holding a loop that is open and
+    // uncut, which is strictly worse than the overlong loop we started with:
+    // the duplicated seam vertex reads as glass-on-glass to the crossing
+    // rule. Snapshot so an abandoned run leaves the doc exactly as found.
+    const outAtRunStart = out;
+
+    if (closed) {
+      if ((run.electrodes?.length ?? 0) > 0) {
+        skippedClosedWithElectrodes++;
+        continue;
+      }
+      if (run.polyline.points.length < 3) continue;
+      out = mapRun(out, sourceId, (r) => ({
+        ...r,
+        polyline: {
+          ...r.polyline,
+          points: [...r.polyline.points, r.polyline.points[0]],
+          closed: false,
+        },
+      }));
+    }
+
+    // `pieces` is the nominal cut count; the retry loop below bumps it
+    // when the produced geometry doesn't actually clear the limit.
+    const pieces = Math.max(2, Math.ceil(length / maxLengthMM));
+    let applied: DesignDoc | null = null;
+    let appliedPieces = 0;
+    // At most two retries: n, n+1, n+2. Floating-point slop is
+    // sub-picometre, so one extra cut always suffices in practice; the
+    // bound keeps a pathological doc from spinning.
+    for (let attempt = 0; attempt < 3 && applied === null; attempt++) {
+      const n = pieces + attempt;
+      const candidate = cutIntoEqualPieces(out, sourceId, length, n);
+      if (!candidate) break;
+      const overlong = candidate.pieceIds.some((id) => {
+        const r = candidate.doc.runs.find((x) => x.id === id);
+        return r ? polylineLengthMM(r.polyline.points, false) > maxLengthMM : false;
+      });
+      if (!overlong) {
+        applied = candidate.doc;
+        appliedPieces = candidate.pieceIds.length;
+      }
+    }
+    if (applied === null) {
+      out = outAtRunStart;
+      continue;
+    }
+    out = applied;
+    runsSplit++;
+    piecesCreated += appliedPieces;
+  }
+
+  if (runsSplit === 0 && skippedClosedWithElectrodes === 0) return none;
+  return { doc: out, runsSplit, piecesCreated, skippedClosedWithElectrodes };
+}
+
+// cutIntoEqualPieces makes `n - 1` cuts at arc-length L/n, 2L/n, … along
+// an open run. Each cut is measured from the start of the *remaining
+// tail*, not from the original vertex 0 — walking the tail avoids having
+// to track how earlier insertions shifted the vertex indices, and the
+// distances are the same either way because every piece is L/n long.
+function cutIntoEqualPieces(
+  doc: DesignDoc,
+  runId: string,
+  totalLengthMM: number,
+  n: number,
+): { doc: DesignDoc; pieceIds: string[] } | null {
+  if (n < 2) return null;
+  const step = totalLengthMM / n;
+  let out = doc;
+  let tailId = runId;
+  const pieceIds: string[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const cut = splitRunAtArcLength(out, tailId, step);
+    if (!cut) return null;
+    out = cut.doc;
+    pieceIds.push(cut.headId);
+    tailId = cut.tailId;
+  }
+  pieceIds.push(tailId);
+  return { doc: out, pieceIds };
+}
