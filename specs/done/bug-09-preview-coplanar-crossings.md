@@ -1,6 +1,6 @@
 # Bug #09 — 3D preview renders crossing tubes coplanar ("glass crosses glass")
 
-> **Status:** active · drafted 2026-06-05 · found via Playwright manual-authoring session (cursive "Salon" build, project 16) · branch (when dispatched) `task/bug-09-preview-crossing-depth`
+> **Status:** shipped (remedy 1) · drafted 2026-06-05 · found via Playwright manual-authoring session (cursive "Salon" build, project 16) · branch (when dispatched) `task/bug-09-preview-crossing-depth`
 
 ## Goal
 
@@ -73,3 +73,53 @@ camera (standoff profile). Documented in [docs/USER_MANUAL.md](../../docs/USER_M
 
 Block-out **paint rendering** in 3D (showing the opaque painted segment) — that's a separate
 visual-fidelity item; this spec is only about tubes not occupying the same space.
+
+
+## What shipped (2026-08-31)
+
+**Remedy 1 — auto-depth at detected crossings.** Remedies 2 (link the warning to
+a one-click "mark jump") and 3 (retune `JUMP_LIFT_HEIGHT_MULT` for legibility at
+storefront scale) are **not** done and remain open follow-ups.
+
+The framing was sharpened by the user during implementation: **glass can stack,
+but must not intersect.** Tubes sitting at different standoff depths is real
+neon; interpenetration is not. That converts the goal into a hard geometric
+constraint — two tubes of diameter dA and dB clear each other once their centre
+lines are `(dA + dB) / 2` apart — rather than a matter of taste.
+`AUTO_CROSSING_LIFT_HEIGHT_MULT = 1.25` carries 25% over that minimum, and stays
+well under a jump's 2.5× so an explicit jump still reads as the louder,
+intentional gesture (`max()` composition lets it win where both apply).
+
+Detection is **segment-pairwise**, not run-pairwise, because the originating
+repro is a cursive "Salon" whose single connected run crosses *itself*. Per-run
+depth layering cannot fix that case at all.
+
+### The trap this hit, recorded so it is not re-introduced
+
+The first implementation computed the correct crossing arc position and still
+rendered **byte-identically** to `main`. `liftPointsAtJumps` returns one Z per
+*existing vertex*, and a crossing halfway along a two-point line has no vertex
+inside the falloff — so every vertex evaluated to zero and the glass kept
+interpenetrating. Dense vectorised polylines happen to carry a vertex close
+enough, which is why the unit tests passed; **Line and Rect output is sparse, so
+the common hand-drawn case was entirely unfixed.** `densifyAroundArcs` now
+inserts vertices around each crossing (locally only — a 10 m run with one
+crossing gains a handful of points, not thousands) and returns an index map so
+jump / drop-bend indices survive.
+
+This was caught only by rendering both builds and diffing the images. A unit
+test alone would have shipped it.
+
+### Verification
+
+Playwright against real Windows builds of `main` and the fix, on a doc with an
+explicit X crossing plus a self-crossing bow-tie:
+
+| camera | `main` | fixed |
+|---|---|---|
+| Iso | crossings merge flat | visible depth break at both crossings |
+| **Side** (standoff profile) | **perfectly flat bar** — all tubes coplanar | crossing tube stands proud of the backing plane |
+
+Renders were compared by hash, not by eye — the first (broken) attempt produced
+images identical to `main`, which is precisely what eyeballing a bloom-heavy
+neon render would have missed.

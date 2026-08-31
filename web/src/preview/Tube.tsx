@@ -7,6 +7,9 @@ import { splitRunBySegments, type RunSegment } from './segment-split';
 import {
   DEFAULT_TUBE_DIAMETER_MM,
   TUBE_RADIAL_SEGMENTS,
+  AUTO_CROSSING_LIFT_SPAN_MULT,
+  crossingArcPositions,
+  densifyAroundArcs,
   liftPointsAtJumps,
   polylineToCurve,
   tubeSegmentCount,
@@ -52,9 +55,12 @@ import {
 export default function Tube({
   run,
   defaultDiameterMM,
+  crossingPoints,
 }: {
   run: DesignRun;
   defaultDiameterMM?: number;
+  // Bug #09 — doc-space points where this run passes over another tube.
+  crossingPoints?: ReadonlyArray<readonly [number, number]>;
 }) {
   const diameterMM =
     run.tube_diameter_mm ??
@@ -84,6 +90,7 @@ export default function Tube({
           radius={radius}
           color={run.color}
           isJumper={isJumper}
+          crossingPoints={crossingPoints}
         />
       ))}
       {run.electrodes?.map((_, electrodeIdx) => (
@@ -114,11 +121,16 @@ function TubeSegment({
   radius,
   color,
   isJumper,
+  crossingPoints,
 }: {
   segment: RunSegment;
   radius: number;
   color: string | undefined;
   isJumper?: boolean;
+  // Bug #09 — doc-space points where this run passes OVER another tube (or
+  // itself). Localised per segment here rather than threaded through the
+  // live/blockout split, which needs no knowledge of crossings.
+  crossingPoints?: ReadonlyArray<readonly [number, number]>;
 }) {
   const geometry = useMemo(() => {
     if (segment.points.length < 2) return null;
@@ -128,11 +140,27 @@ function TubeSegment({
     // lift kernel (0.5× diameter vs 2.5× for jumps). Composed via
     // max() per-point so a jump-adjacent-to-drop reads as the
     // taller jump silhouette plus a separate subtle dip.
+    // Tolerance is half a radius: generous enough to match a crossing onto the
+    // segment that owns it, tight enough not to claim a crossing on a
+    // different tube passing close by.
+    const crossingArcs = crossingPoints?.length
+      ? crossingArcPositions(segment.points, crossingPoints, radius * 0.5)
+      : [];
+    // Z can only be expressed at vertices that exist. A crossing halfway along
+    // a two-point line (Line / Rect tools) has none nearby, so without this the
+    // lift silently evaluates to zero and the glass still interpenetrates.
+    const halfSpan = (AUTO_CROSSING_LIFT_SPAN_MULT * radius * 2) / 2;
+    const dense = crossingArcs.length
+      ? densifyAroundArcs(segment.points, crossingArcs, halfSpan, halfSpan / 6)
+      : null;
+    const pts = dense ? dense.points : segment.points;
+    const remap = (i: number) => (dense ? (dense.indexMap[i] ?? i) : i);
     const lifted = liftPointsAtJumps(
-      segment.points,
-      segment.jumpPolylineIndices,
+      pts,
+      segment.jumpPolylineIndices.map(remap),
       radius * 2,
-      segment.dropBendPolylineIndices,
+      segment.dropBendPolylineIndices.map(remap),
+      crossingArcs,
     );
     const curve = polylineToCurve(lifted, segment.closed);
     const segCount = tubeSegmentCount(segment.points);
@@ -148,6 +176,7 @@ function TubeSegment({
     segment.closed,
     segment.jumpPolylineIndices,
     segment.dropBendPolylineIndices,
+    crossingPoints,
     radius,
   ]);
 

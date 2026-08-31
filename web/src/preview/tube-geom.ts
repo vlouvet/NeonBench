@@ -93,6 +93,19 @@ export const JUMP_LIFT_CLUSTER_GAP_MULT = 4.0;
 // not the sum. A jump and a drop at the same vertex thus render as
 // "jump wins" (taller) rather than 3× height. This matches user
 // mental model: kinds are stacked semantically, not additively.
+/**
+ * Bug #09 — automatic lift where tubes cross without an explicit jump.
+ *
+ * Two tubes of equal diameter D stop intersecting once their centre lines are
+ * D apart, so 1.0 would be the bare minimum and this carries 25% clearance.
+ * Deliberately far below a jump's 2.5×: a jump is a fabrication instruction the
+ * designer made, while this is only the preview refusing to draw glass through
+ * glass. Tubes may stack; they may not intersect.
+ */
+export const AUTO_CROSSING_LIFT_HEIGHT_MULT = 1.25;
+/** Falloff span for the auto-crossing kernel, in diameters. */
+export const AUTO_CROSSING_LIFT_SPAN_MULT = 3.0;
+
 export const DROP_BEND_LIFT_HEIGHT_MULT = 0.5;
 export const DROP_BEND_LIFT_SPAN_MULT = 4.0;
 
@@ -143,10 +156,17 @@ export function liftPointsAtJumps(
   jumpIndicesInSegment: ReadonlyArray<number>,
   diameterMM: number,
   dropBendIndicesInSegment: ReadonlyArray<number> = [],
+  // Bug #09 — arc positions (mm along this polyline), NOT vertex indices.
+  // Positions rather than indices because the guarantee is "no intersecting
+  // glass AT the crossing"; snapping to a nearby vertex would put the crossing
+  // on the kernel's falloff and could leave the tubes overlapping.
+  crossingArcsInSegment: ReadonlyArray<number> = [],
 ): [number, number, number][] {
   if (
     points.length === 0 ||
-    (jumpIndicesInSegment.length === 0 && dropBendIndicesInSegment.length === 0) ||
+    (jumpIndicesInSegment.length === 0 &&
+      dropBendIndicesInSegment.length === 0 &&
+      crossingArcsInSegment.length === 0) ||
     diameterMM <= 0
   ) {
     return points.map(([x, y]) => [x, y, 0]);
@@ -155,6 +175,10 @@ export function liftPointsAtJumps(
   const jumpHalfSpan = jumpSpan / 2;
   const jumpHeight = JUMP_LIFT_HEIGHT_MULT * diameterMM;
   const clusterGap = JUMP_LIFT_CLUSTER_GAP_MULT * diameterMM;
+
+  const crossSpan = AUTO_CROSSING_LIFT_SPAN_MULT * diameterMM;
+  const crossHalfSpan = crossSpan / 2;
+  const crossHeight = AUTO_CROSSING_LIFT_HEIGHT_MULT * diameterMM;
 
   const dropSpan = DROP_BEND_LIFT_SPAN_MULT * diameterMM;
   const dropHalfSpan = dropSpan / 2;
@@ -194,7 +218,7 @@ export function liftPointsAtJumps(
     if (di >= 0 && di < points.length) dropArcs.push(arcAt[di]);
   }
 
-  if (jumpClusters.length === 0 && dropArcs.length === 0) {
+  if (jumpClusters.length === 0 && dropArcs.length === 0 && crossingArcsInSegment.length === 0) {
     return points.map(([x, y]) => [x, y, 0]);
   }
 
@@ -232,8 +256,154 @@ export function liftPointsAtJumps(
       }
       if (lift > z) z = lift;
     }
+    // Auto-crossing lifts (Bug #09). Max-composed with the others, so an
+    // explicit jump at the same place still wins — the designer's intent
+    // outranks the renderer's minimum.
+    for (const ca of crossingArcsInSegment) {
+      const d = Math.abs(arc - ca);
+      if (d >= crossHalfSpan) continue;
+      let lift: number;
+      if (d === 0) {
+        lift = crossHeight;
+      } else {
+        const k = (d / crossHalfSpan) * (Math.PI / 2);
+        const cosine = Math.cos(k);
+        lift = crossHeight * cosine * cosine;
+      }
+      if (lift > z) z = lift;
+    }
     return [x, y, z];
   });
+}
+
+/**
+ * Insert extra vertices around given arc positions, returning the denser
+ * polyline plus a map from each original vertex index to its new index.
+ *
+ * Necessary because `liftPointsAtJumps` can only express Z at vertices that
+ * exist. A crossing halfway along a two-point straight line has no vertex near
+ * it, so every existing vertex falls outside the falloff and the tube renders
+ * flat — glass through glass, exactly the bug this is meant to fix. Dense
+ * vectorised polylines happen to have a vertex close enough; polylines from the
+ * Line and Rect tools do not, which is why this cannot be left to chance.
+ *
+ * Only the neighbourhood of each arc is subdivided, so long runs do not gain
+ * thousands of points for one crossing.
+ *
+ * `indexMap` lets callers translate jump / drop-bend vertex indices onto the
+ * denser polyline; inserted points always fall between originals, so ordering
+ * is preserved.
+ */
+export function densifyAroundArcs(
+  points: ReadonlyArray<readonly [number, number]>,
+  arcs: ReadonlyArray<number>,
+  halfSpanMM: number,
+  stepMM: number,
+): { points: [number, number][]; indexMap: number[] } {
+  const identity = () => ({
+    points: points.map(([x, y]) => [x, y] as [number, number]),
+    indexMap: points.map((_, i) => i),
+  });
+  if (points.length < 2 || arcs.length === 0 || stepMM <= 0 || halfSpanMM <= 0) return identity();
+
+  const arcAt: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    arcAt.push(arcAt[i - 1] + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+  }
+  const total = arcAt[arcAt.length - 1];
+  if (total === 0) return identity();
+
+  // Sample positions we want to exist: the crossing itself plus a ladder across
+  // its falloff, so the raised cosine has something to render on.
+  const wanted: number[] = [];
+  for (const a of arcs) {
+    for (let d = -halfSpanMM; d <= halfSpanMM + 1e-9; d += stepMM) {
+      const t = a + d;
+      if (t > 0 && t < total) wanted.push(t);
+    }
+    if (a > 0 && a < total) wanted.push(a);
+  }
+  wanted.sort((x, y) => x - y);
+
+  const pointAtArc = (target: number): [number, number] => {
+    let i = 1;
+    while (i < arcAt.length - 1 && arcAt[i] < target) i++;
+    const a0 = arcAt[i - 1], a1 = arcAt[i];
+    const f = a1 === a0 ? 0 : (target - a0) / (a1 - a0);
+    const [x0, y0] = points[i - 1], [x1, y1] = points[i];
+    return [x0 + f * (x1 - x0), y0 + f * (y1 - y0)];
+  };
+
+  const out: [number, number][] = [];
+  const indexMap: number[] = [];
+  const EPS = 1e-6;
+  let w = 0;
+  let lastArc = -Infinity; // dedupe samples that land on top of each other
+  const emit = (arc: number) => {
+    if (arc - lastArc <= EPS) return;
+    out.push(pointAtArc(arc));
+    lastArc = arc;
+  };
+  for (let i = 0; i < points.length; i++) {
+    // Emit wanted samples that fall before this original vertex.
+    while (w < wanted.length && wanted[w] < arcAt[i] - EPS) emit(wanted[w++]);
+    // Skip samples coincident with the vertex itself; the vertex covers them.
+    while (w < wanted.length && Math.abs(wanted[w] - arcAt[i]) <= EPS) w++;
+    indexMap.push(out.length);
+    out.push([points[i][0], points[i][1]]);
+    lastArc = arcAt[i];
+  }
+  while (w < wanted.length) emit(wanted[w++]);
+  return { points: out, indexMap };
+}
+
+/**
+ * Localise doc-space crossing points onto one polyline, returning their arc
+ * positions in mm.
+ *
+ * The preview splits a run into live/blockout segments before rendering, so a
+ * crossing detected on the whole run has to be found again on whichever segment
+ * actually contains it. Matching geometrically (rather than threading indices
+ * through the split) means the split logic needs no knowledge of crossings.
+ *
+ * A point counts as on-segment when its perpendicular distance is within
+ * `tolMM`; callers pass a fraction of tube diameter.
+ */
+export function crossingArcPositions(
+  points: ReadonlyArray<readonly [number, number]>,
+  crossingPoints: ReadonlyArray<readonly [number, number]>,
+  tolMM: number,
+): number[] {
+  if (points.length < 2 || crossingPoints.length === 0) return [];
+  const arcAt: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    arcAt.push(arcAt[i - 1] + Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+  }
+  const out: number[] = [];
+  for (const c of crossingPoints) {
+    let bestD = Infinity;
+    let bestArc = -1;
+    for (let i = 0; i < points.length - 1; i++) {
+      const [x1, y1] = points[i];
+      const [x2, y2] = points[i + 1];
+      const dx = x2 - x1, dy = y2 - y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 === 0) continue;
+      // Clamped projection: t outside [0,1] means the nearest point on this
+      // segment is an endpoint, which the distance check then rejects unless
+      // the crossing genuinely sits there.
+      let t = ((c[0] - x1) * dx + (c[1] - y1) * dy) / len2;
+      if (t < 0) t = 0; else if (t > 1) t = 1;
+      const px = x1 + t * dx, py = y1 + t * dy;
+      const d = Math.hypot(c[0] - px, c[1] - py);
+      if (d < bestD) {
+        bestD = d;
+        bestArc = arcAt[i] + t * Math.sqrt(len2);
+      }
+    }
+    if (bestArc >= 0 && bestD <= tolMM) out.push(bestArc);
+  }
+  return out;
 }
 
 /**

@@ -6,6 +6,10 @@ import {
   JUMP_LIFT_HEIGHT_MULT,
   JUMP_LIFT_SPAN_MULT,
   liftPointsAtJumps,
+  crossingArcPositions,
+  densifyAroundArcs,
+  AUTO_CROSSING_LIFT_HEIGHT_MULT,
+  AUTO_CROSSING_LIFT_SPAN_MULT,
   polylineToCurve,
   tubeSegmentCount,
   TUBE_SEGMENTS_MAX,
@@ -376,5 +380,141 @@ describe('liftPointsAtJumps — drop-bend kernel (Tier 3 #77)', () => {
     expect(lifted[d2][2]).toBeCloseTo(DROP_HEIGHT, 6);
     // Halfway between: outside both half-spans, identically zero.
     expect(lifted[60][2]).toBe(0);
+  });
+});
+
+// Bug #09 — tubes may stack at different standoff depths, but glass must never
+// intersect glass. Two tubes of equal diameter D stop intersecting once their
+// centre lines are D apart, so that is the number these assert against.
+describe('auto-crossing lift (Bug #09)', () => {
+  const D = 8;
+  // 1mm-spaced points along X, so arc position == index.
+  const linePoints = (count: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i < count; i++) out.push([i, 0]);
+    return out;
+  };
+
+
+  it('lifts the crossing point by more than one diameter, so glass cannot intersect', () => {
+    const pts = linePoints(40); // 0..39 along X, 1mm apart
+    const crossingArc = 20;
+    const lifted = liftPointsAtJumps(pts, [], D, [], [crossingArc]);
+    const atCrossing = lifted[20][2];
+    // The whole point: separation from a tube left at Z=0 must exceed D.
+    expect(atCrossing).toBeGreaterThan(D);
+    expect(atCrossing).toBeCloseTo(AUTO_CROSSING_LIFT_HEIGHT_MULT * D);
+  });
+
+  it('is lower than an explicit jump — the designer\'s instruction stays louder', () => {
+    const pts = linePoints(40);
+    const auto = liftPointsAtJumps(pts, [], D, [], [20])[20][2];
+    const jump = liftPointsAtJumps(pts, [20], D)[20][2];
+    expect(auto).toBeLessThan(jump);
+  });
+
+  it('an explicit jump at the same place wins over the auto lift', () => {
+    const pts = linePoints(40);
+    const both = liftPointsAtJumps(pts, [20], D, [], [20])[20][2];
+    const jumpOnly = liftPointsAtJumps(pts, [20], D)[20][2];
+    expect(both).toBeCloseTo(jumpOnly);
+  });
+
+  it('returns to the backing plane away from the crossing', () => {
+    const pts = linePoints(60);
+    const lifted = liftPointsAtJumps(pts, [], D, [], [30]);
+    expect(lifted[0][2]).toBe(0);
+    expect(lifted[59][2]).toBe(0);
+  });
+
+  it('no crossings leaves the tube flat', () => {
+    const pts = linePoints(10);
+    expect(liftPointsAtJumps(pts, [], D, [], []).every((p) => p[2] === 0)).toBe(true);
+  });
+});
+
+describe('crossingArcPositions', () => {
+  // 1mm-spaced points along X, so arc position == index.
+  const linePoints = (count: number): [number, number][] => {
+    const out: [number, number][] = [];
+    for (let i = 0; i < count; i++) out.push([i, 0]);
+    return out;
+  };
+
+  it('finds the arc position of a crossing that lies on the polyline', () => {
+    const pts = linePoints(20); // along X at y=0
+    expect(crossingArcPositions(pts, [[7.5, 0]], 1)).toEqual([7.5]);
+  });
+
+  it('ignores crossings that belong to a different segment of the run', () => {
+    const pts = linePoints(20);
+    expect(crossingArcPositions(pts, [[7.5, 50]], 1)).toEqual([]);
+  });
+
+  it('measures arc length around a corner, not straight-line distance', () => {
+    // 10mm right, then 10mm down. A crossing at the end is 20mm of arc away.
+    const pts: [number, number][] = [[0, 0], [10, 0], [10, 10]];
+    expect(crossingArcPositions(pts, [[10, 10]], 0.5)[0]).toBeCloseTo(20);
+  });
+
+  it('handles degenerate input', () => {
+    expect(crossingArcPositions([[0, 0]], [[0, 0]], 1)).toEqual([]);
+    expect(crossingArcPositions(linePoints(5), [], 1)).toEqual([]);
+  });
+});
+
+// The bug that survived the first round of tests: Z can only be expressed at
+// vertices that exist, so a crossing halfway along a TWO-POINT line got no
+// lift at all and the glass still interpenetrated. Dense vectorised polylines
+// hid it; Line/Rect output does not.
+describe('densifyAroundArcs (sparse-polyline lift)', () => {
+  const D = 12;
+  const halfSpan = (AUTO_CROSSING_LIFT_SPAN_MULT * D) / 2;
+
+  it('a crossing mid-way along a two-point line still lifts above one diameter', () => {
+    const sparse: [number, number][] = [[0, 0], [200, 0]];
+    const arc = 100;
+    // Without densifying, the only vertices are at arc 0 and 200 — both far
+    // outside the falloff, so every Z is 0 and the tubes still intersect.
+    const flat = liftPointsAtJumps(sparse, [], D, [], [arc]);
+    expect(Math.max(...flat.map((p) => p[2]))).toBe(0);
+
+    const { points } = densifyAroundArcs(sparse, [arc], halfSpan, halfSpan / 6);
+    const lifted = liftPointsAtJumps(points, [], D, [], [arc]);
+    expect(Math.max(...lifted.map((p) => p[2]))).toBeGreaterThan(D);
+  });
+
+  it('keeps the original vertices, and indexMap points at them', () => {
+    const pts: [number, number][] = [[0, 0], [100, 0], [200, 0]];
+    const { points, indexMap } = densifyAroundArcs(pts, [50], halfSpan, halfSpan / 6);
+    expect(indexMap).toHaveLength(pts.length);
+    pts.forEach((orig, i) => expect(points[indexMap[i]]).toEqual(orig));
+  });
+
+  it('inserted points lie on the original path', () => {
+    const pts: [number, number][] = [[0, 0], [200, 0]];
+    const { points } = densifyAroundArcs(pts, [100], halfSpan, halfSpan / 6);
+    // Straight line along y=0: every inserted point must stay on it.
+    expect(points.every((p) => Math.abs(p[1]) < 1e-9)).toBe(true);
+    expect(points.length).toBeGreaterThan(pts.length);
+  });
+
+  it('only subdivides near the crossing, not the whole run', () => {
+    const long: [number, number][] = [[0, 0], [10000, 0]];
+    const { points } = densifyAroundArcs(long, [5000], halfSpan, halfSpan / 6);
+    // A 10 m run with one crossing must not become thousands of points.
+    expect(points.length).toBeLessThan(30);
+  });
+
+  it('is a no-op without crossings', () => {
+    const pts: [number, number][] = [[0, 0], [100, 0]];
+    const { points, indexMap } = densifyAroundArcs(pts, [], halfSpan, halfSpan / 6);
+    expect(points).toEqual(pts);
+    expect(indexMap).toEqual([0, 1]);
+  });
+
+  it('handles degenerate input', () => {
+    expect(densifyAroundArcs([[1, 1]], [0], halfSpan, 1).points).toEqual([[1, 1]]);
+    expect(densifyAroundArcs([[0, 0], [0, 0]], [0], halfSpan, 1).points).toHaveLength(2);
   });
 });
