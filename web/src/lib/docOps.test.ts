@@ -2629,3 +2629,42 @@ describe('scale ops (resize handles)', () => {
     expect(ops.setRunsPoints(doc, [])).toBe(doc);
   });
 });
+
+// Bug #10 — switching the project tube spec left runs pinned to the old
+// diameter. That field is not cosmetic: it drives bend clustering, the
+// takeoff's glass grouping and the ø printed on the pattern, so a stale value
+// orders the wrong stock and misinforms the bender.
+describe('clearRunDiametersMatching', () => {
+  it('clears runs still carrying the old spec diameter so they inherit', () => {
+    const doc = makeDoc(); // both runs seeded at 10mm
+    const next = ops.clearRunDiametersMatching(doc, 10);
+    expect(next.runs.every((r) => r.tube_diameter_mm === undefined)).toBe(true);
+  });
+
+  it('leaves a deliberate override at a different diameter alone', () => {
+    const doc = makeDoc();
+    const withOverride = ops.setRunDiameter(doc, 'run-2', 15);
+    const next = ops.clearRunDiametersMatching(withOverride, 10);
+    expect(next.runs.find((r) => r.id === 'run-1')?.tube_diameter_mm).toBeUndefined();
+    expect(next.runs.find((r) => r.id === 'run-2')?.tube_diameter_mm).toBe(15);
+  });
+
+  // Callers use identity to decide whether the doc changed (and therefore
+  // whether to re-validate the live doc), so a no-op must not clone.
+  it('returns the same object when nothing matches', () => {
+    const doc = makeDoc();
+    expect(ops.clearRunDiametersMatching(doc, 8)).toBe(doc);
+  });
+
+  it('ignores a nonsensical old diameter rather than clearing everything', () => {
+    const doc = makeDoc();
+    expect(ops.clearRunDiametersMatching(doc, 0)).toBe(doc);
+    expect(ops.clearRunDiametersMatching(doc, Number.NaN)).toBe(doc);
+  });
+
+  it('does not mutate the input doc', () => {
+    const doc = makeDoc();
+    ops.clearRunDiametersMatching(doc, 10);
+    expect(doc.runs[0].tube_diameter_mm).toBe(10);
+  });
+});

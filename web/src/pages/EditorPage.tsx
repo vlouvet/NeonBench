@@ -419,7 +419,10 @@ export default function EditorPage() {
     return () => {
       window.clearTimeout(handle);
     };
-  }, [doc, dirty, projectId]);
+    // project.tube_spec_id is a dependency because a spec switch changes the
+    // rules the doc is judged against without changing the doc itself; without
+    // it this effect cannot re-fire to correct a stale report.
+  }, [doc, dirty, projectId, project?.tube_spec_id]);
 
   // Esc disarms a pending join (matches the cancel semantics of the
   // other in-progress drawing tools). Tool-change disarm is handled in
@@ -1315,12 +1318,37 @@ export default function EditorPage() {
     setSpecSwitching(true);
     setError(null);
     try {
+      const prevDiameterMM = tubeSpec?.diameter_mm;
       const updatedProject = await api.updateProject(projectId, { tube_spec_id: nextSpecId });
       setProject(updatedProject);
       setTubeSpec(allSpecs.find((s) => s.id === updatedProject.tube_spec_id) ?? null);
-      const revalidated = await api.revalidate(projectId, versionId);
-      setVersion(revalidated);
-      setReport(parseReport(revalidated));
+
+      // Runs seeded from the old spec must follow the project rather than pin
+      // the old diameter. tube_diameter_mm is not cosmetic: it feeds bend
+      // clustering, the takeoff's glass grouping and the ø printed on the
+      // pattern, so a stale value orders the wrong stock and tells the bender
+      // the wrong size. Deliberate overrides to some *other* diameter survive.
+      let nextDoc = doc;
+      if (doc && prevDiameterMM != null) {
+        const rebased = ops.clearRunDiametersMatching(doc, prevDiameterMM);
+        if (rebased !== doc) {
+          nextDoc = rebased;
+          editDoc(() => rebased); // undoable, and marks the doc dirty
+        }
+      }
+
+      // With unsaved edits the SAVED version is a different document, so
+      // revalidating it reports on runs the operator cannot see — that is how
+      // this showed "All rules pass · 0 runs" over a canvas full of errors.
+      // Validate what is actually on screen instead. Clearing diameters above
+      // also makes the doc diverge from the saved version, hence `!== doc`.
+      if ((dirty || nextDoc !== doc) && nextDoc) {
+        setReport(await api.validateDoc(projectId, nextDoc));
+      } else {
+        const revalidated = await api.revalidate(projectId, versionId);
+        setVersion(revalidated);
+        setReport(parseReport(revalidated));
+      }
     } catch (e) {
       setError(`change tube spec: ${(e as Error).message}`);
     } finally {
