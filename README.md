@@ -495,6 +495,14 @@ cd web && npm test        # editor unit tests (vitest)
 cd web && npm run test:watch
 ```
 
+On Windows, use the PowerShell sibling — it handles the `npm.cmd` execution-policy
+quirk and the `web/dist` embed ordering that trip up the bash scripts:
+
+```powershell
+.\scripts\test.ps1          # same scope as test.sh
+.\scripts\test.ps1 -Smoke   # also build the .exe and boot it (what CI runs)
+```
+
 The integration test
 (`internal/server/integration_test.go`) drives the full upload →
 vectorize → edit-every-tool → save → reload → print pipeline using
