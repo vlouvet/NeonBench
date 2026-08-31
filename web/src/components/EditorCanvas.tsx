@@ -3,6 +3,11 @@ import type { DesignDoc, DesignRun, ValidationIssue } from '../api';
 import { isGroupVisible } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { colorHex } from '../lib/neonColors';
+import NodeContextMenu from './NodeContextMenu';
+import {
+  availableActionsForVertex,
+  type NodeMenuActionId,
+} from '../lib/nodeMenuItems';
 import { effectiveBends } from '../lib/bends';
 import { rectToPoints } from '../lib/shapes/rect';
 import { circleToPoints } from '../lib/shapes/circle';
@@ -75,6 +80,7 @@ export default function EditorCanvas({
   onPlaceElectrode,
   onDeleteElectrode,
   onElectrodeContextMenu,
+  onSetTool,
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
@@ -166,6 +172,11 @@ export default function EditorCanvas({
   // electrode also reveals a gear-icon overlay so the right-click
   // affordance is discoverable.
   onElectrodeContextMenu?: (runId: string, electrodeIndex: number) => void;
+  // Tier 3 #76 — the node context menu's "Blockout from here…" stages the
+  // start index and switches the active tool, so the operator's next click
+  // lands the far end. Optional: without it that one item is withheld
+  // rather than offered as a dead row.
+  onSetTool?: (tool: EditorTool) => void;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
@@ -320,6 +331,15 @@ export default function EditorCanvas({
   const [transform, setTransform] = useState<Transform>({ tx: 0, ty: 0, k: 1 });
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 800, h: 500 });
   const [staged, setStaged] = useState<StagedBlockout | null>(null);
+
+  // Tier 3 #76 — the open node context menu, or null. Anchored to viewport
+  // coordinates from the right-click, so it is rendered outside the SVG.
+  const [nodeMenu, setNodeMenu] = useState<{
+    runId: string;
+    vertexIndex: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [stagedDim, setStagedDim] = useState<{ x: number; y: number } | null>(null);
   // Tier 3 #42 — drawing-tool anchor state lives in one reducer keyed
   // on the active tool. `switchTool` reseeds with the destination
@@ -1821,6 +1841,87 @@ export default function EditorCanvas({
     onScaleRuns(updates);
   }
 
+  // Tier 3 #76 — route one context-menu pick to the op that already
+  // implements it. Every branch calls an existing prop; this PR adds no
+  // geometry of its own. Which items can appear at all is decided by
+  // availableActionsForVertex, so the default branch is unreachable —
+  // it exists so adding an action id without wiring it is a type error.
+  function dispatchNodeMenu(id: NodeMenuActionId, shiftKey: boolean) {
+    if (!nodeMenu) return;
+    const { runId, vertexIndex } = nodeMenu;
+    const run = doc.runs.find((r) => r.id === runId);
+    if (!run) {
+      setNodeMenu(null);
+      return;
+    }
+    // Annotations and bends anchor by live index, not polyline index.
+    const live = runArcs(run).live;
+    const liveIndex = live.indexOf(vertexIndex);
+    const annotate = (kind: AnnotationKind) => {
+      if (liveIndex >= 0) onPlaceAnnotation(runId, kind, liveIndex);
+    };
+
+    switch (id) {
+      case 'insert-vertex':
+        // Midpoint of the segment leaving this vertex — the same thing the
+        // insert tool does when the operator clicks halfway along it.
+        onInsertVertex(runId, vertexIndex, 0.5);
+        break;
+      case 'insert-doubleback':
+        // Side from the modifier, matching the toolbar tool's convention
+        // rather than inventing a second one.
+        onInsertDoubleback(runId, vertexIndex, 0.5, shiftKey ? 'right' : 'left');
+        break;
+      case 'split-run':
+        onSplitRun(runId, vertexIndex);
+        break;
+      case 'break-loop-open':
+        onBreakOpen(runId, vertexIndex);
+        break;
+      case 'move-opening':
+        onMoveOpening(runId, vertexIndex);
+        break;
+      case 'place-electrode':
+        onPlaceElectrode(runId, vertexIndex);
+        break;
+      case 'delete-electrode': {
+        const ei = (run.electrodes ?? []).findIndex((e) => e.point_index === vertexIndex);
+        if (ei >= 0) onDeleteElectrode(runId, ei);
+        break;
+      }
+      case 'add-housing': {
+        const ei = (run.electrodes ?? []).findIndex((e) => e.point_index === vertexIndex);
+        if (ei >= 0 && onElectrodeContextMenu) onElectrodeContextMenu(runId, ei);
+        break;
+      }
+      case 'blockout-from-here':
+        // A blockout spans two points, so one menu pick cannot finish it.
+        // Stage this end and arm the tool; the operator's next click on the
+        // run commits the far end through the existing blockout flow.
+        if (liveIndex >= 0 && onSetTool) {
+          setStaged({ runId, liveIndex });
+          onSelectRun(runId);
+          onSetTool('blockout');
+        }
+        break;
+      case 'mark-jump': annotate('jump'); break;
+      case 'mark-support': annotate('support'); break;
+      case 'mark-doubleback': annotate('doubleback'); break;
+      case 'mark-drop-bend': annotate('drop_bend'); break;
+      case 'mark-special-bend':
+        if (liveIndex >= 0) onPlaceBend(runId, liveIndex);
+        break;
+      case 'delete-vertex':
+        onDeleteVertex(runId, vertexIndex);
+        break;
+      default: {
+        const unreachable: never = id;
+        void unreachable;
+      }
+    }
+    setNodeMenu(null);
+  }
+
   function endMove(e: React.PointerEvent<SVGGElement>) {
     if (!moveDragRef.current) return;
     moveDragRef.current = null;
@@ -2580,6 +2681,15 @@ export default function EditorCanvas({
                         onAltClick={() => onSplitRun(run.id, pi)}
                         onMetaClick={() => toggleSelectedVertex(run.id, pi)}
                         onDragEnd={(fx, fy) => handleVertexDragEnd(run.id, pi, fx, fy)}
+                        onContextMenu={(ev) => {
+                          onSelectRun(run.id);
+                          setNodeMenu({
+                            runId: run.id,
+                            vertexIndex: pi,
+                            x: ev.clientX,
+                            y: ev.clientY,
+                          });
+                        }}
                         clientToWorld={clientToWorldSnapped}
                         selected={isSel}
                       />,
@@ -2847,6 +2957,25 @@ export default function EditorCanvas({
           </span>
         )}
       </div>
+      {/* Tier 3 #76 — node-edit context menu. Rendered outside the SVG:
+          it is position:fixed against the viewport, and plain HTML cannot
+          live inside <svg> without a foreignObject. */}
+      {/* Gated on the node tool rather than synced to it: switching tools
+          (by shortcut, or because "Blockout from here…" armed the blockout
+          tool) removes the handles the menu was anchored to, so it must go
+          with them. Leaving the stale coordinate in state is harmless —
+          every open overwrites it. */}
+      {nodeMenu && tool === 'node' && (
+        <NodeContextMenu
+          x={nodeMenu.x}
+          y={nodeMenu.y}
+          items={availableActionsForVertex(doc, nodeMenu.runId, nodeMenu.vertexIndex).filter(
+            (item) => item.id !== 'blockout-from-here' || !!onSetTool,
+          )}
+          onPick={dispatchNodeMenu}
+          onClose={() => setNodeMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2939,6 +3068,7 @@ function NodeHandle({
   onMetaClick,
   onPlainClick,
   onDragEnd,
+  onContextMenu,
   clientToWorld,
   highlight,
   selected,
@@ -2958,6 +3088,9 @@ function NodeHandle({
   // vertex-merge drop (released within snap-to-vertex range of another
   // vertex on the same run).
   onDragEnd?: (x: number, y: number) => void;
+  // Tier 3 #76 — right-click (and, on macOS, ctrl+click) opens the node
+  // context menu anchored at the event's viewport coordinates.
+  onContextMenu?: (e: React.MouseEvent) => void;
   clientToWorld: (cx: number, cy: number) => [number, number] | null;
   highlight?: 'endpoint' | 'armed' | null;
   // Tier 3 #48 — render this handle with the multi-select badge fill so
@@ -2969,8 +3102,18 @@ function NodeHandle({
   const dragging = useRef(false);
   const moved = useRef(false);
   const lastXY = useRef<[number, number] | null>(null);
+  // Tier 3 #76 — set when a contextmenu event fired between this handle's
+  // pointerdown and pointerup. On macOS a ctrl+click produces BOTH a
+  // contextmenu and a pointer sequence carrying ctrlKey, and ctrlKey is
+  // also the multi-vertex-select modifier — without this the one gesture
+  // would open the menu and silently toggle the vertex into the selection.
+  const openedMenu = useRef(false);
   const handlePointerDown = (e: React.PointerEvent<SVGCircleElement>) => {
     e.stopPropagation();
+    // Only the primary button drags or clicks. Previously a right-click
+    // press started a drag, so right-clicking a node and moving the mouse
+    // dragged the vertex with no way to see it coming.
+    if (e.button !== 0) return;
     if (e.shiftKey) {
       onShiftClick();
       return;
@@ -3004,7 +3147,10 @@ function NodeHandle({
     } catch {
       // pointer might already be released
     }
-    if (!moved.current) {
+    if (openedMenu.current) {
+      // A context menu opened on this gesture; it owns the interaction.
+      openedMenu.current = false;
+    } else if (!moved.current) {
       // Plain click without a drag: cmd/ctrl wins (multi-vertex toggle);
       // otherwise fall through to onPlainClick (join-arm endpoint pick).
       if ((e.metaKey || e.ctrlKey) && onMetaClick) {
@@ -3042,6 +3188,18 @@ function NodeHandle({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
+      onContextMenu={
+        onContextMenu
+          ? (e) => {
+              // stopPropagation keeps this off the root SVG's own
+              // contextmenu handler (which cancels a staged connect).
+              e.preventDefault();
+              e.stopPropagation();
+              openedMenu.current = true;
+              onContextMenu(e);
+            }
+          : undefined
+      }
     />
   );
 }
