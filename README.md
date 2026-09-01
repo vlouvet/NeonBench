@@ -385,7 +385,30 @@ under **Git Bash**, which ships with Git for Windows.
    URL to suppress the main pattern + bend-list pages and emit only
    the channel-letter return-strip pages — useful post-fabrication
    when the front face is bent and the operator just needs to bend
-   the metal strip. The project page panel also offers a **Download
+   the metal strip.
+
+   **Plot options.** The toolbar's print popover (the `▾` next to
+   **Print**) also carries rotation and copy count. `?rotate=fit`
+   turns the pattern 90° only when doing so needs *fewer* sheets — a
+   tie keeps the un-rotated orientation, so the same design always
+   comes off the bench the same way round; `?rotate=90` rotates
+   unconditionally. Rotation applies to the main pattern and bend-list
+   pages only: return-strip and raceway-strip pages are unfolded 1D
+   patterns in their own coordinate space and are left alone. Mirror
+   and rotation do not commute, so the order is fixed as **mirror,
+   then rotate** — mirroring is a property of the pattern (the bender
+   reads through the back of the glass), rotation is a property of the
+   paper. `?copies=N` (1–50) repeats the whole page set N times for
+   step-and-repeat work; copies multiply *pages*, never geometry, so
+   a 1:1 production pattern stays 1:1 and two letters never share a
+   sheet. Any rotated or copied sheet says so in its footer
+   (`ROTATED 90°`, `Copy 2 of 6`) — a rotated pattern found on a
+   bench a week later with nothing indicating it is a real
+   fabrication hazard. Finally, **Quick plot** next to the Print
+   button reprints with the project's last-used settings in one
+   click, no popover; hover it to see exactly what it will send.
+
+   The project page panel also offers a **Download
    DXF** button — an AutoCAD R12 ASCII file with one polyline per
    run (millimeters, layered per run id) for feeding to CNC tube
    benders; the export includes electrode `CIRCLE` markers, run +
