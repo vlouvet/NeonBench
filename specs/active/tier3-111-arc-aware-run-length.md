@@ -14,7 +14,7 @@ agrees with.
 
 Both halves confirmed by reading the code and by probe, not by assertion.
 
-**TS side** — `web/src/lib/docOps.ts:2796`:
+**TS side** — `web/src/lib/docOps.ts:2897`:
 
 ```ts
 export function polylineLengthMM(points: [number, number][], closed = false): number
@@ -44,7 +44,7 @@ reason about this analytically; measure it.
 ## Why it matters
 
 `autoSplitOverlongTubes` (`docOps.ts:3023`) and the editor's overlong-run
-badge (`EditorPage.tsx:601`) both ask the TS helper. On an arc-bearing run the
+badge (`EditorPage.tsx:651`) both ask the TS helper. On an arc-bearing run the
 TS side can conclude a run is now under `MaxSegmentLengthMM` and stop splitting
 while the Go validator still raises `RuleMaxSegmentLength`. The operator sees
 the tool declare success and the validator disagree, with nothing on screen to
@@ -61,7 +61,7 @@ abstract**. It became real when arcs shipped in #87.
    writing new arc math. Handle `"arc"` and `"arc_r"`; both are arcs, the
    label only picks the side, and **the side does not change the length**.
 2. **Migrate the three call sites:** `docOps.ts:2981`, `docOps.ts:3023`,
-   `EditorPage.tsx:601`.
+   `EditorPage.tsx:651`.
 3. Keep a chord-summing helper if genuinely needed for polyline-only callers,
    but the default a caller reaches for must be the arc-aware one.
 
@@ -88,13 +88,20 @@ find yourself passing flattened points to anything that then indexes them, stop
 ## Strict file scope
 
 **Modify:** `web/src/lib/docOps.ts` (+ tests), `web/src/pages/EditorPage.tsx`
-(**exactly the one call site at line 601 — nothing else in this file**).
+(**exactly the one call site at line 651 — nothing else in this file**).
 
 **Don't touch:** `web/src/lib/arcGeom.ts` (consume it, don't change it),
 `internal/**`. The Go side is the reference implementation here and is correct.
 
 ## Coupling warning
 
-Another agent owns `EditorPage.tsx` this round for Tier 2 #101. Your one-line
-change there will need `gh pr update-branch` before merge. Do not restructure,
-reformat, or reorder anything in that file.
+`EditorPage.tsx` is one of the two highest-traffic files in the repo (see the
+coupling map in `CLAUDE.md`) and its line numbers drift every round — the refs
+above were re-verified 2026-09-01 and had already moved once (`docOps.ts`
+2796 -> 2897, `EditorPage.tsx` 601 -> 651). **Locate the call site by grepping
+for `polylineLengthMM`, not by line number.**
+
+Tier 3 #112 also edits this file, at lines 2158-3264. Your call site is ~1500
+lines away so a textual conflict is unlikely, but you will still need
+`gh pr update-branch` before merge. Do not restructure, reformat, or reorder
+anything in that file.
