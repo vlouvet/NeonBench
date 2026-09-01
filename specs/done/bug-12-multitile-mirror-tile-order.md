@@ -1,6 +1,20 @@
 # Bug #12 — Multi-tile mirrored prints mirror each tile, not the design
 
-> **Status:** active · found 2026-08-31 · blocked on PR #145 merging first
+> **Status:** done · PR #151 · found 2026-08-31 · fixed 2026-08-31 (after PR #145 merged)
+>
+> Fixed with **option 1** (reverse the emission order). The reversal is exact
+> rather than approximate: mirroring the tiled region about its centre maps
+> tile *i* onto tile *n-1-i* and leaves the per-tile projection algebraically
+> unchanged, so `makePageProjector` and the clipping rectangle were untouched
+> and the `OverlapMM` taping allowance is preserved. Sheet ordering now lives
+> in `tilePlan`, which pairs each sheet's assembly-grid position with the strip
+> of world space it carries; the footer's "Tile c,r" names the assembly
+> position, so label and geometry describe the same taping order.
+>
+> **Rotation reverses the other axis.** `makeTileProjector` composes
+> mirror-then-rotate as `R·Mh = Mv·R`, so a rotated render is reflected
+> vertically in page space and it is the ROW order that must reverse.
+> Reversing columns there would be a no-op on the wrong axis.
 
 ## Symptom
 
