@@ -1,6 +1,6 @@
 # Bug #13 — `capHeightMM` produces letters 1.75× the requested height
 
-> **Status:** active · found 2026-08-31
+> **Status:** done · PR #153 · found 2026-08-31
 
 ## Symptom
 
@@ -86,3 +86,92 @@ under `web/src/lib/hershey/`. Fix the misleading comment on `capHeightUnits`.
   `capHeightMM: 100`.
 - A descender ('g') extends below the baseline, i.e. total ink height exceeds
   cap height — guards against "fix" by rescaling to the whole ink box.
+
+---
+
+## Resolution (PR #153)
+
+`capHeightUnits: 21` on all four faces — `cursive` measures the same 21 units
+for its capitals (`H`/`E`/`X`/`I`/`T`/`L`/`F` all span JHF y −12..+9), so it
+needed no special case. Its *lowercase* metrics do differ (x-height 9 vs 14)
+but nothing here depends on those.
+
+Two premises in this spec needed adjusting:
+
+- **"± 1e-6 for every bundled face"** is not achievable for `cursive`. Bug #07
+  smoothing splines its curved capitals and bows ~1.3 mm past the cap-line
+  vertex (0 mm for the three straight-stroke faces). The suite instead brackets
+  the residual at 2.5% *and* asserts it scales linearly with size, which
+  separates a spline artefact from the 75% metric error by an order of
+  magnitude.
+- **"Don't touch `text.ts` geometry"** was honoured, but the fix could not stop
+  at `fonts.ts`. `HersheyTextDialog.computeHandlePositions` derived its cap line
+  as `baselineY - capHeightMM`, an identity that held *only while the declared
+  cap height was wrong*. Corrected, that shortcut puts the kerning drag-handle
+  row outside the preview viewBox and the handles disappear. Hence the new
+  `baselineUnits` field: the cap line is now derived from declared metrics
+  rather than reconstructed by callers.
+
+`Z` is not a flat capital in the cursive face — it has a descending swash tail
+to y=+21. Found by the guard test that checks every member of the flat-capital
+set measures the same span.
+
+### `lineHeight` was NOT tuned against the wrong cap height
+
+Item 3 of the Fix section asked whether 1.2 had been set by eye at 1.75×. It had
+not. At 1.75× a pitch of `1.2 × capHeightMM` was 14.4 JHF units against a
+21-unit capital, so consecutive lines of plain capitals **overlapped by 55 mm**
+at cap 100 — not something anyone approved visually. It is the generic
+typographic 1.2 applied to a knob that was never font size.
+
+Measured after the fix at `capHeightMM: 100`:
+
+```
+caps only            clearance = +20.00 mm
+descender over cap   clearance = -14.07 mm   (overlap)
+cap over descender   clearance = +52.59 mm
+```
+
+Still tight: a Hershey face spans 28 units ascender-to-descender ≈ 1.33 cap
+heights, so a correct default is nearer 1.4–1.5. The tests in this spec do not
+demand it, so the default is unchanged and the clearances are pinned in
+`capHeight.test.ts`. Tracked as a follow-up.
+
+### stackVertical (PR #146) acquired no compensating error
+
+Ink-to-ink placement is metric-independent by construction. Measured at cap 100:
+`OPEN` default gap → 25.000000 / 25.000000 / 25.000000 mm; `gAgA` (descenders)
+→ identical; explicit `gapMM: 25` → identical. Every stackVertical test passed
+unchanged except the one asserting `inkH > CAP * 1.5`, which asserted the bug;
+it was rewritten around a descender, the case that still distinguishes
+ink-to-ink from a baseline pitch now that the two agree for plain capitals.
+
+The default gap (`0.25 × capHeightMM`) was ~14% of real letter height before and
+is now a true 25%, so stacked signs get visibly more air. That is the documented
+intent of the knob.
+
+### Blast radius confirmed by grep
+
+`capHeight` / `hershey` / `font` in `internal/designdoc/` and `web/src/api.ts`:
+no matches. Saved designs hold baked coordinates and are unaffected, as this
+spec claimed.
+
+### Verified end-to-end from the API
+
+Real browser against the built binary, `HEX` at cap height 100, saved, then read
+back from `GET /api/projects/{id}/design_versions/latest`:
+
+```
+server-side bounding_box_mm = [371.428571, 200.000000, 628.571429, 300.000000]
+HEIGHT from Go validator     = 100.000000 mm
+HEIGHT from saved SVG paths  = 100.000000 mm
+```
+
+### Follow-ups
+
+- `lineHeight` default 1.2 leaves descenders colliding with the next line's
+  capitals; 1.4–1.5 matches the face metrics.
+- `channelLetter.ts:166` sets `capTopY: baselineY - capHeightMM` — same broken
+  shortcut, but the field is dead (written, never read). Delete or derive.
+- Operator-facing note: anyone who calibrated to the 1.75× behaviour has been
+  compensating and should be told the number now means what it says.
