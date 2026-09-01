@@ -1,6 +1,6 @@
 # Bug #15 — `joinRuns` drops the merged run's classification fields
 
-> **Status:** active · found 2026-08-31 · blocked on PR #152 merging first
+> **Status:** done · PR #161 · found 2026-08-31 (PR #152 merged first, as required)
 
 ## Symptom
 
