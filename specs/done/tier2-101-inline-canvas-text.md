@@ -1,6 +1,48 @@
 # Tier 2 #101 — Inline text editing on the canvas
 
-> **Status:** active · drafted 2026-08-31 · branch `task/2-inline-text`
+> **Status:** DONE · drafted 2026-08-31 · shipped 2026-09-01 · branch
+> `task/101-inline-canvas-text`
+
+## What shipped, and where it differs from this spec
+
+Three premises in the deliverables below turned out to be wrong or
+incomplete. Corrections, with the reasoning:
+
+1. **Deliverable 2 asked for re-generation into the DOC on every
+   keystroke, coalesced into one undo step by EditorPage's 500 ms
+   window.** That cannot hold: the coalescing is time-based, so any
+   pause longer than 500 ms mid-word splits the word across two undo
+   entries — and it would fire the debounced server-side validation on
+   every character. It also contradicts deliverable 4, which talks
+   about *committing* on Esc / click-away: if every keystroke were
+   already in the doc there would be nothing left to commit. Shipped
+   instead: the session (string, caret, kerning) is React state, the
+   preview re-lays out on every keystroke, and the runs reach the doc
+   in ONE `applyOp` at commit. One undo takes back the whole word at
+   any typing speed. Verified in a browser against the saved doc.
+
+2. **The trap section attributes the bare-key shortcuts (`o`, `c`,
+   tool keys) to `EditorCanvas`.** They are in `EditorPage`: `o`
+   (break/move opening), `c` (connect), `j` / `k` / `[` / `]` (issue
+   nav), Cmd-A, and Delete/Backspace-deletes-the-selection. The canvas
+   binds only Escape / Enter / Shift and Delete-on-a-selected-
+   guideline. Suppression that only covered this file would have left
+   the worse half live, so both files stand down: a capture-phase
+   `keydown` listener on `window` swallows the keys the caret claims,
+   and each of EditorPage's three handlers has an explicit guard.
+
+3. **Deliverable 6's premise checks out.** Nothing in
+   `internal/designdoc` or `web/src/api.ts` persists text parameters —
+   a committed word is tube geometry. Editing existing text is
+   therefore out of scope for V1 and no schema field was added; the
+   README says so plainly rather than leaving the operator to discover
+   it.
+
+One more thing worth knowing: `EditorPage.tsx` is on the
+`NUMERIC_INPUT_EXEMPT_FILES` list in `web/eslint.config.js`, so the
+`no-restricted-syntax` ban on raw `<input type="number">` does NOT fire
+there. The cap-height field uses `<NumericField>` by discipline, not
+because lint would have caught it.
 
 ## Goal
 
