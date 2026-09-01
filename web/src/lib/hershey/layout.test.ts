@@ -191,25 +191,67 @@ describe('stackVertical', () => {
     expect((iBox.minX + iBox.maxX) / 2).toBeCloseTo((mBox.minX + mBox.maxX) / 2, 9);
   });
 
-  it('puts one glyph per line at a uniform cap+gap pitch', () => {
+  it('leaves exactly the requested clear space between each glyph and the next', () => {
     const gapMM = 25;
     const stacked = stackVertical(textRuns('ABC'), { capHeightMM: CAP, gapMM });
-    const baselines = [0, 1, 2].map((i) => glyph(stacked, i)[0].baselineY!);
-    expect(baselines[0]).toBeCloseTo(0, 9);
-    expect(baselines[1]).toBeCloseTo(CAP + gapMM, 9);
-    expect(baselines[2]).toBeCloseTo(2 * (CAP + gapMM), 9);
+    const boxes = [0, 1, 2].map((i) => hersheyRunsBBox(glyph(stacked, i))!);
+    expect(boxes[1].minY - boxes[0].maxY).toBeCloseTo(gapMM, 9);
+    expect(boxes[2].minY - boxes[1].maxY).toBeCloseTo(gapMM, 9);
+  });
+
+  it('measures the gap INK-TO-INK, not as a capHeightMM baseline pitch', () => {
+    // The bundled Hershey faces put the baseline at JHF y = +9 and the cap
+    // top at y = -12, so a capital spans ~21 units while fonts.ts declares
+    // capHeightUnits: 12 — rendered text is ~1.75× capHeightMM tall. A
+    // `capHeightMM + gap` baseline pitch therefore OVERLAPS consecutive
+    // glyphs by half a letter. Assert the real ink height differs from the
+    // nominal cap height (so this test would notice if the metrics ever
+    // change) and that stacking still leaves clear air regardless.
+    const one = hersheyRunsBBox(textRuns('A'))!;
+    const inkH = one.maxY - one.minY;
+    expect(inkH).toBeGreaterThan(CAP * 1.5);
+    const stacked = stackVertical(textRuns('AB'), { capHeightMM: CAP });
+    const a = hersheyRunsBBox(glyph(stacked, 0))!;
+    const b = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(b.minY).toBeGreaterThan(a.maxY); // no overlap, whatever the metrics
   });
 
   it('defaults the gap to a quarter of the cap height', () => {
     const stacked = stackVertical(textRuns('AB'), { capHeightMM: CAP });
-    expect(glyph(stacked, 1)[0].baselineY!).toBeCloseTo(CAP * 1.25, 9);
+    const a = hersheyRunsBBox(glyph(stacked, 0))!;
+    const b = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(b.minY - a.maxY).toBeCloseTo(CAP * 0.25, 9);
   });
 
   it('turns a source newline into an extra gap', () => {
     const gapMM = 25;
     const stacked = stackVertical(textRuns('A\nB'), { capHeightMM: CAP, gapMM });
-    // Normal pitch is cap + gap; a line break adds one more gap on top.
-    expect(glyph(stacked, 1)[0].baselineY!).toBeCloseTo(CAP + 2 * gapMM, 9);
+    const a = hersheyRunsBBox(glyph(stacked, 0))!;
+    const b = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(b.minY - a.maxY).toBeCloseTo(2 * gapMM, 9);
+  });
+
+  it('keeps a descender from eating the gap below it', () => {
+    const gapMM = 25;
+    const stacked = stackVertical(textRuns('gA'), { capHeightMM: CAP, gapMM });
+    const g = hersheyRunsBBox(glyph(stacked, 0))!;
+    const a = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(a.minY - g.maxY).toBeCloseTo(gapMM, 9);
+  });
+
+  it('carries each glyph\'s baseline through the move for the slant pass', () => {
+    const stacked = stackVertical(textRuns('AB'), { capHeightMM: CAP });
+    for (const i of [0, 1]) {
+      const g = glyph(stacked, i);
+      const box = hersheyRunsBBox(g)!;
+      const base = g[0].baselineY!;
+      // The baseline tag must have moved with the ink, not stayed at 0.
+      expect(base).toBeGreaterThan(box.minY);
+      expect(base).toBeLessThanOrEqual(box.maxY + 1e-9);
+    }
+    expect(glyph(stacked, 1)[0].baselineY!).toBeGreaterThan(
+      glyph(stacked, 0)[0].baselineY!,
+    );
   });
 
   it('keeps glyphs upright — no per-glyph rotation', () => {
@@ -433,7 +475,9 @@ describe('applyTextTransforms', () => {
   it('treats stack and arc as mutually exclusive', () => {
     const src = textRuns('AB');
     const stacked = applyTextTransforms(src, { capHeightMM: CAP, layout: 'stack' });
-    expect(glyph(stacked, 1)[0].baselineY!).toBeCloseTo(CAP * 1.25, 9);
+    const a = hersheyRunsBBox(glyph(stacked, 0))!;
+    const b = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(b.minY - a.maxY).toBeCloseTo(CAP * 0.25, 9);
     const none = applyTextTransforms(src, { capHeightMM: CAP, layout: 'none' });
     expect(none).toEqual(src);
   });

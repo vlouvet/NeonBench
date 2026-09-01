@@ -19,10 +19,22 @@
 // per JSON file's _license field.
 //
 // Coordinate convention:
-//   - JHF source units: bytes offset from ASCII 'R'. Cap height ≈ 12 JHF
-//     units (caps span y=-12 at top to y=0 at baseline; descenders reach
-//     ~y=9). Stored per-font in fonts.ts so future faces with different
-//     metrics don't need a special case.
+//   - JHF source units: bytes offset from ASCII 'R'. In the bundled data
+//     a capital spans y=-12 (cap top) to y=+9 (BASELINE), i.e. ~21 units,
+//     x-height starts at y=-5, and descenders reach y=+16.
+//
+//     CAREFUL: `fonts.ts` declares `capHeightUnits: 12`, so the scale is
+//     `capHeightMM / 12` and rendered text is about 1.75× `capHeightMM`
+//     tall — `capHeightMM` is a size knob, NOT a literal measured cap
+//     height, and `originY` is the top-ish reference, NOT the typographic
+//     baseline (that lands at `originY + 9 * scale`). Changing either
+//     number would resize every design already saved, so the values
+//     stand; this note exists because the previous version of this
+//     comment claimed the baseline was at y=0 and cost a downstream
+//     feature (Tier 2 #92 vertical stacking) a round of overlapping
+//     glyphs. Anything that needs real vertical extents should measure
+//     the emitted ink with `hersheyRunsBBox`, not derive it from
+//     `capHeightMM`.
 //   - JHF Y-axis: positive points DOWN already in this dataset, which
 //     matches SVG/screen coordinates. We do NOT flip Y.
 //   - Output units: millimeters in the design-doc coordinate system.

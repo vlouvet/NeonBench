@@ -153,9 +153,12 @@ export function slantRuns(runs: HersheyRun[], degrees: number, baselineY = 0): H
 export type StackAlign = 'center' | 'left' | 'right';
 
 export type StackVerticalOptions = {
-  /** Cap height (mm) the text was rendered at. Sets the line pitch. */
+  /** Cap height (mm) the text was rendered at. Only used to size the
+   *  default gap — see the note on `gapMM` about why the SPACING is
+   *  measured off the ink, not off this number. */
   capHeightMM: number;
-  /** Extra space (mm) between stacked glyphs. Default 0.25 × cap. */
+  /** Clear space (mm) between one glyph's ink and the next glyph's ink.
+   *  Default 0.25 × cap. */
   gapMM?: number;
   /** How each glyph's INK bbox lines up on the axis. Default 'center'. */
   align?: StackAlign;
@@ -177,11 +180,22 @@ export const DEFAULT_STACK_GAP_FACTOR = 0.25;
  * signs are actually built; rotating each letter 90° would be a
  * different feature.
  *
- * Line pitch is `capHeightMM + gapMM`, uniform, so an 'o' and an 'M' sit
- * on evenly spaced baselines instead of drifting with their own ink
- * heights. Each glyph keeps its baseline-relative vertical position, so
- * a descender still descends and a per-glyph baseline shift rides along
- * as a relative nudge.
+ * SPACING IS MEASURED INK-TO-INK, not by a baseline pitch of
+ * `capHeightMM + gap`. That looks like the obvious implementation and it
+ * is wrong for this font data: the bundled Hershey faces put the
+ * baseline at JHF y = +9 and the cap top at y = −12, so a capital spans
+ * ~21 units while `fonts.ts` declares `capHeightUnits: 12`. Rendered
+ * text is therefore about 1.75× `capHeightMM` tall, and a
+ * `capHeightMM + gap` pitch overlaps consecutive glyphs by half a
+ * letter. (Verified in a browser: it produced eight min-spacing errors
+ * and two stroke crossings on a four-letter stack.) `capHeightMM` stays
+ * the knob that sizes the DEFAULT gap; the placement itself only ever
+ * looks at where the ink actually is, which is correct whatever the
+ * font's metrics claim.
+ *
+ * Ink-to-ink also means a descender does not eat into the gap below it,
+ * and the air between letters reads as even down the whole column —
+ * which is what a blade sign wants.
  *
  * Horizontal alignment is computed from each glyph's own INK bbox, NOT
  * its advance width — an 'I' has a wide advance and a narrow stroke, so
@@ -212,41 +226,51 @@ export function stackVertical(runs: HersheyRun[], opts: StackVerticalOptions): H
     typeof opts.startBaselineY === 'number' && Number.isFinite(opts.startBaselineY)
       ? opts.startBaselineY
       : (groups[0][0]?.baselineY ?? 0);
-  const pitch = cap + gap;
+  // The first glyph only moves by however much `startBaselineY` differs
+  // from where it already sits, so the default is "nothing moves".
+  const firstBaseline = groups[0][0]?.baselineY ?? startBaselineY;
+  const leadDy = startBaselineY - firstBaseline;
 
   const out: HersheyRun[] = [];
-  let baseline = startBaselineY;
+  // Y (mm) where the next glyph's ink must start.
+  let inkCursorY = Number.NaN;
   let prevLine = groups[0][0]?.lineIndex;
   for (let i = 0; i < groups.length; i++) {
     const group = groups[i];
     const line = group[0]?.lineIndex;
-    if (i > 0) {
-      baseline += pitch;
-      // A source newline reads as a phrase break; give it extra air.
-      if (typeof line === 'number' && typeof prevLine === 'number' && line !== prevLine) {
-        baseline += gap * Math.max(1, line - prevLine);
-      }
-    }
-    prevLine = line;
     const gb = hersheyRunsBBox(group);
     if (!gb) continue;
+    if (Number.isNaN(inkCursorY)) {
+      inkCursorY = gb.minY + leadDy;
+    } else if (
+      typeof line === 'number' &&
+      typeof prevLine === 'number' &&
+      line !== prevLine
+    ) {
+      // A source newline reads as a phrase break; give it extra air.
+      inkCursorY += gap * Math.max(1, line - prevLine);
+    }
+    prevLine = line;
     const dx =
       align === 'left'
         ? axisX - gb.minX
         : align === 'right'
           ? axisX - gb.maxX
           : axisX - (gb.minX + gb.maxX) / 2;
+    const dy = inkCursorY - gb.minY;
     const srcBaseline =
       typeof group[0].baselineY === 'number' ? group[0].baselineY : startBaselineY;
-    const dy = baseline - srcBaseline;
     for (const r of group) {
       out.push({
         ...r,
         points: r.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
         lineIndex: i,
-        baselineY: baseline,
+        // Carry the glyph's baseline through the move so the slant pass
+        // that runs after this still shears about the right line.
+        baselineY: srcBaseline + dy,
       });
     }
+    inkCursorY = gb.maxY + dy + gap;
   }
   return out;
 }

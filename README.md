@@ -298,8 +298,9 @@ under **Git Bash**, which ships with Git for Windows.
      word, so "McDonald" survives), a **slant** slider (±45°, a shear
      about each line's own baseline, i.e. faux-italic on any face),
      **vertical stacking** (one glyph per line down a common axis,
-     centred on each glyph's ink rather than its advance width — the
-     blade-sign layout), and **arc** (the baseline bent onto a circle
+     centred on each glyph's ink rather than its advance width, with an
+     even ink-to-ink gap down the column — the blade-sign layout), and
+     **arc** (the baseline bent onto a circle
      of a chosen radius, arching up over a doorway or sagging down).
      They compose in a fixed order — case → layout → slant — and
      stacking and arc are mutually exclusive. Stacking is unavailable

@@ -401,6 +401,11 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
     <div className="modal-backdrop" onMouseDown={onCancel}>
       <div
         className="modal hershey-modal"
+        // The Transform section makes this modal tall; without a cap it
+        // can push Insert past the bottom of a short viewport with no
+        // way to reach it. Scroll inside the modal rather than editing
+        // the shared .modal rule in App.css, which other lanes own.
+        style={{ maxHeight: '92vh', overflowY: 'auto' }}
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -499,7 +504,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
             </div>
 
             <div style={transformRowStyle}>
-              <label htmlFor="hershey-slant" style={transformLabelStyle}>
+              <label htmlFor="hershey-slant" style={{ ...transformInlineLabelStyle, width: 44 }}>
                 Slant
               </label>
               <input
@@ -535,7 +540,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
             </div>
 
             <div style={transformRowStyle}>
-              <label style={{ ...transformLabelStyle, width: 'auto' }}>
+              <label style={transformInlineLabelStyle}>
                 <input
                   type="checkbox"
                   checked={layoutMode === 'stack'}
@@ -546,13 +551,13 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
               </label>
               {layoutMode === 'stack' && (
                 <>
-                  <label className="meta">
+                  <label className="meta" style={transformInlineLabelStyle}>
                     Gap (× cap){' '}
                     <input
                       type="number"
                       min={0}
                       max={2}
-                      step={0.05}
+                      step="any"
                       value={stackGapFactor}
                       onChange={(e) => {
                         const v = Number(e.target.value);
@@ -561,7 +566,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                       style={{ width: 64 }}
                     />
                   </label>
-                  <label className="meta">
+                  <label className="meta" style={transformInlineLabelStyle}>
                     Align{' '}
                     <select
                       value={stackAlign}
@@ -585,7 +590,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
             )}
 
             <div style={transformRowStyle}>
-              <label style={{ ...transformLabelStyle, width: 'auto' }}>
+              <label style={transformInlineLabelStyle}>
                 <input
                   type="checkbox"
                   checked={layoutMode === 'arc'}
@@ -596,12 +601,17 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
               </label>
               {layoutMode === 'arc' && (
                 <>
-                  <label className="meta">
+                  <label className="meta" style={transformInlineLabelStyle}>
                     Radius (mm){' '}
                     <input
                       type="number"
                       min={1}
-                      step={10}
+                      // step="any", NOT a number: a numeric step makes
+                      // `min` the base of a valid-value lattice, and an
+                      // off-lattice value fails HTML form validation,
+                      // which silently blocks the Insert submit. Any
+                      // positive radius is a legal arc.
+                      step="any"
                       value={arcRadiusMM}
                       onChange={(e) => {
                         const v = Number(e.target.value);
@@ -610,7 +620,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                       style={{ width: 88 }}
                     />
                   </label>
-                  <label className="meta">
+                  <label className="meta" style={transformInlineLabelStyle}>
                     Bend{' '}
                     <select
                       value={arcDirection}
@@ -758,6 +768,18 @@ const transformRowStyle: React.CSSProperties = {
 
 const transformLabelStyle: React.CSSProperties = {
   width: 44,
+  fontSize: 12,
+  flex: '0 0 auto',
+};
+
+// App.css sets `.modal label { display: flex; flex-direction: column }`,
+// which would stack a checkbox above its own caption. Transform controls
+// are row-shaped, so override locally rather than touching shared CSS.
+const transformInlineLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 4,
   fontSize: 12,
   flex: '0 0 auto',
 };
