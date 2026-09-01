@@ -4,7 +4,7 @@ import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
 import { flatRunPoints, segmentTypeAt } from './arcGeom';
-import { runArcs } from './runArcs';
+import { blockoutSegments, runArcs } from './runArcs';
 import { threePointArcToPoints } from './shapes/arc';
 
 // Build a minimal doc with one open polyline, one closed polyline, and
@@ -3553,5 +3553,234 @@ describe('reverseRun and arc segments (Bug #11)', () => {
       after,
       before.slice().reverse().map(([x, y]) => [x, -y] as [number, number]),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #14 — joinRuns' reversal corrupts arcs and inverts blockout ranges.
+//
+// joinRuns reverses one or both inputs so the join is always conceptually
+// tail-to-head. It did that with a local `reversedRun` helper that predated
+// arc segments: it never moved `polyline.segment_types`, and it flipped
+// blockout range endpoints without swapping them, so a reversed range came
+// back running end -> start. The join half then never gave the merged run a
+// `segment_types` array at all, so every arc on BOTH inputs decayed to a
+// straight chord regardless of reversal.
+//
+// As with Bug #11, arc HANDEDNESS cannot be preserved here: `arcFor` always
+// bows to the left of travel and `segment_types` cannot say otherwise, so a
+// reversed arc is drawn mirrored about its (unchanged) chord. These tests pin
+// WHICH chords are curved — via arcChords — not which side the bow falls on.
+// The signed arc side is Tier 3 #87.
+// ---------------------------------------------------------------------------
+
+// Run A for the endpoint-combination table: an arc leaving [0,0] and a line
+// up to [10,10]. head = [0,0], tail = [10,10].
+function joinArcRunA(): DesignRun {
+  return {
+    id: 'a',
+    polyline: {
+      points: [[0, 0], [10, 0], [10, 10]],
+      closed: false,
+      segment_types: ['arc', 'line'],
+    },
+  };
+}
+
+// One B per endpoint combination, positioned so the two chosen endpoints
+// coincide and the seam vertex is dropped. Every B carries exactly one arc.
+const JOIN_COMBOS: {
+  name: string;
+  endpointA: 'head' | 'tail';
+  endpointB: 'head' | 'tail';
+  b: DesignRun;
+}[] = [
+  {
+    name: 'tail-to-head (neither run reversed)',
+    endpointA: 'tail',
+    endpointB: 'head',
+    b: {
+      id: 'b',
+      polyline: {
+        points: [[10, 10], [20, 10], [30, 10]],
+        closed: false,
+        segment_types: ['line', 'arc'],
+      },
+    },
+  },
+  {
+    name: 'tail-to-tail (B reversed)',
+    endpointA: 'tail',
+    endpointB: 'tail',
+    b: {
+      id: 'b',
+      polyline: {
+        points: [[30, 10], [20, 10], [10, 10]],
+        closed: false,
+        segment_types: ['arc', 'line'],
+      },
+    },
+  },
+  {
+    name: 'head-to-head (A reversed)',
+    endpointA: 'head',
+    endpointB: 'head',
+    b: {
+      id: 'b',
+      polyline: {
+        points: [[0, 0], [-10, 0], [-20, 0]],
+        closed: false,
+        segment_types: ['line', 'arc'],
+      },
+    },
+  },
+  {
+    name: 'head-to-tail (both reversed)',
+    endpointA: 'head',
+    endpointB: 'tail',
+    b: {
+      id: 'b',
+      polyline: {
+        points: [[-20, 0], [-10, 0], [0, 0]],
+        closed: false,
+        segment_types: ['arc', 'line'],
+      },
+    },
+  },
+];
+
+function joinDoc(b: DesignRun): DesignDoc {
+  return {
+    version: 1,
+    view_box_mm: [0, 0, 60, 60],
+    runs: [joinArcRunA(), b],
+  };
+}
+
+describe('joinRuns and arc segments (Bug #14)', () => {
+  for (const combo of JOIN_COMBOS) {
+    it(`keeps both arcs on their own chords — ${combo.name}`, () => {
+      const doc = joinDoc(combo.b);
+      const next = ops.joinRuns(doc, 'a', combo.endpointA, 'b', combo.endpointB);
+      expect(next.runs.length).toBe(1);
+      const joined = next.runs[0];
+      // Seam vertex dropped: 3 + 3 - 1.
+      expect(joined.polyline.points.length).toBe(5);
+      // The Go decoder rejects a segment_types array that is not exactly
+      // SegmentCount long, so a short or absent array is a 400 on save.
+      expect(joined.polyline.segment_types?.length).toBe(4);
+      // Both input arcs are still curved, and on the same unordered chords.
+      expect(arcChords(joined)).toEqual(
+        [...arcChords(doc.runs[0]), ...arcChords(combo.b)].sort(),
+      );
+    });
+  }
+
+  it('a tail-to-head join is exactly the two flattened shapes concatenated', () => {
+    // No reversal here, so the bow limitation does not apply and the true
+    // geometric invariant holds: the drawn curve must not move at all.
+    const combo = JOIN_COMBOS[0];
+    const doc = joinDoc(combo.b);
+    const flatA = flatRunPoints(doc.runs[0]);
+    const flatB = flatRunPoints(combo.b);
+    const joined = ops.joinRuns(doc, 'a', 'tail', 'b', 'head').runs[0];
+    expectSamePoints(flatRunPoints(joined), [...flatA, ...flatB.slice(1)]);
+  });
+
+  it('a blockout on the reversed run comes back forward-running, not inverted', () => {
+    const b = JOIN_COMBOS[1].b; // [[30,10],[20,10],[10,10]], joined at its tail
+    const doc = joinDoc({
+      ...b,
+      // Live index == polyline index on an open run with no electrodes.
+      // Live 0..1 is the physical stretch [30,10] -> [20,10].
+      blockouts: [{ start_live_index: 0, end_live_index: 1 }],
+    });
+    const joined = ops.joinRuns(doc, 'a', 'tail', 'b', 'tail').runs[0];
+    const bo = joined.blockouts![0];
+    expect(bo.start_live_index).toBeLessThan(bo.end_live_index);
+    // Same physical glass: [20,10] through [30,10].
+    const pts = joined.polyline.points;
+    expect(pts[bo.start_live_index]).toEqual([20, 10]);
+    expect(pts[bo.end_live_index]).toEqual([30, 10]);
+    // And the real consumer paints both of them, not just one end.
+    const live = runArcs(joined);
+    const painted = blockoutSegments(live.live, joined.blockouts, live.liveClosed)
+      .filter((s) => s.isBlockout)
+      .flatMap((s) => s.liveIndices.map((i) => joined.polyline.points[i]));
+    expect(painted).toEqual(expect.arrayContaining([[20, 10], [30, 10]]));
+  });
+
+  it('electrodes, annotations and bends on the reversed run keep their points', () => {
+    const b = JOIN_COMBOS[1].b; // [[30,10],[20,10],[10,10]]
+    const doc = joinDoc({
+      ...b,
+      electrodes: [{ point_index: 0 }], // physical [30,10]
+      annotations: [{ kind: 'support', live_index: 2 }], // physical [10,10]
+      bends: [{ live_index: 1 }], // physical [20,10]
+    });
+    const joined = ops.joinRuns(doc, 'a', 'tail', 'b', 'tail').runs[0];
+    const pts = joined.polyline.points;
+    expect(pts[joined.electrodes![0].point_index]).toEqual([30, 10]);
+    expect(pts[joined.annotations![0].live_index]).toEqual([10, 10]);
+    expect(pts[joined.bends![0].live_index]).toEqual([20, 10]);
+  });
+
+  it('self-join closes the loop and grows segment_types for the new closing segment', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          id: 'a',
+          polyline: {
+            points: [[0, 0], [10, 0], [10, 10], [0, 10]],
+            closed: false,
+            segment_types: ['arc', 'line', 'line'],
+          },
+        },
+      ],
+    };
+    const joined = ops.joinRuns(doc, 'a', 'head', 'a', 'tail').runs[0];
+    expect(joined.polyline.closed).toBe(true);
+    // A closed run has one segment per vertex — the array has to grow with it
+    // or the document no longer decodes.
+    expect(joined.polyline.segment_types).toEqual(['arc', 'line', 'line', 'line']);
+    expect(arcChords(joined)).toEqual(arcChords(doc.runs[0]));
+  });
+
+  it('a line-only join is unchanged and does not grow a segment_types array', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        { id: 'a', polyline: { points: [[0, 0], [1, 0], [2, 0]], closed: false } },
+        { id: 'b', polyline: { points: [[4, 0], [3, 0], [2, 0]], closed: false } },
+      ],
+    };
+    const joined = ops.joinRuns(doc, 'a', 'tail', 'b', 'tail').runs[0];
+    expect(joined.polyline.points).toEqual([[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]]);
+    expect(joined.polyline.segment_types).toBeUndefined();
+  });
+
+  it('a bridged join (endpoints do not coincide) marks the new gap segment a line', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        joinArcRunA(),
+        {
+          id: 'b',
+          polyline: {
+            points: [[40, 40], [50, 40], [50, 50]],
+            closed: false,
+            segment_types: ['arc', 'line'],
+          },
+        },
+      ],
+    };
+    const joined = ops.joinRuns(doc, 'a', 'tail', 'b', 'head').runs[0];
+    expect(joined.polyline.points.length).toBe(6);
+    // a:[arc,line] + bridge:line + b:[arc,line]
+    expect(joined.polyline.segment_types).toEqual(['arc', 'line', 'line', 'arc', 'line']);
   });
 });
