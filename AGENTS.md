@@ -67,6 +67,25 @@ Then say this explicitly in the dispatch prompt: **a wrong premise is a
 finding — report it, don't silently work around it.** The best results in both
 rounds came from agents that pushed back on the spec.
 
+### A grep that finds nothing is not proof of absence
+
+Verifying premises by grepping for a symbol has a specific failure mode, and
+it cost a wrong premise in the #112 spec. I concluded the exemption list had
+no pinning test because `grep NUMERIC_INPUT_EXEMPT_FILES` returned only the
+declaration and its own use. The test existed — it asserted against the
+**resolved eslint config** instead of importing the constant, deliberately, so
+that it measured the rule's real reach rather than a list someone could edit.
+A grep for the name could never have found it.
+
+**Search for what the thing would *do*, not what it would be called.** Before
+writing "X does not exist" into a spec, grep for the behaviour (here:
+`ESLint`, `exempt`, `calculateConfigForFile`), check the obvious test file for
+the module by name, and prefer running the suite and watching for the absence
+of a failure over reasoning from a symbol's call sites. Getting this wrong is
+expensive in a specific way: it does not just add work, it points the agent at
+the wrong problem, and it puts a false claim into `todo.md` where the next
+round will trust it.
+
 ## The spec has to be on `origin/main` before you dispatch
 
 A worktree agent branches from `origin/main`. **Untracked files in your working

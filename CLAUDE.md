@@ -173,11 +173,15 @@ All of these passed CI and were broken the moment a human touched them:
 - `<input type="number" min="1" step="10">` makes `min` a lattice base, so a
   default value that is not on that lattice fails HTML validation and
   **silently swallows the form submit** — no error, no console warning, the
-  button just does nothing. **This has now shipped twice** (PR #146's arc
-  radius, PR #158's flatten tolerance), so treat it as a rule rather than a
-  war story: on any `type="number"` that is not a plain integer counter, use
-  `step="any"`. See `todo.md` row 105 for the shared component that will
-  enforce it
+  button just does nothing. **This shipped three times** (PR #146's arc radius,
+  PR #158's flatten tolerance, and the Vectorize auto-rotate found by the row
+  105 audit), so it is a rule, not a war story. It is now mechanically
+  enforced and you should never write the raw element: use `<NumericField>`
+  (`src/components/NumericField.tsx`), which defaults to `step="any"` and
+  takes `integer` for genuine discrete counters. `eslint.config.js` bans the
+  raw element with **no file exemptions**, and `eslint.config.test.js` pins
+  that — note that adding an exemption leaves `npm run lint` green, so the
+  test is the only thing that catches it
 - a `setDoc(prev => …)` updater runs during render, so a result captured in the
   event handler is stale — route doc mutations through `applyOp` in
   `EditorPage.tsx`, never a bare `editDoc` whose return value you read
