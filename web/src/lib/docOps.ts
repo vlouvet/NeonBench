@@ -861,79 +861,87 @@ function perpDist(p: [number, number], a: [number, number], b: [number, number])
 //   - a mirror is reflect-then-reverse, and there the reflection's handedness
 //     flip cancels the reversal's, so mirrored arcs land on the right side.
 export function reverseRun(doc: DesignDoc, runId: string): DesignDoc {
-  return mapRun(doc, runId, (run) => {
-    const pts = run.polyline.points;
-    const n = pts.length;
-    if (n < 2) return run;
-    const closed = !!run.polyline.closed;
-    const flip = (i: number) => n - 1 - i;
+  return mapRun(doc, runId, reversedRun);
+}
 
-    const polyline = { ...run.polyline, points: pts.slice().reverse() };
-    // Only rebuild the array when one exists: a pre-#78 run has no
-    // segment_types and must round-trip without growing one, and the Go
-    // decoder rejects an array that isn't exactly segmentCount long.
-    if (run.polyline.segment_types) {
-      const count = segmentCount(run);
-      const moved: ('line' | 'arc')[] = [];
-      for (let j = 0; j < count; j++) {
-        const src = closed ? (((n - 2 - j) % n) + n) % n : n - 2 - j;
-        moved.push(segmentTypeAt(run, src));
-      }
-      polyline.segment_types = moved;
-    }
+// reversedRun is the run-level half of reverseRun, factored out so joinRuns
+// can share it. joinRuns reverses an input before concatenating and used to
+// carry a private copy of this logic; the copy never learned about
+// segment_types and flipped blockout range endpoints without swapping them,
+// which is Bug #14. One implementation with two callers is the point — the
+// duplicate is what drifted.
+function reversedRun(run: DesignRun): DesignRun {
+  const pts = run.polyline.points;
+  const n = pts.length;
+  if (n < 2) return run;
+  const closed = !!run.polyline.closed;
+  const flip = (i: number) => n - 1 - i;
 
-    const next: DesignRun = { ...run, polyline };
-    if (run.electrodes) {
-      next.electrodes = run.electrodes.map((e) => ({ ...e, point_index: flip(e.point_index) }));
+  const polyline = { ...run.polyline, points: pts.slice().reverse() };
+  // Only rebuild the array when one exists: a pre-#78 run has no
+  // segment_types and must round-trip without growing one, and the Go
+  // decoder rejects an array that isn't exactly segmentCount long.
+  if (run.polyline.segment_types) {
+    const count = segmentCount(run);
+    const moved: ('line' | 'arc')[] = [];
+    for (let j = 0; j < count; j++) {
+      const src = closed ? (((n - 2 - j) % n) + n) % n : n - 2 - j;
+      moved.push(segmentTypeAt(run, src));
     }
-    // Walking a closed loop the other way swaps which half of it is lit, so
-    // an explicit direction has to flip to keep the same arc live. An unset
-    // direction needs no help: defaultDirection measures the two halves and
-    // its answer survives the reversal on its own.
-    if (closed && run.direction && (run.electrodes?.length ?? 0) === 2) {
-      next.direction = run.direction === 'forward' ? 'backward' : 'forward';
-    }
+    polyline.segment_types = moved;
+  }
 
-    // Blockouts, annotations and bends are anchored to positions along the
-    // LIVE walk, not to raw polyline indices — the convention splitRun and
-    // insertDoubleback already follow. That walk does NOT always turn around
-    // with the point list: an open run's walk is the polyline itself so it
-    // reverses, but a closed two-electrode run's walk still starts at
-    // electrodes[0] — which keeps its identity here — and, with `direction`
-    // flipped above, covers the same half in the same order, so its positions
-    // do not move at all. Resolving each position through the polyline vertex
-    // it names is exact for both cases; assuming L-1-k is not.
-    const oldLive = runArcs(run).live;
-    const newLive = runArcs(next).live;
-    const posOfVertex = new Map<number, number>();
-    for (let i = newLive.length - 1; i >= 0; i--) posOfVertex.set(newLive[i], i);
-    const livePos = (k: number) => {
-      const clamped = Math.min(Math.max(k, 0), oldLive.length - 1);
-      return posOfVertex.get(flip(oldLive[clamped])) ?? clamped;
-    };
-    const walkReversed = oldLive.length > 1 && livePos(0) > livePos(oldLive.length - 1);
+  const next: DesignRun = { ...run, polyline };
+  if (run.electrodes) {
+    next.electrodes = run.electrodes.map((e) => ({ ...e, point_index: flip(e.point_index) }));
+  }
+  // Walking a closed loop the other way swaps which half of it is lit, so
+  // an explicit direction has to flip to keep the same arc live. An unset
+  // direction needs no help: defaultDirection measures the two halves and
+  // its answer survives the reversal on its own.
+  if (closed && run.direction && (run.electrodes?.length ?? 0) === 2) {
+    next.direction = run.direction === 'forward' ? 'backward' : 'forward';
+  }
 
-    if (run.blockouts) {
-      next.blockouts = run.blockouts.map((b) => {
-        const s = livePos(b.start_live_index);
-        const e = livePos(b.end_live_index);
-        // A blockout spans start -> end walking FORWARD, wrapping past the
-        // end of a closed live arc. When the walk turns around, its two ends
-        // trade places — one formula that is right for wrapping and
-        // non-wrapping spans alike, and an identity when applied twice.
-        return walkReversed
-          ? { start_live_index: e, end_live_index: s }
-          : { start_live_index: s, end_live_index: e };
-      });
-    }
-    if (run.annotations) {
-      next.annotations = run.annotations.map((a) => ({ ...a, live_index: livePos(a.live_index) }));
-    }
-    if (run.bends) {
-      next.bends = run.bends.map((b) => ({ live_index: livePos(b.live_index) }));
-    }
-    return next;
-  });
+  // Blockouts, annotations and bends are anchored to positions along the
+  // LIVE walk, not to raw polyline indices — the convention splitRun and
+  // insertDoubleback already follow. That walk does NOT always turn around
+  // with the point list: an open run's walk is the polyline itself so it
+  // reverses, but a closed two-electrode run's walk still starts at
+  // electrodes[0] — which keeps its identity here — and, with `direction`
+  // flipped above, covers the same half in the same order, so its positions
+  // do not move at all. Resolving each position through the polyline vertex
+  // it names is exact for both cases; assuming L-1-k is not.
+  const oldLive = runArcs(run).live;
+  const newLive = runArcs(next).live;
+  const posOfVertex = new Map<number, number>();
+  for (let i = newLive.length - 1; i >= 0; i--) posOfVertex.set(newLive[i], i);
+  const livePos = (k: number) => {
+    const clamped = Math.min(Math.max(k, 0), oldLive.length - 1);
+    return posOfVertex.get(flip(oldLive[clamped])) ?? clamped;
+  };
+  const walkReversed = oldLive.length > 1 && livePos(0) > livePos(oldLive.length - 1);
+
+  if (run.blockouts) {
+    next.blockouts = run.blockouts.map((b) => {
+      const s = livePos(b.start_live_index);
+      const e = livePos(b.end_live_index);
+      // A blockout spans start -> end walking FORWARD, wrapping past the
+      // end of a closed live arc. When the walk turns around, its two ends
+      // trade places — one formula that is right for wrapping and
+      // non-wrapping spans alike, and an identity when applied twice.
+      return walkReversed
+        ? { start_live_index: e, end_live_index: s }
+        : { start_live_index: s, end_live_index: e };
+    });
+  }
+  if (run.annotations) {
+    next.annotations = run.annotations.map((a) => ({ ...a, live_index: livePos(a.live_index) }));
+  }
+  if (run.bends) {
+    next.bends = run.bends.map((b) => ({ live_index: livePos(b.live_index) }));
+  }
+  return next;
 }
 
 export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
@@ -1529,6 +1537,16 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
 //
 // Annotations / electrodes / blockouts / bends are transformed through
 // the reversal + concatenation. The math is bug-prone — see tests.
+//
+// KNOWN LIMITATION — arc handedness, the same one reverseRun carries. Any
+// endpoint combination other than tail-to-head reverses an input, and
+// `arcFor` always bows to the LEFT of travel while `segment_types` admits
+// only "line" and "arc". So a reversed arc keeps its chord, radius and arc
+// length but is drawn mirrored about that chord. Which segments are curved
+// is preserved exactly; which side the bow falls on is not. Fixing that
+// needs a signed bulge (or "arc-cw"/"arc-ccw") in internal/designdoc and its
+// TypeScript twin — Tier 3 #87. A tail-to-head join reverses nothing and so
+// preserves the drawn shape outright.
 export function joinRuns(
   doc: DesignDoc,
   runIdA: string,
@@ -1544,41 +1562,23 @@ export function joinRuns(
   if (runIdA === runIdB) {
     if (endpointA === endpointB) return doc; // can't join an end to itself
     if (runA.polyline.closed) return doc; // already closed
-    const closed: DesignRun = {
-      ...runA,
-      polyline: { ...runA.polyline, closed: true },
-    };
+    const polyline = { ...runA.polyline, closed: true };
+    // Closing the loop ADDS a segment — segmentCount goes n-1 to n — and the
+    // Go decoder rejects a segment_types array that isn't exactly that long,
+    // so leaving it unextended turns every later save of this doc into a 400.
+    // The new closing chord is glass nobody has curved yet, hence 'line'.
+    if (runA.polyline.segment_types) {
+      polyline.segment_types = [...runA.polyline.segment_types, 'line'];
+    }
+    const closed: DesignRun = { ...runA, polyline };
     return { ...doc, runs: doc.runs.map((r) => (r.id === runIdA ? closed : r)) };
   }
 
-  // Reverse-helper that transforms the run plus all of its anchored
-  // metadata (electrodes via point_index; blockouts/annotations/bends
-  // via live_index treated as polyline index for the common case).
-  function reversedRun(r: DesignRun): DesignRun {
-    const n = r.polyline.points.length;
-    const flipPt = (i: number) => n - 1 - i;
-    return {
-      ...r,
-      polyline: { ...r.polyline, points: r.polyline.points.slice().reverse() },
-      electrodes: r.electrodes
-        ? r.electrodes.map((e) => ({ ...e, point_index: flipPt(e.point_index) }))
-        : r.electrodes,
-      blockouts: r.blockouts
-        ? r.blockouts.map((b) => ({
-            start_live_index: flipPt(b.start_live_index),
-            end_live_index: flipPt(b.end_live_index),
-          }))
-        : r.blockouts,
-      annotations: r.annotations
-        ? r.annotations.map((a) => ({ ...a, live_index: flipPt(a.live_index) }))
-        : r.annotations,
-      bends: r.bends
-        ? r.bends.map((b) => ({ live_index: flipPt(b.live_index) }))
-        : r.bends,
-    };
-  }
-
-  // Pick the orientation that puts runA's tail next to runB's head.
+  // Pick the orientation that puts runA's tail next to runB's head. The
+  // reversal is the shared `reversedRun` above — this used to be a private
+  // copy that predated arc segments, and it had drifted into Bug #14: it
+  // never moved segment_types, and it flipped blockout range endpoints
+  // without swapping them, so a reversed range came back running end->start.
   const a = endpointA === 'tail' ? runA : reversedRun(runA);
   const b = endpointB === 'head' ? runB : reversedRun(runB);
 
@@ -1597,6 +1597,28 @@ export function joinRuns(
     ...bPts.slice(bStartIdx),
   ];
 
+  // segment_types for the merged run. Index i describes the segment LEAVING
+  // vertex i, so the array reads: a's segments, the seam, then b's. Without
+  // this the merged run had no array at all and every arc on BOTH inputs —
+  // reversed or not — decayed to a straight chord. Build it only when one of
+  // the inputs actually had one, so a pre-#78 pair still round-trips without
+  // growing the key.
+  let joinedTypes: ('line' | 'arc')[] | undefined;
+  if (a.polyline.segment_types || b.polyline.segment_types) {
+    joinedTypes = [];
+    for (let j = 0; j < joinedPts.length - 1; j++) {
+      if (j < aLen - 1) {
+        joinedTypes.push(segmentTypeAt(a, j));
+      } else if (!seamDropped && j === aLen - 1) {
+        // The endpoints didn't coincide, so this segment is a brand-new
+        // bridging chord between them — nobody has curved it.
+        joinedTypes.push('line');
+      } else {
+        joinedTypes.push(segmentTypeAt(b, j - aLen + bStartIdx));
+      }
+    }
+  }
+
   // Anchor remap for run-b: each polyline-index anchor i (0..n-1) lands
   // at aLen + (i - bStartIdx) in the joined polyline. Indices below
   // bStartIdx are at the dropped duplicate — fold them onto the seam
@@ -1606,24 +1628,42 @@ export function joinRuns(
     return aLen + (i - bStartIdx);
   };
 
+  // Blockouts, annotations and bends are positions along the LIVE walk, not
+  // raw vertices. The merged run is always open, so ITS live walk is its
+  // polyline and a live position there is a vertex index — but an input's
+  // walk need not be, so resolve each position through the vertex it names
+  // before remapping. On the open runs the join tool offers, both maps are
+  // the identity; they stop being one as soon as a closed two-electrode run
+  // reaches here, which is where treating the two spaces as interchangeable
+  // silently went wrong.
+  const aLive = runArcs(a).live;
+  const bLive = runArcs(b).live;
+  const at = (walk: number[], k: number) =>
+    walk[Math.min(Math.max(k, 0), walk.length - 1)] ?? 0;
+  const liveA = (k: number) => at(aLive, k);
+  const liveB = (k: number) => remapB(at(bLive, k));
+
   const electrodes: Electrode[] = [
     ...(a.electrodes ?? []),
     ...((b.electrodes ?? []).map((e) => ({ ...e, point_index: remapB(e.point_index) }))),
   ];
   const blockouts: Blockout[] = [
-    ...(a.blockouts ?? []),
+    ...((a.blockouts ?? []).map((bo) => ({
+      start_live_index: liveA(bo.start_live_index),
+      end_live_index: liveA(bo.end_live_index),
+    }))),
     ...((b.blockouts ?? []).map((bo) => ({
-      start_live_index: remapB(bo.start_live_index),
-      end_live_index: remapB(bo.end_live_index),
+      start_live_index: liveB(bo.start_live_index),
+      end_live_index: liveB(bo.end_live_index),
     }))),
   ];
   const annotations: Annotation[] = [
-    ...(a.annotations ?? []),
-    ...((b.annotations ?? []).map((an) => ({ ...an, live_index: remapB(an.live_index) }))),
+    ...((a.annotations ?? []).map((an) => ({ ...an, live_index: liveA(an.live_index) }))),
+    ...((b.annotations ?? []).map((an) => ({ ...an, live_index: liveB(an.live_index) }))),
   ];
   const bends: Bend[] = [
-    ...(a.bends ?? []),
-    ...((b.bends ?? []).map((bn) => ({ live_index: remapB(bn.live_index) }))),
+    ...((a.bends ?? []).map((bn) => ({ live_index: liveA(bn.live_index) }))),
+    ...((b.bends ?? []).map((bn) => ({ live_index: liveB(bn.live_index) }))),
   ];
 
   // Result inherits runA's metadata (color, diameter, notes) and id.
@@ -1631,6 +1671,7 @@ export function joinRuns(
     id: runA.id,
     polyline: { points: joinedPts, closed: false },
   };
+  if (joinedTypes) joined.polyline.segment_types = joinedTypes;
   if (runA.tube_diameter_mm != null) joined.tube_diameter_mm = runA.tube_diameter_mm;
   if (runA.color != null) joined.color = runA.color;
   if (runA.notes != null) joined.notes = runA.notes;
