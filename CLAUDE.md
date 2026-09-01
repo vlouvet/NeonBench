@@ -109,6 +109,21 @@ same bug twice:
 - `reverseRun` never learned about `polyline.segment_types` when arc segments
   landed in #141/#142, so reversing an arc run moved every arc onto the wrong
   segment and flipped its bow (Bug #11).
+- `joinRuns` has its own local `reversedRun` helper with the same omission,
+  *plus* it flips blockout `start_live_index` / `end_live_index` without
+  swapping them, so a reversed range comes out inverted. Found while fixing
+  Bug #11 — grep for every place that reverses or re-indexes points, not just
+  the one you were sent to fix.
+
+**A boolean `arc` flag cannot survive reversal.** `arcFor` always bows left of
+travel, so reversing a chord puts the arc centre on the other side — probed
+directly: forward centre `(50, -37.5)`, reversed `(50, +37.5)`. No amount of
+index remapping undoes that. Preserving shape through a reversal needs a signed
+bulge (or `arc-cw` / `arc-ccw`) in the schema. Until that lands, an op that
+reverses point order **changes the drawn shape of any arc run**, and the honest
+options are to gate the op or to say so in the UI — not to claim the shape is
+preserved. Mirroring is the exception: it flips handedness once and the
+reversal flips it back, so the two cancel.
 
 Walk this list explicitly before merging such an op, and state in the PR body
 what you did with each:
