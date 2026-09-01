@@ -41,6 +41,17 @@ git checkout main && git pull --ff-only
 3. Check the **file-coupling map** below. If your task touches a file currently being changed on another open `task/*` branch, pick a different task or wait.
 4. Branch naming: `task/<tier>-<short-slug>`, e.g. `task/1-delete-version`, `task/2-hershey-text`, `task/3-validation-overlay`.
 
+**Always name the base explicitly: `git checkout -b task/<slug> origin/main`.**
+Never branch from whatever HEAD happens to be. We have twice cut a feature
+branch off the *previous* feature branch by accident, which drags unrelated
+commits into the PR diff and makes review meaningless. If you notice after the
+fact, copy your changed files aside, re-cut from `origin/main`, and re-apply —
+that is faster than untangling it.
+
+The same rule applies to follow-up work: if a bug you found lives in code an
+open PR is already rewriting, write the spec and **wait for that PR to merge**.
+Do not branch off the open PR's branch.
+
 ## Working in parallel — worktrees
 
 Multiple agents on the same machine should use **git worktrees**, not separate clones. One checkout per task, all sharing the same `.git`:
@@ -71,8 +82,8 @@ Two agents touching the same file = merge conflict and one of them has to redo w
 
 | File | Why it conflicts | Mitigation |
 |---|---|---|
-| `web/src/components/EditorCanvas.tsx` (832 lines) | Almost every Phase 2 / Tier 1–2 frontend task touches it | One editor-feature task at a time, OR split into smaller components in a separate refactor PR first |
-| `web/src/pages/EditorPage.tsx` (755 lines) | Sidebar / toolbar additions | Same as above |
+| `web/src/components/EditorCanvas.tsx` (the largest FE file) | Almost every Phase 2 / Tier 1–2 frontend task touches it | One editor-feature task at a time, OR split into smaller components in a separate refactor PR first |
+| `web/src/pages/EditorPage.tsx` (toolbar + state owner) | Sidebar / toolbar additions | Same as above |
 | `internal/server/api.go` | Every new endpoint adds a route | Adding routes is line-append; usually conflict-free if PRs are small |
 | `internal/designdoc/types.go` / `convert.go` | Schema additions | Coordinate; schema changes touch backend + frontend together |
 | `internal/storage/migrations/*.sql` | New migration numbers | Always pick the next unused number; rename if a collision happens during merge |
@@ -80,6 +91,122 @@ Two agents touching the same file = merge conflict and one of them has to redo w
 | `web/package.json` / `go.mod` | New deps | Coordinate; run `go mod tidy` / `npm install` and commit the lockfile changes |
 
 If your task **must** touch one of these and another open PR is also touching it, post a comment on the open PR and either wait for it to merge or coordinate the split.
+
+## Recurring bug classes (read before writing code)
+
+Each of these has shipped to `main` more than once. They are not hypothetical,
+and every one of them passed CI at the time.
+
+### 1. Run-mutating ops that forget a sibling field
+
+Any op that changes a run's **point count or point order** must consciously
+carry or remap every field that indexes into those points. We have shipped this
+same bug twice:
+
+- `splitRun` dropped `is_channel_letter_face`, `channel_letter_depth_mm`,
+  `raceway_id`, `kind` and `group_id`, so the halves of a split channel-letter
+  face silently stopped emitting return-strip pages (fixed in PR #140).
+- `reverseRun` never learned about `polyline.segment_types` when arc segments
+  landed in #141/#142, so reversing an arc run moved every arc onto the wrong
+  segment and flipped its bow (Bug #11).
+- `joinRuns` has its own local `reversedRun` helper with the same omission,
+  *plus* it flips blockout `start_live_index` / `end_live_index` without
+  swapping them, so a reversed range comes out inverted. Found while fixing
+  Bug #11 — grep for every place that reverses or re-indexes points, not just
+  the one you were sent to fix.
+
+**A boolean `arc` flag cannot survive reversal.** `arcFor` always bows left of
+travel, so reversing a chord puts the arc centre on the other side — probed
+directly: forward centre `(50, -37.5)`, reversed `(50, +37.5)`. No amount of
+index remapping undoes that. Preserving shape through a reversal needs a signed
+bulge (or `arc-cw` / `arc-ccw`) in the schema. Until that lands, an op that
+reverses point order **changes the drawn shape of any arc run**, and the honest
+options are to gate the op or to say so in the UI — not to claim the shape is
+preserved. Mirroring is the exception: it flips handedness once and the
+reversal flips it back, so the two cancel.
+
+Walk this list explicitly before merging such an op, and state in the PR body
+what you did with each:
+
+| Field | Rule |
+|---|---|
+| `polyline.segment_types` | index *i* is the segment **leaving** vertex *i*. Reversal maps new *j* → old `n-2-j` (mod n when closed); insert/delete shifts everything after the touch point |
+| `electrodes[].point_index` | remap |
+| `blockouts` / `annotations` / `bends` | live-arc-relative positions — remap through `runArcs`, do not assume raw vertex indices |
+| `direction` | meaningful only on a closed run with two electrodes; reversal inverts it |
+| `is_channel_letter_face`, `channel_letter_depth_mm` | carry to every resulting run |
+| `raceway_id`, `group_id`, `kind` | carry — these FKs drive the PDF strip pages and grouping |
+| `id` | new runs get `nextRunId`; never reuse an id |
+
+**The test that actually pins this is a geometric invariant, not field
+assertions.** `flatRunPoints(after)` must equal the expected transform of
+`flatRunPoints(before)`. Field-by-field assertions pass while the drawn shape is
+wrong. Use `flatRunPoints` (`web/src/lib/arcGeom.ts`): a bbox, length, or
+midpoint computed from raw `polyline.points` ignores arc bow and is wrong for
+any run with arcs.
+
+Arc handedness is the subtlety behind both bugs: `arcFor(p0,p1)` bows toward
+`(-dy, dx)`, which flips when you reverse a segment or mirror a coordinate. Two
+flips cancel (this is why mirroring reverses vertex order on purpose — see
+`web/src/lib/arrange.ts`); one flip silently inverts every curve.
+
+### 2. "It returned 200, so it worked"
+
+A successful-looking response is not a passing test.
+
+- `POST /validate_doc` with the wrong request key (`doc` rather than
+  `design_doc`) returns **HTTP 200 with zero issues** — byte-identical to a
+  clean design. Always run the call against a state you know is dirty first, so
+  "no issues" is a result rather than a default.
+- `internal/server/json.go` sets `DisallowUnknownFields()`. A TS field with no
+  Go counterpart makes **every save 400**. Schema changes move both sides in
+  one PR, and `omitempty` on new Go fields keeps existing doc JSON
+  byte-identical — that back-compat invariant is load-bearing, not cosmetic.
+
+### 3. Unit tests green, feature unusable
+
+All of these passed CI and were broken the moment a human touched them:
+
+- validation markers render over node handles and intercept the click
+- a guide's 10px grab band called `stopPropagation`, swallowing the exact click
+  the feature existed to serve
+- `<input type="number" min="1" step="10">` makes `min` a lattice base, so the
+  default value failed HTML validation and silently swallowed the form submit
+- a `setDoc(prev => …)` updater runs during render, so a result captured in the
+  event handler is stale — route doc mutations through `applyOp` in
+  `EditorPage.tsx`, never a bare `editDoc` whose return value you read
+- right-click started a node drag because the pointerdown handler didn't check
+  `e.button !== 0`
+
+For any UI change: drive the real build in a browser, and assert on **data read
+back out** — the saved doc, the API response, the generated PDF — not on the
+render layer you just drew.
+
+### 4. Go and TypeScript twins must move together
+
+`internal/designdoc/arc.go` ↔ `web/src/lib/arcGeom.ts`; the validator's
+`dist()` ↔ `segLenMM` in `docOps.ts`. The editor draws from the TS side while
+the printed pattern, the DXF and the validator all derive from the Go side. When
+they drift, the operator is shown one shape and handed another. Change both in
+one PR and pin the shared constants in both test suites.
+
+Corollary: measure the way the consumer measures. `segLenMM` uses naive
+`sqrt(dx*dx+dy*dy)` rather than `Math.hypot` **on purpose**, because the Go
+validator does — and the validator decides what gets flagged.
+
+### 5. Magnitude vs signed comparison
+
+`smoothed[i] >= turnMinRad` is a magnitude test. Feeding it a signed turn made
+every right-hand bend disappear from detection. Any threshold compared against a
+signed quantity needs `math.Abs`, plus a test with a clockwise case — the suite
+had none, which is why it went unnoticed.
+
+### 6. Declared metrics that don't match the data
+
+`fonts.ts` declared `capHeightUnits: 12` while every bundled face measures 21
+JHF units, so all single-stroke text rendered 1.75× the requested height
+(Bug #13). When a constant claims to describe bundled data, assert it against
+that data in a test rather than trusting the declaration.
 
 ## Required pre-merge checks
 
@@ -94,7 +221,9 @@ go vet ./...
 
 CI runs the same. **Do not mark a PR ready** if any of these fail.
 
-For frontend tasks, also: start the dev server (`./bin/neonbench --dev` after `cd web && npm run dev`) and exercise the feature in a real browser. Type-check passing ≠ feature works.
+For frontend tasks, also: start the dev server (`./bin/neonbench --dev` after `cd web && npm run dev`) and exercise the feature in a real browser. Type-check passing ≠ feature works. Assert on data read back
+out of the API or the saved doc, not on what you just rendered — see
+**Recurring bug classes** above for the failure modes this catches.
 
 ## Commit hygiene
 

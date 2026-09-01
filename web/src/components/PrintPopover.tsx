@@ -1,5 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { PAPER_OPTIONS } from '../api';
+import {
+  MAX_PRINT_COPIES,
+  ROTATE_OPTIONS,
+  type PrintPopoverValues,
+  type PrintRotate,
+} from '../lib/printPrefs';
 
 // Tier 3 #52 — popover surface for the editor toolbar's Print button.
 // Mirrors <PrintPanel>'s control set (paper / landscape) plus the
@@ -18,21 +24,12 @@ import { PAPER_OPTIONS } from '../api';
 // parent can unmount us. `stopPropagation` on the popover's own
 // mousedown avoids self-dismissal when the user clicks inside to
 // pick a paper size.
-export type PrintPopoverValues = {
-  paper: string;
-  landscape: boolean;
-  stripsOnly: boolean;
-  // Tier 2 #73 — when true, the URL builder adds ?mirror=0 and the
-  // server skips the horizontal flip, emitting a front-facing
-  // pattern. The trade default is MIRRORED (operators bend against
-  // the BACK of the glass tube while reading the pattern), so this
-  // checkbox is an OPT-OUT: leaving it unchecked yields the
-  // mirrored print. Stored as `frontFacing` (the affirmative form
-  // of the opt-out) so the parent's value matches the checkbox's
-  // semantics — `checked = frontFacing = un-mirrored print`.
-  frontFacing: boolean;
-};
-
+//
+// The value shape (`PrintPopoverValues`), its option lists and the
+// localStorage persistence behind Quick plot all live in
+// `lib/printPrefs` — a component module can only export components
+// without breaking Fast Refresh, and the settings need to be testable
+// without mounting React anyway.
 export default function PrintPopover({
   values,
   onChange,
@@ -121,6 +118,48 @@ export default function PrintPopover({
           }
         />
         Print front-facing (un-mirrored)
+      </label>
+      <label
+        className="print-popover-field"
+        title="Rotate the pattern 90° on the paper. “Rotate to fit” only rotates when doing so needs fewer sheets, and keeps the un-rotated orientation on a tie, so the same design prints the same way round every time. Rotated sheets say so in the page footer (Tier 2 #93)."
+      >
+        Rotate
+        <select
+          value={values.rotate}
+          onChange={(e) =>
+            onChange({ ...values, rotate: e.target.value as PrintRotate })
+          }
+        >
+          {ROTATE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label
+        className="print-popover-field"
+        title="Print N copies of the whole page set in one job — step-and-repeat for a shop bending several identical letters. Copies multiply PAGES, not geometry: the pattern stays 1:1 and every sheet is footer-stamped “copy k of N” (Tier 2 #93)."
+      >
+        Copies
+        <input
+          type="number"
+          min={1}
+          max={MAX_PRINT_COPIES}
+          step={1}
+          value={values.copies}
+          onChange={(e) => {
+            // Clamp here as well as on the server. A bare number input
+            // will happily hand us '' or 999, and the resulting 400
+            // would land in a hidden print iframe where the operator
+            // never sees the message — so the UI never builds one.
+            const n = Math.round(Number(e.target.value));
+            const safe = Number.isFinite(n)
+              ? Math.min(MAX_PRINT_COPIES, Math.max(1, n))
+              : 1;
+            onChange({ ...values, copies: safe });
+          }}
+        />
       </label>
     </div>
   );

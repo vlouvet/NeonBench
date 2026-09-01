@@ -681,6 +681,16 @@ export const api = {
       // front-facing pattern. See internal/printpdf/render.go's
       // Options.Mirror for the trade-default rationale.
       mirror?: boolean;
+      // Tier 2 #93 — '' (or undefined) means no rotation and emits no
+      // param at all, which is what keeps every legacy caller's URL
+      // byte-identical. '90' always rotates; 'fit' rotates only when
+      // that needs fewer sheets. Anything else is a 400 from the
+      // server, deliberately: a silently-ignored typo would print an
+      // un-rotated six-sheet job with no complaint.
+      rotate?: string;
+      // Copies of the whole page set. 1 (or undefined) emits no param.
+      // The server clamps to 1..50 and 400s outside it.
+      copies?: number;
     } = {},
   ) => {
     const params = new URLSearchParams();
@@ -688,6 +698,8 @@ export const api = {
     if (opts.landscape) params.set('landscape', '1');
     if (opts.stripsOnly) params.set('strips_only', '1');
     if (opts.mirror === false) params.set('mirror', '0');
+    if (opts.rotate) params.set('rotate', opts.rotate);
+    if (opts.copies && opts.copies > 1) params.set('copies', String(opts.copies));
     const qs = params.toString();
     return `/api/projects/${projectId}/design_versions/${versionId}/print.pdf${qs ? `?${qs}` : ''}`;
   },
