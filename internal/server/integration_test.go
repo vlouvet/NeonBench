@@ -4147,3 +4147,242 @@ func TestDeleteTubeSpec404(t *testing.T) {
 		t.Fatalf("DELETE status: got %d, want 404 (%s)", resp.StatusCode, out)
 	}
 }
+
+// TestPrintRotateAndCopiesParams — Tier 2 #93 plot options at the HTTP
+// boundary. Covers the three things a query parameter has to get right:
+// it must be absent-safe, it must actually change the PDF when present,
+// and it must 400 rather than 200-with-a-surprise on bad input.
+//
+// Appended as its own function so a parallel branch appending here
+// merges cleanly (integration_test.go is the known hotspot).
+func TestPrintRotateAndCopiesParams(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "plot options",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// 240 × 180 mm: two Letter-portrait tiles upright, one rotated.
+	// The face-flagged run also gives us a return-strip page so the
+	// strips_only interaction below has something to print.
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 240, 180},
+		Runs: []designdoc.Run{
+			{
+				ID: "face-rect",
+				Polyline: designdoc.Polyline{
+					Points: [][2]float64{{5, 5}, {235, 5}, {235, 175}, {5, 175}},
+					Closed: true,
+				},
+				IsChannelLetterFace: true,
+			},
+		},
+	}
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "wide",
+		"design_doc": doc,
+	}, &version)
+	vid := int64(version["id"].(float64))
+
+	url := func(suffix string) string {
+		return base + "/api/projects/" + itoa(projectID) +
+			"/design_versions/" + itoa(vid) + "/print.pdf" + suffix
+	}
+	getPDF := func(suffix string) []byte {
+		resp, err := client.Get(url(suffix))
+		if err != nil {
+			t.Fatalf("print.pdf%s: %v", suffix, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 200 {
+			t.Fatalf("print.pdf%s status %d: %s", suffix, resp.StatusCode, body)
+		}
+		if !bytes.HasPrefix(body, []byte("%PDF-")) {
+			t.Fatalf("print.pdf%s: not a PDF (first 8 bytes %q)", suffix, body[:min(8, len(body))])
+		}
+		return body
+	}
+	status := func(suffix string) (int, string) {
+		resp, err := client.Get(url(suffix))
+		if err != nil {
+			t.Fatalf("print.pdf%s: %v", suffix, err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(body)
+	}
+
+	// --- absent-safe ------------------------------------------------
+	// A request naming none of the new parameters must produce the same
+	// PDF as before they existed. We can't diff against a pre-change
+	// binary in one run, so we pin the landmarks: page count and byte
+	// length must match an explicit "neutral" request that spells out
+	// the defaults.
+	plain := getPDF("")
+	neutral := getPDF("?copies=1")
+	if a, b := countPDFPages(plain), countPDFPages(neutral); a != b {
+		t.Errorf("no-params page count %d != copies=1 page count %d", a, b)
+	}
+	if len(plain) != len(neutral) {
+		t.Errorf("no-params PDF is %d bytes but copies=1 is %d — the new params are not absent-safe",
+			len(plain), len(neutral))
+	}
+	plainPages := countPDFPages(plain)
+	// 2 tiles + 1 return-strip page. (The closed rectangle's corners are
+	// 90° turns, but a channel-letter face run's bends still list, so
+	// assert the tile portion via the rotate comparison below rather
+	// than hard-coding the whole set here.)
+	if plainPages < 3 {
+		t.Fatalf("baseline PDF has only %d pages; fixture is not exercising tiling", plainPages)
+	}
+	t.Logf("baseline: %d bytes / %d pages", len(plain), plainPages)
+
+	// --- rotate -----------------------------------------------------
+	rotated := getPDF("?rotate=90")
+	fit := getPDF("?rotate=fit")
+	rotatedPages := countPDFPages(rotated)
+	if rotatedPages != plainPages-1 {
+		t.Errorf("rotate=90 page count %d, want %d (one fewer tile than the %d-page upright print)",
+			rotatedPages, plainPages-1, plainPages)
+	}
+	if got := countPDFPages(fit); got != rotatedPages {
+		t.Errorf("rotate=fit page count %d, want %d — fit should pick the rotated layout here",
+			got, rotatedPages)
+	}
+	// An explicitly empty rotate is the same as omitting it.
+	if got := countPDFPages(getPDF("?rotate=")); got != plainPages {
+		t.Errorf("rotate= (empty) page count %d, want %d", got, plainPages)
+	}
+
+	// --- copies -----------------------------------------------------
+	for _, n := range []int{2, 3} {
+		out := getPDF("?copies=" + itoa(int64(n)))
+		if got, want := countPDFPages(out), plainPages*n; got != want {
+			t.Errorf("copies=%d page count %d, want %d", n, got, want)
+		}
+	}
+	// copies composes with rotate: 3 copies of the 1-tile-shorter set.
+	if got, want := countPDFPages(getPDF("?rotate=fit&copies=3")), rotatedPages*3; got != want {
+		t.Errorf("rotate=fit&copies=3 page count %d, want %d", got, want)
+	}
+	// copies composes with strips_only — copying strip pages is a real
+	// bench request (bend six identical returns).
+	stripsOne := countPDFPages(getPDF("?strips_only=1"))
+	if stripsOne != 1 {
+		t.Fatalf("strips_only=1 gave %d pages, want 1 (one face run)", stripsOne)
+	}
+	if got, want := countPDFPages(getPDF("?strips_only=1&copies=3")), 3; got != want {
+		t.Errorf("strips_only=1&copies=3 page count %d, want %d", got, want)
+	}
+
+	// --- bad input is a 400, not a surprising 200 -------------------
+	for _, bad := range []string{
+		"?copies=0", "?copies=-1", "?copies=51", "?copies=abc",
+		"?copies=1.5", "?copies=", // empty is treated as absent...
+	} {
+		code, body := status(bad)
+		if bad == "?copies=" {
+			// ...so the empty value is the one exception: absent-safe.
+			if code != 200 {
+				t.Errorf("print.pdf%s status %d, want 200 (empty value means absent)", bad, code)
+			}
+			continue
+		}
+		if code != http.StatusBadRequest {
+			t.Errorf("print.pdf%s status %d, want 400 (body: %s)", bad, code, body)
+		}
+	}
+	for _, bad := range []string{"?rotate=0", "?rotate=180", "?rotate=fitt", "?rotate=FIT"} {
+		if code, body := status(bad); code != http.StatusBadRequest {
+			t.Errorf("print.pdf%s status %d, want 400 (body: %s)", bad, code, body)
+		}
+	}
+}
+
+// TestPrintCopiesWithNoStripsStill422 — the strips-only "no faces"
+// sentinel must survive the step-and-repeat wrapper. Three copies of
+// nothing is still nothing, and the operator needs the 422 rather than
+// a zero-page PDF spooled to the print iframe.
+func TestPrintCopiesWithNoStripsStill422(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	tubeSpecID := int64(specs[0]["id"].(float64))
+
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "no faces",
+		"tube_spec_id": tubeSpecID,
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	doc := designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []designdoc.Run{{
+			ID:       "plain",
+			Polyline: designdoc.Polyline{Points: [][2]float64{{0, 0}, {100, 0}, {100, 50}}},
+		}},
+	}
+	var version map[string]any
+	postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/design_versions", map[string]any{
+		"label":      "no faces",
+		"design_doc": doc,
+	}, &version)
+	vid := int64(version["id"].(float64))
+
+	resp, err := client.Get(base + "/api/projects/" + itoa(projectID) +
+		"/design_versions/" + itoa(vid) + "/print.pdf?strips_only=1&copies=3")
+	if err != nil {
+		t.Fatalf("print.pdf: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("strips_only=1&copies=3 with no face runs: status %d, want 422 (body: %s)",
+			resp.StatusCode, body)
+	}
+}

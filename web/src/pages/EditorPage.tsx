@@ -12,12 +12,14 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import ArrangePanel from '../components/ArrangePanel';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
 import { SectionHeader, CategoryIcon, type IconKind } from '../components/PanelSection';
 import PrintHost from '../components/PrintHost';
-import PrintPopover, { type PrintPopoverValues } from '../components/PrintPopover';
+import PrintPopover from '../components/PrintPopover';
+import { describePrintPrefs, loadPrintPrefs, printPrefsToURLOpts, savePrintPrefs, type PrintPopoverValues } from '../lib/printPrefs';
 import ValidationReportView, {
   type SeverityFilter,
 } from '../components/ValidationReportView';
@@ -25,6 +27,7 @@ import { Eye } from '../components/icons/Eye';
 import { Padlock } from '../components/icons/Padlock';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
+import * as arrange from '../lib/arrange';
 import * as ops from '../lib/docOps';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
@@ -224,17 +227,14 @@ export default function EditorPage() {
   // so the toolbar Print and the project-page download produce the
   // same PDF when the operator hasn't fiddled with the dropdown.
   const [printPopoverOpen, setPrintPopoverOpen] = useState(false);
-  const [printOpts, setPrintOpts] = useState<PrintPopoverValues>({
-    paper: 'letter',
-    landscape: false,
-    stripsOnly: false,
-    // Tier 2 #73 — opt-out for the trade-default mirrored print.
-    // Default false means "leave the mirror on" (operators bend
-    // against the back of the glass and need the pattern mirrored);
-    // checking the popover's "Print front-facing (un-mirrored)" box
-    // flips this to true and the URL builder emits ?mirror=0.
-    frontFacing: false,
-  });
+  // Tier 2 #93 — persisted per project so Quick plot repeats the last
+  // job. Defaults, sanitizing and URL derivation live in lib/printPrefs.
+  const [printOpts, setPrintOpts] = useState<PrintPopoverValues>(() =>
+    loadPrintPrefs(projectId),
+  );
+  useEffect(() => {
+    savePrintPrefs(projectId, printOpts);
+  }, [projectId, printOpts]);
   const printGroupRef = useRef<HTMLDivElement | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
   // user picked (via the "Join from head/tail" sidebar buttons). The
@@ -1319,6 +1319,31 @@ export default function EditorPage() {
     });
   }
 
+  // Tier 2 #90 — arrange ops. Each is one applyOp call, so the whole
+  // arrangement lands as a single doc swap and a single undo entry rather
+  // than one per run. The ops themselves return the SAME doc object when
+  // there is nothing to do, which editDoc's `next === prev` guard turns into
+  // "no history entry, no dirty flag" for free — that's why a disabled-looking
+  // click on an already-aligned selection doesn't burn an undo step.
+  //
+  // The selection is deliberately left alone by all four: the operator's next
+  // move after aligning is usually to align on the other axis.
+  function alignSelected(edge: arrange.AlignEdge) {
+    applyOp((prev) => ({ doc: arrange.alignRuns(prev, selectedRunIds, edge) }));
+  }
+
+  function distributeSelected(axis: arrange.Axis) {
+    applyOp((prev) => ({ doc: arrange.distributeRuns(prev, selectedRunIds, axis) }));
+  }
+
+  function mirrorSelected(axis: arrange.Axis) {
+    applyOp((prev) => ({ doc: arrange.mirrorRuns(prev, selectedRunIds, axis) }));
+  }
+
+  function reorderSelected(move: arrange.DepthMove) {
+    applyOp((prev) => ({ doc: arrange.reorderRuns(prev, selectedRunIds, move) }));
+  }
+
   // Neonize replaces the selected run with parallel offset run(s) — the
   // "double-stroke" channel-letter primitive (NW #123/131/141). Default
   // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
@@ -1793,12 +1818,11 @@ export default function EditorPage() {
                   // unchecked yields the trade-default mirrored print
                   // (omit the mirror param entirely). Tier 2 #73.
                   setPrintSrc(
-                    api.printPDFURL(projectId, versionId, {
-                      paper: printOpts.paper,
-                      landscape: printOpts.landscape,
-                      stripsOnly: printOpts.stripsOnly,
-                      mirror: printOpts.frontFacing ? false : undefined,
-                    }),
+                    api.printPDFURL(
+                      projectId,
+                      versionId,
+                      printPrefsToURLOpts(printOpts),
+                    ),
                   );
                 }}
                 disabled={dirty || printSrc !== null}
@@ -1831,6 +1855,30 @@ export default function EditorPage() {
                 {/* Down-caret glyph; matches the muted-text colour
                     pulled from var(--text). */}
                 {'▾'}
+              </button>
+              <button
+                type="button"
+                className="tool-btn"
+                onClick={() => {
+                  if (dirty) return;
+                  // Read storage at click time, so settings changed in
+                  // another tab still print what the title claims.
+                  setPrintSrc(
+                    api.printPDFURL(
+                      projectId,
+                      versionId,
+                      printPrefsToURLOpts(loadPrintPrefs(projectId)),
+                    ),
+                  );
+                }}
+                disabled={dirty || printSrc !== null}
+                title={
+                  dirty
+                    ? 'Save your edits first — Quick plot uses the last saved version of this design.'
+                    : `Quick plot — print now with the last-used settings, no popover: ${describePrintPrefs(printOpts)}`
+                }
+              >
+                Quick plot
               </button>
               {printPopoverOpen && (
                 <PrintPopover
@@ -2147,6 +2195,26 @@ export default function EditorPage() {
               </button>
             )}
           </div>
+          {/* Tier 2 #90 — Arrange. Renders only with a live selection: with
+              nothing picked every control would be disabled, which is just
+              noise in an already-dense sidebar. Depth order works on one run
+              (it permutes doc.runs, the draw order), so the gate is 1 rather
+              than the 2 that align needs. */}
+          {selectedRunIds.length > 0 && (
+            <div className="arrange-section">
+              <div className="groups-header">
+                <h3>Arrange</h3>
+              </div>
+              <ArrangePanel
+                doc={doc}
+                selectedRunIds={selectedRunIds}
+                onAlign={alignSelected}
+                onDistribute={distributeSelected}
+                onMirror={mirrorSelected}
+                onReorder={reorderSelected}
+              />
+            </div>
+          )}
           <ul className="run-list">
             {doc.runs.map((run) => {
               const ne = run.electrodes?.length ?? 0;
