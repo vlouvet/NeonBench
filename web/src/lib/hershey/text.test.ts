@@ -1,5 +1,17 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import { FONTS } from './fonts';
 import { hersheyRunsBBox, hersheyTextToRuns } from './text';
+
+// Default face metrics, read from the registry rather than restated as
+// literals here. Bug #13: this file used to hard-code positions derived
+// from `capHeightUnits: 12`, so when that constant was corrected to the
+// measured 21 the numbers all moved. Deriving them means the next metric
+// change shows up as a real failure, not a wall of arithmetic edits.
+const FACE = FONTS.rowmans;
+/** mm per JHF unit at a given cap height. */
+const unit = (capHeightMM: number) => capHeightMM / FACE.capHeightUnits;
+/** JHF y of the cap line: one cap height above the baseline. */
+const CAP_LINE_UNITS = FACE.baselineUnits - FACE.capHeightUnits;
 
 describe('hersheyTextToRuns', () => {
   afterEach(() => {
@@ -74,13 +86,17 @@ describe('hersheyTextToRuns', () => {
     expect(bW / sW).toBeCloseTo(2, 5);
   });
 
-  it('places strokes at the requested origin Y baseline', () => {
+  it('places strokes at the requested origin Y', () => {
     const runs = hersheyTextToRuns({ text: 'I', capHeightMM: 100, originX: 50, originY: 200 });
     expect(runs.length).toBeGreaterThan(0);
     const box = hersheyRunsBBox(runs)!;
-    // Cap top of an uppercase 'I' is one cap-height above baseline.
-    // Cap height = 100mm, baseline = originY = 200, so minY ≈ 100.
-    expect(box.minY).toBeCloseTo(100, 1);
+    // `originY` anchors JHF y=0, which is NOT the typographic baseline:
+    // the bundled faces put the baseline at y=+9 and the cap line at
+    // y=-12. So an 'I' at originY=200 runs from 200 + capLine*unit to
+    // 200 + baseline*unit — exactly one cap height, 100mm, tall.
+    expect(box.minY).toBeCloseTo(200 + CAP_LINE_UNITS * unit(100), 6);
+    expect(box.maxY).toBeCloseTo(200 + FACE.baselineUnits * unit(100), 6);
+    expect(box.maxY - box.minY).toBeCloseTo(100, 6);
     // Strokes sit inside the glyph's bracket starting at originX, so the
     // leftmost stroke X is ≥ originX (with a tiny float tolerance).
     expect(box.minX).toBeGreaterThanOrEqual(50 - 0.01);
@@ -88,12 +104,20 @@ describe('hersheyTextToRuns', () => {
 
   // -- Multi-line, kerning, and font selection (Tier 3 #19 polish) ----------
 
-  // NOTE: Hershey simplex letters span JHF y∈[-12, 9] — they extend BELOW
-  // the y=0 baseline by 9 JHF units (75mm at capHeight=100mm). So with
-  // capHeightMM=100 a single line occupies y∈[-100, 75]. We need
-  // lineHeight large enough to cleanly separate the lines for assertions
-  // — at lineHeight=2.0 line 2's baseline=200 and its caps span
-  // y∈[100, 275], leaving a clean gap [76, 99] between lines.
+  // NOTE: the bundled Hershey faces put the cap line at JHF y=-12 and the
+  // baseline at y=+9, so a capital spans 21 units — which is what
+  // `capHeightUnits` declares (Bug #13; it used to say 12). `originY`
+  // anchors JHF y=0, so a single line at capHeightMM=100 occupies
+  // y ∈ [CAP_LINE_UNITS*unit, baselineUnits*unit] = [-57.14, +42.86].
+  // The assertions below derive every position from those two registry
+  // metrics; lineHeight=2.0 keeps consecutive lines cleanly separated.
+  const LINE1_TOP = CAP_LINE_UNITS * unit(100);
+  const LINE1_BOTTOM = FACE.baselineUnits * unit(100);
+  // Second baseline anchor at lineHeight 2.0, and that line's cap line.
+  const LINE2_ANCHOR = 200;
+  const LINE2_TOP = LINE2_ANCHOR + LINE1_TOP;
+  // Any y between the two lines separates them unambiguously.
+  const SPLIT = (LINE1_BOTTOM + LINE2_TOP) / 2;
 
   it('multi-line: second line points sit below the first-line baseline', () => {
     // Use lineHeight=2.0 to guarantee a clean split (see note above).
@@ -106,32 +130,30 @@ describe('hersheyTextToRuns', () => {
     });
     expect(runs.length).toBeGreaterThan(0);
 
-    // With baselines at 0 and 200, line 1 spans [-100, 75], line 2
-    // [100, 275]. Split at the midpoint y=87.5.
     let firstLineCount = 0;
     let secondLineCount = 0;
     for (const r of runs) {
       for (const [, y] of r.points) {
-        if (y < 87.5) firstLineCount++;
+        if (y < SPLIT) firstLineCount++;
         else secondLineCount++;
       }
     }
     expect(firstLineCount).toBeGreaterThan(0);
     expect(secondLineCount).toBeGreaterThan(0);
-    // And every second-line y must be at least 100 (cap top of line 2).
+    // And every second-line y must be at least line 2's cap line.
     // Tolerance is 2mm rather than 0: Bug #07 smoothing splines each curved
     // glyph stroke and can bow ~1.3mm past the original cap-top vertex. That
     // sub-2% deviation doesn't affect the baseline separation under test.
     for (const r of runs) {
       for (const [, y] of r.points) {
-        if (y >= 87.5) expect(y).toBeGreaterThanOrEqual(100 - 2);
+        if (y >= SPLIT) expect(y).toBeGreaterThanOrEqual(LINE2_TOP - 2);
       }
     }
   });
 
   it('multi-line: lineHeight scales the inter-line gap', () => {
-    // With lineHeight=2.0 the second baseline sits at y=200; cap tops of
-    // line 2 are at y=100. Min Y of any line-2 point should be ≈ 100.
+    // With lineHeight=2.0 the second line's anchor sits at y=200, so its
+    // cap line is at LINE2_TOP. Min Y of any line-2 point should match.
     const runs = hersheyTextToRuns({
       text: 'A\nB',
       capHeightMM: 100,
@@ -139,26 +161,22 @@ describe('hersheyTextToRuns', () => {
       originY: 0,
       lineHeight: 2.0,
     });
-    // Line 2 = points y > 87.5 (line-1 caps tail off at y=75; line-2 tops
-    // at y=100, so the midpoint is unambiguous).
     let line2Min = Infinity;
     for (const r of runs) {
       for (const [, y] of r.points) {
-        if (y > 87.5) line2Min = Math.min(line2Min, y);
+        if (y > SPLIT) line2Min = Math.min(line2Min, y);
       }
     }
-    // Cap top of 'B' on the second baseline is at originY + capHeight*2.0 -
-    // capHeight = 100. Within 2mm: Bug #07 smoothing can bow the bowl ~1.3mm
-    // past the original cap-top vertex.
-    expect(Math.abs(line2Min - 100)).toBeLessThan(2);
+    // Within 2mm: Bug #07 smoothing can bow the bowl ~1.3mm past the
+    // original cap-top vertex.
+    expect(Math.abs(line2Min - LINE2_TOP)).toBeLessThan(2);
   });
 
   it('multi-line: empty line advances the baseline without emitting strokes', () => {
-    // 'A\n\nB' with lineHeight=2.0: line 1 baseline=0, line 2 baseline=200
-    // (empty), line 3 baseline=400. B's lowest stroke-point sits at
-    // baseline + 9 JHF units * scale = 400 + 75 = 475. The total run
-    // count must equal A's strokes + B's strokes (no extra runs from the
-    // empty middle line).
+    // 'A\n\nB' with lineHeight=2.0: line 1 anchored at 0, line 2 at 200
+    // (empty), line 3 at 400. B's lowest stroke-point sits on that line's
+    // baseline. The total run count must equal A's strokes + B's strokes
+    // (no extra runs from the empty middle line).
     const runs = hersheyTextToRuns({
       text: 'A\n\nB',
       capHeightMM: 100,
@@ -170,7 +188,7 @@ describe('hersheyTextToRuns', () => {
     for (const r of runs) for (const [, y] of r.points) if (y > maxY) maxY = y;
     // Within 2mm: Bug #07 smoothing can bow the 'B' bowl ~1.3mm past the
     // original lowest vertex.
-    expect(Math.abs(maxY - 475)).toBeLessThan(2);
+    expect(Math.abs(maxY - (400 + LINE1_BOTTOM))).toBeLessThan(2);
 
     const justA = hersheyTextToRuns({ text: 'A', capHeightMM: 100, originX: 0, originY: 0 });
     const justB = hersheyTextToRuns({ text: 'B', capHeightMM: 100, originX: 0, originY: 0 });
@@ -252,10 +270,13 @@ describe('hersheyTextToRuns', () => {
   });
 
   it('preset kerning fires for known pairs when applyPresetKerning=true', () => {
-    // Roman Simplex preset has 'AV': -2 (JHF). At capHeightMM=120,
-    // scale = 120/12 = 10, so the preset shifts everything after the A by
-    // -20mm vs the unkerned baseline. Compare the maxX (rightmost point,
-    // which is in the V cluster) directly — no splitRunsByLetter needed.
+    // Roman Simplex preset has 'AV': -2 (JHF). The table is in JHF source
+    // units, so the preset shifts everything after the A by
+    // -2 × mm-per-unit vs the unkerned baseline — derived from the
+    // registry rather than restated, because Bug #13 moved
+    // mm-per-unit. Compare the maxX (rightmost point, which is in the V
+    // cluster) directly — no splitRunsByLetter needed.
+    const expectedDx = FACE.presetKerning.AV * unit(120);
     const baseline = hersheyTextToRuns({
       text: 'AV',
       capHeightMM: 120,
@@ -271,14 +292,14 @@ describe('hersheyTextToRuns', () => {
     });
     const baseMaxX = runsMaxX(baseline);
     const presetMaxX = runsMaxX(preset);
-    expect(presetMaxX - baseMaxX).toBeCloseTo(-20, 5);
+    expect(presetMaxX - baseMaxX).toBeCloseTo(expectedDx, 5);
   });
 
   it('user override on a slot beats the preset for the same pair', () => {
     // 'AV' has a Roman preset of -2 JHF. With perPairKerningMM[0] = +30
     // AND applyPresetKerning: true the user's +30mm should win, NOT the
-    // preset's -20mm (at capHeight=120). Compare the rightmost X
-    // (V cluster) directly.
+    // preset's negative shift. Compare the rightmost X (V cluster)
+    // directly.
     const baseline = hersheyTextToRuns({
       text: 'AV',
       capHeightMM: 120,
