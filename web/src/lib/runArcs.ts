@@ -1,4 +1,5 @@
 import type { DesignRun } from '../api';
+import { arcCubics, runHasArcs, segmentIndexBetween, segmentTypeAt } from './arcGeom';
 
 export type RunArcs = {
   // Indices into run.polyline.points. `live` is always non-empty for valid
@@ -75,13 +76,43 @@ function arcLength(indices: number[], points: [number, number][]): number {
   return total;
 }
 
-export function indicesToD(indices: number[], points: [number, number][], closed: boolean): string {
+// Tier 3 #78 — `run` is optional so the many callers that only have a point
+// list keep working; pass it and a segment marked as an arc is drawn as the
+// same two cubics the Go SVG writer emits, so the on-screen curve and the
+// printed pattern are one geometry rather than two that resemble each other.
+//
+// Cubics rather than an SVG `A`: the validator's path parser approximates
+// elliptical arcs as straight lines (see internal/validate/pathd.go), and
+// keeping both emitters on the same primitive means they cannot diverge.
+export function indicesToD(
+  indices: number[],
+  points: [number, number][],
+  closed: boolean,
+  run?: DesignRun,
+): string {
   if (indices.length === 0) return '';
   const parts: string[] = [];
+  const n = points.length;
+  const hasArcs = !!run && runHasArcs(run);
   for (let i = 0; i < indices.length; i++) {
-    const cmd = i === 0 ? 'M' : 'L';
     const [x, y] = points[indices[i]];
-    parts.push(`${cmd}${x} ${y}`);
+    if (i === 0) {
+      parts.push(`M${x} ${y}`);
+      continue;
+    }
+    if (hasArcs && run) {
+      const hit = segmentIndexBetween(indices[i - 1], indices[i], n, !!run.polyline.closed);
+      if (hit && segmentTypeAt(run, hit.seg) === 'arc') {
+        const cubics = arcCubics(points[hit.seg], points[(hit.seg + 1) % n], hit.reversed);
+        if (cubics.length > 0) {
+          for (const c of cubics) {
+            parts.push(`C${c.c1x} ${c.c1y} ${c.c2x} ${c.c2y} ${c.x} ${c.y}`);
+          }
+          continue;
+        }
+      }
+    }
+    parts.push(`L${x} ${y}`);
   }
   if (closed) parts.push('Z');
   return parts.join(' ');

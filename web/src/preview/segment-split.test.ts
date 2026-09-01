@@ -205,3 +205,67 @@ describe('splitRunBySegments', () => {
     }
   });
 });
+
+// Tier 3 #78 — a curved segment is two vertices, and CatmullRom through two
+// points is a straight line. Without expansion the 2D canvas and the printed
+// pattern would show a curve while the 3D preview showed a chord.
+describe('splitRunBySegments — arc expansion', () => {
+  const straight: DesignRun = {
+    id: 'r1',
+    polyline: { points: [[0, 0], [100, 0]], closed: false },
+  };
+  const curved: DesignRun = {
+    id: 'r1',
+    polyline: { points: [[0, 0], [100, 0]], closed: false, segment_types: ['arc'] },
+  };
+
+  it('leaves a straight run at its two vertices', () => {
+    expect(splitRunBySegments(straight)[0].points).toHaveLength(2);
+  });
+
+  it('expands an arc into a sampled curve between the same endpoints', () => {
+    const seg = splitRunBySegments(curved)[0];
+    expect(seg.points.length).toBeGreaterThan(20);
+    expect(seg.points[0]).toEqual([0, 0]);
+    expect(seg.points[seg.points.length - 1]).toEqual([100, 0]);
+    // Every sample sits on the circle of radius 0.625 x chord.
+    const r = 62.5;
+    const cx = 50;
+    const cy = -Math.sqrt(r * r - 50 * 50);
+    for (const p of seg.points) {
+      expect(Math.abs(Math.hypot(p[0] - cx, p[1] - cy) - r)).toBeLessThan(0.01);
+    }
+  });
+
+  // The expansion inserts points, so anything anchored by index has to follow
+  // it — a jump left pointing at the old offset would lift the wrong place.
+  it('remaps jump annotations through the expansion', () => {
+    const run: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [100, 0], [200, 0]],
+        closed: false,
+        segment_types: ['arc', 'line'],
+      },
+      annotations: [{ kind: 'jump', live_index: 2 }],
+    };
+    const seg = splitRunBySegments(run)[0];
+    expect(seg.jumpPolylineIndices).toHaveLength(1);
+    const at = seg.jumpPolylineIndices[0];
+    // It must land on the final vertex, wherever expansion put it.
+    expect(seg.points[at]).toEqual([200, 0]);
+    expect(at).toBe(seg.points.length - 1);
+  });
+
+  it('is inert when segment_types says every segment is a line', () => {
+    const withField: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false, segment_types: ['line', 'line'] },
+    };
+    const bare: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+    };
+    expect(splitRunBySegments(withField)[0].points).toEqual(splitRunBySegments(bare)[0].points);
+  });
+});

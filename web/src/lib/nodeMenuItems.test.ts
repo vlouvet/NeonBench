@@ -34,6 +34,7 @@ describe('availableActionsForVertex', () => {
     expect(ids).toEqual([
       'insert-vertex',
       'insert-doubleback',
+      'convert-to-arc',
       'split-run',
       'place-electrode',
       'blockout-from-here',
@@ -189,5 +190,60 @@ describe('availableActionsForVertex', () => {
   it('always offers at least one action on a well-formed vertex', () => {
     const doc = docOf([openRun()]);
     for (let vi = 0; vi < 5; vi++) expect(idsAt(doc, vi).length).toBeGreaterThan(0);
+  });
+});
+
+// Tier 3 #78 — the conversion items #76 deliberately deferred until arcs
+// existed. Only one of the pair ever shows: offering "convert to line" on a
+// segment that is already straight is a row that does nothing.
+describe('availableActionsForVertex — arc conversion', () => {
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 400, 400],
+    runs,
+  });
+  const straight = (): DesignRun => ({
+    id: 'r1',
+    polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+  });
+
+  it('offers convert-to-arc on a straight segment', () => {
+    const ids = availableActionsForVertex(docOf([straight()]), 'r1', 0).map((i) => i.id);
+    expect(ids).toContain('convert-to-arc');
+    expect(ids).not.toContain('convert-to-line');
+  });
+
+  it('offers convert-to-line once the segment is curved', () => {
+    const run = straight();
+    run.polyline.segment_types = ['arc', 'line'];
+    const ids = availableActionsForVertex(docOf([run]), 'r1', 0).map((i) => i.id);
+    expect(ids).toContain('convert-to-line');
+    expect(ids).not.toContain('convert-to-arc');
+  });
+
+  // Both act on the segment LEAVING the vertex, so the last vertex of an open
+  // run has nothing to convert.
+  it('offers neither on the last vertex of an open run', () => {
+    const ids = availableActionsForVertex(docOf([straight()]), 'r1', 2).map((i) => i.id);
+    expect(ids).not.toContain('convert-to-arc');
+    expect(ids).not.toContain('convert-to-line');
+  });
+
+  it('offers neither across a zero-length segment', () => {
+    const run: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [0, 0], [100, 0]], closed: false },
+    };
+    const ids = availableActionsForVertex(docOf([run]), 'r1', 0).map((i) => i.id);
+    expect(ids).not.toContain('convert-to-arc');
+  });
+
+  it('reads the type per segment, not per run', () => {
+    const run = straight();
+    run.polyline.segment_types = ['arc', 'line'];
+    expect(availableActionsForVertex(docOf([run]), 'r1', 0).map((i) => i.id))
+      .toContain('convert-to-line');
+    expect(availableActionsForVertex(docOf([run]), 'r1', 1).map((i) => i.id))
+      .toContain('convert-to-arc');
   });
 });

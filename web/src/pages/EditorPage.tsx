@@ -1061,6 +1061,18 @@ export default function EditorPage() {
     );
   }
 
+  // Tier 3 #78 — curve or straighten one segment. The vertex list does not
+  // change, so nothing anchored by index moves.
+  function setSegmentType(runId: string, segmentIndex: number, type: 'line' | 'arc') {
+    editDoc((prev) => ops.setSegmentType(prev, runId, segmentIndex, type));
+    setSelectedToOne(runId);
+    setStatusMessage(
+      type === 'arc'
+        ? 'Segment converted to an arc — validation re-runs against the curve, not the chord.'
+        : 'Segment straightened.',
+    );
+  }
+
   // Tier 2 #74 — raceway guideline handlers. Adding drops the line at the
   // vertical centre of the design bbox, which is where a raceway usually
   // wants to be on a single-row sign and is in any case one drag from
@@ -1826,6 +1838,7 @@ export default function EditorPage() {
           onDeleteElectrode={deleteElectrode}
           onElectrodeContextMenu={openHousingPicker}
           onSetTool={setTool}
+          onSetSegmentType={setSegmentType}
           selectedGuidelineId={selectedGuidelineId}
           onSelectGuideline={setSelectedGuidelineId}
           onMoveGuideline={moveRacewayGuideline}

@@ -1,6 +1,42 @@
 # Tier 3 #78 — Arc ↔ line segment conversion in node-edit
 
-> **Status:** active · drafted 2026-05-09 · branch `task/3-arc-line-segment-conversion` · NW parity (node-edit menu item)
+> **Status:** SHIPPED 2026-08-31 · branches `task/3-arc-line-segment-conversion`
+> (backend, PR #141) + `task/3-arc-line-editor` (editor) · NW parity
+>
+> **Shipped as two PRs.** The backend half — schema, geometry and every Go
+> consumer — landed first and was inert on its own, so there was never a state
+> where arcs existed and an emitter mishandled them. The editor half followed.
+>
+> **Representation: a circular arc, not a bezier.** The spec asks for a bezier
+> with control points at chord/4. A circle through the same endpoints with the
+> same sagitta is exact in SVG, PDF and DXF; its length is r·θ in closed form
+> (so **deliverable 4's Simpson's rule is not implemented and not needed**);
+> and it has a real radius, so a curve too tight for the glass is caught by the
+> min-bend-radius rule rather than at the bench. The sagitta/half-chord ratio
+> is 0.5 — exactly AutoCAD's bulge — so DXF emits it as a native LWPOLYLINE
+> bulge with nothing approximated.
+>
+> **Deliverable 6 emits a bulge, not an `ARC` entity.** Same geometry, but it
+> stays inside the existing LWPOLYLINE instead of adding a second entity kind,
+> and the vertex list the bender's CAM reads is unchanged.
+>
+> **Emitted as cubics in SVG, not an `A` command.** `internal/validate/pathd.go`
+> does not implement elliptical arcs — it approximates them as a straight line
+> and warns — so an `A` would have had the validator measure every curve as its
+> chord.
+>
+> **Known and deliberate: converting a mid-run segment creates two corners.**
+> An arc meets its straight neighbours at a tangent kink of half the included
+> angle (~53°), which is a genuine sharp bend, and the validator flags both
+> junctions. That is the tool telling the truth, not a defect — but it means
+> "convert to arc" on a straight run usually produces two new bend-radius
+> errors. Tangent-continuous joins would need a different curve model; that is
+> a follow-up, not a fix.
+>
+> **Not done: the 2D hit test still uses the chord.** Clicking a curved segment
+> picks it by its straight span, so the hit region is slightly off for a
+> strongly-bowed segment. Rendering, measurement and export all follow the
+> curve; only picking does not.
 >
 > **Split into two PRs.** The backend half (schema, geometry, and every Go
 > consumer) ships first and is inert on its own — nothing can create an arc
