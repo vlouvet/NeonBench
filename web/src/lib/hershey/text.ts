@@ -23,18 +23,24 @@
 //     a capital spans y=-12 (cap top) to y=+9 (BASELINE), i.e. ~21 units,
 //     x-height starts at y=-5, and descenders reach y=+16.
 //
-//     CAREFUL: `fonts.ts` declares `capHeightUnits: 12`, so the scale is
-//     `capHeightMM / 12` and rendered text is about 1.75× `capHeightMM`
-//     tall — `capHeightMM` is a size knob, NOT a literal measured cap
-//     height, and `originY` is the top-ish reference, NOT the typographic
-//     baseline (that lands at `originY + 9 * scale`). Changing either
-//     number would resize every design already saved, so the values
-//     stand; this note exists because the previous version of this
-//     comment claimed the baseline was at y=0 and cost a downstream
-//     feature (Tier 2 #92 vertical stacking) a round of overlapping
-//     glyphs. Anything that needs real vertical extents should measure
-//     the emitted ink with `hersheyRunsBBox`, not derive it from
-//     `capHeightMM`.
+//     `fonts.ts` declares `capHeightUnits: 21` to match, so the scale is
+//     `capHeightMM / 21` and `capHeightMM` IS the literal measured height
+//     of a capital (Bug #13 — it declared 12 until 2026-08-31, which
+//     rendered every piece of text 21/12 = 1.75× the requested size).
+//
+//     CAREFUL, still: `originY` is the JHF y=0 anchor, NOT the
+//     typographic baseline. The baseline lands at
+//     `originY + font.baselineUnits * scale` and the cap line one cap
+//     height above it. Do not assume the shortcut `originY - capHeightMM`
+//     for the cap line — that identity held only while the declared cap
+//     height was wrong.
+//
+//     An earlier version of this comment claimed the baseline was at y=0
+//     and cost a downstream feature (Tier 2 #92 vertical stacking) a
+//     round of overlapping glyphs. Anything that needs real vertical
+//     extents — descenders, round-letter overshoot — should still measure
+//     the emitted ink with `hersheyRunsBBox` rather than derive it from
+//     `capHeightMM`, which describes capitals only.
 //   - JHF Y-axis: positive points DOWN already in this dataset, which
 //     matches SVG/screen coordinates. We do NOT flip Y.
 //   - Output units: millimeters in the design-doc coordinate system.
@@ -86,9 +92,12 @@ export type HersheyRun = {
  * @param capHeightMM         Visible uppercase letter height in millimeters.
  * @param originX             X (mm) of the left edge of the first character's
  *                            bounding bracket on the FIRST line.
- * @param originY             Y (mm) of the BASELINE of the first line.
- *                            Each subsequent line's baseline is at
- *                            `originY + i * capHeightMM * lineHeight`.
+ * @param originY             Y (mm) that JHF y=0 maps to on the first
+ *                            line. NOT the typographic baseline — that
+ *                            sits at `originY + font.baselineUnits *
+ *                            scale`, and the cap line one capHeightMM
+ *                            above it. Each subsequent line's anchor is
+ *                            at `originY + i * capHeightMM * lineHeight`.
  * @param letterSpacingMM     Optional uniform extra advance between glyphs.
  *                            Default: 0.
  * @param perPairKerningMM    Optional per-pair extra advance. Indexed by the

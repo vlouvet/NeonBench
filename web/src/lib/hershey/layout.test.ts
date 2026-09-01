@@ -5,6 +5,7 @@ import {
   arcRuns,
   arcSweepDeg,
   clampSlant,
+  DEFAULT_STACK_GAP_FACTOR,
   groupRunsByGlyph,
   MAX_SLANT_DEG,
   slantRuns,
@@ -200,20 +201,32 @@ describe('stackVertical', () => {
   });
 
   it('measures the gap INK-TO-INK, not as a capHeightMM baseline pitch', () => {
-    // The bundled Hershey faces put the baseline at JHF y = +9 and the cap
-    // top at y = -12, so a capital spans ~21 units while fonts.ts declares
-    // capHeightUnits: 12 — rendered text is ~1.75× capHeightMM tall. A
-    // `capHeightMM + gap` baseline pitch therefore OVERLAPS consecutive
-    // glyphs by half a letter. Assert the real ink height differs from the
-    // nominal cap height (so this test would notice if the metrics ever
-    // change) and that stacking still leaves clear air regardless.
-    const one = hersheyRunsBBox(textRuns('A'))!;
-    const inkH = one.maxY - one.minY;
-    expect(inkH).toBeGreaterThan(CAP * 1.5);
-    const stacked = stackVertical(textRuns('AB'), { capHeightMM: CAP });
-    const a = hersheyRunsBBox(glyph(stacked, 0))!;
-    const b = hersheyRunsBBox(glyph(stacked, 1))!;
-    expect(b.minY).toBeGreaterThan(a.maxY); // no overlap, whatever the metrics
+    // This test predates Bug #13, when `capHeightUnits: 12` made a capital
+    // render 1.75× capHeightMM tall and a `capHeightMM + gap` baseline
+    // pitch overlapped consecutive glyphs by half a letter. That is what
+    // pushed stackVertical to ink-to-ink placement in the first place.
+    //
+    // The metric is now correct, so ink-to-ink and baseline-pitch AGREE
+    // for plain capitals — which means a capital-only case can no longer
+    // tell the two implementations apart, and asserting `inkH > CAP * 1.5`
+    // would now just be re-asserting the bug. Use a descender instead:
+    // 'g' is ink BELOW the baseline, so a baseline pitch would let it run
+    // into the glyph underneath while ink-to-ink still leaves clear air.
+    // That distinction survives any future metric change.
+    const capOnly = hersheyRunsBBox(textRuns('A'))!;
+    const withDescender = hersheyRunsBBox(textRuns('g'))!;
+    // Sanity: the descender really does hang below a capital's baseline,
+    // so the assertion below is not vacuous.
+    expect(withDescender.maxY).toBeGreaterThan(capOnly.maxY);
+
+    const stacked = stackVertical(textRuns('gA'), { capHeightMM: CAP });
+    const g = hersheyRunsBBox(glyph(stacked, 0))!;
+    const a = hersheyRunsBBox(glyph(stacked, 1))!;
+    expect(a.minY).toBeGreaterThan(g.maxY); // no overlap, whatever the metrics
+    // And the clear space is measured from the DESCENDER's ink, not from
+    // the baseline it hangs off: a baseline pitch would place 'A' a fixed
+    // distance below g's baseline and the tail would eat into the gap.
+    expect(a.minY - g.maxY).toBeCloseTo(CAP * DEFAULT_STACK_GAP_FACTOR, 9);
   });
 
   it('defaults the gap to a quarter of the cap height', () => {
