@@ -154,20 +154,50 @@ func (o Options) CopiesOrOne() int {
 	return o.Copies
 }
 
+// tileCount returns the number of sheets needed to cover a design
+// extent of `design` mm along one axis, where each sheet carries
+// `content` mm of pattern and consecutive sheets advance by `step`
+// (= content - overlap).
+//
+// Tier 3 #109. The obvious ceil(design/step) over-counts, because the
+// LAST sheet does not advance by a step — it carries a full content
+// width. Dividing the whole design by the step therefore charges the
+// overlap band to the final sheet as well, and any remainder landing
+// inside that band buys a sheet with nothing on it. At the A4 default
+// (content 190, overlap 10, step 180) a design exactly 190 mm wide
+// billed two columns, so a design exactly one page in both directions
+// printed on FOUR sheets.
+//
+// So: the first sheet covers `content`, and every sheet after it adds
+// `step`. Where the overlap is zero the two formulas coincide, which is
+// the sanity check that this is a trim and not a different tiling.
+//
+// Coverage is the non-negotiable half: (n-1)*step + content >= design
+// must hold for every input, because dropping a needed sheet silently
+// truncates the pattern, and a truncated full-size pattern does not
+// look wrong until it is taped up on the bench.
+func tileCount(design, content, step float64) int {
+	n := 1
+	if design > content {
+		n += int(math.Ceil((design - content) / step))
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
 // tileGrid returns the column/row counts needed to cover a designW ×
-// designH pattern at the given per-tile step. Extracted from the two
-// renderers so rotate=fit can ask "how many tiles the other way round?"
-// without duplicating the ceiling math (and drifting from it).
-func tileGrid(designW, designH, stepW, stepH float64) (cols, rows int) {
-	cols = int(math.Ceil(designW / stepW))
-	rows = int(math.Ceil(designH / stepH))
-	if cols < 1 {
-		cols = 1
-	}
-	if rows < 1 {
-		rows = 1
-	}
-	return cols, rows
+// designH pattern on contentW × contentH sheets at the given per-tile
+// step. Extracted from the two renderers so rotate=fit can ask "how
+// many tiles the other way round?" without duplicating the ceiling
+// math (and drifting from it).
+//
+// The content size is a separate argument from the step because the
+// two differ by the overlap and the last sheet in each direction is
+// billed at the content size — see tileCount.
+func tileGrid(designW, designH, contentW, contentH, stepW, stepH float64) (cols, rows int) {
+	return tileCount(designW, contentW, stepW), tileCount(designH, contentH, stepH)
 }
 
 // tilePlacement is one printed sheet of the main pattern.
@@ -242,13 +272,19 @@ func tilePlan(bbox [4]float64, cols, rows int, stepW, stepH float64, mirrored, r
 // sheets, stays un-rotated — so "fit" never silently reorients a
 // pattern for zero paper saved, and repeat prints of the same design
 // come off the bench the same way round every time.
-func resolveRotate(mode string, designW, designH, stepW, stepH float64) bool {
+//
+// Only the DESIGN turns: the paper does not, so contentW/contentH and
+// stepW/stepH are passed to both branches unswapped. Both branches must
+// also use the same counting rule (Tier 3 #109) or the comparison stops
+// comparing like with like and "fit" starts choosing an orientation
+// that costs more sheets than the one it rejected.
+func resolveRotate(mode string, designW, designH, contentW, contentH, stepW, stepH float64) bool {
 	switch mode {
 	case RotateFixed90:
 		return true
 	case RotateFit:
-		uc, ur := tileGrid(designW, designH, stepW, stepH)
-		rc, rr := tileGrid(designH, designW, stepW, stepH)
+		uc, ur := tileGrid(designW, designH, contentW, contentH, stepW, stepH)
+		rc, rr := tileGrid(designH, designW, contentW, contentH, stepW, stepH)
 		return rc*rr < uc*ur
 	default:
 		return false
@@ -341,14 +377,14 @@ func Render(svg []byte, opts Options) ([]byte, error) {
 	// tile the pattern in whichever orientation we settled on. The
 	// rotation is about the design bbox centre, so the rotated bbox
 	// keeps that centre and swaps width for height.
-	rotated := resolveRotate(opts.Rotate, designW, designH, stepW, stepH)
+	rotated := resolveRotate(opts.Rotate, designW, designH, contentW, contentH, stepW, stepH)
 	cx := (bbox[0] + bbox[2]) / 2
 	cy := (bbox[1] + bbox[3]) / 2
 	if rotated {
 		bbox = rotatedBBox(bbox)
 		designW, designH = designH, designW
 	}
-	cols, rows := tileGrid(designW, designH, stepW, stepH)
+	cols, rows := tileGrid(designW, designH, contentW, contentH, stepW, stepH)
 
 	orient := "P"
 	if opts.Landscape {
@@ -494,14 +530,14 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	// pattern is tiled in the orientation it will actually print in.
 	// Rotation is about the bbox centre, which the rotated bbox keeps;
 	// only width and height trade places.
-	rotated := resolveRotate(opts.Rotate, designW, designH, stepW, stepH)
+	rotated := resolveRotate(opts.Rotate, designW, designH, contentW, contentH, stepW, stepH)
 	cx := (bbox[0] + bbox[2]) / 2
 	cy := (bbox[1] + bbox[3]) / 2
 	if rotated {
 		bbox = rotatedBBox(bbox)
 		designW, designH = designH, designW
 	}
-	cols, rows := tileGrid(designW, designH, stepW, stepH)
+	cols, rows := tileGrid(designW, designH, contentW, contentH, stepW, stepH)
 
 	orient := "P"
 	if opts.Landscape {

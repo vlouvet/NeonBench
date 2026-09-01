@@ -3,6 +3,7 @@ package printpdf
 import (
 	"bytes"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -334,6 +335,7 @@ func TestCopiesOrOne(t *testing.T) {
 // default 10 mm margin and 10 mm tile overlap: content 195.9 × 259.4,
 // step 185.9 × 249.4.
 func TestResolveRotate(t *testing.T) {
+	const contentW, contentH = 195.9, 259.4
 	const stepW, stepH = 185.9, 249.4
 	cases := []struct {
 		name             string
@@ -357,9 +359,9 @@ func TestResolveRotate(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := resolveRotate(c.mode, c.designW, c.designH, stepW, stepH); got != c.want {
-				uc, ur := tileGrid(c.designW, c.designH, stepW, stepH)
-				rc, rr := tileGrid(c.designH, c.designW, stepW, stepH)
+			if got := resolveRotate(c.mode, c.designW, c.designH, contentW, contentH, stepW, stepH); got != c.want {
+				uc, ur := tileGrid(c.designW, c.designH, contentW, contentH, stepW, stepH)
+				rc, rr := tileGrid(c.designH, c.designW, contentW, contentH, stepW, stepH)
 				t.Errorf("resolveRotate(%q, %g, %g) = %v, want %v (upright %d×%d=%d tiles, rotated %d×%d=%d tiles)",
 					c.mode, c.designW, c.designH, got, c.want, uc, ur, uc*ur, rc, rr, rc*rr)
 			}
@@ -1058,5 +1060,345 @@ func TestTilePlanMirroredRotatedReversesRows(t *testing.T) {
 		b12Margin, b12ContentW, b12ContentH, true, true)
 	if x, y := second(0, 0); x != 110 || y != 110 {
 		t.Errorf("mirrored+rotated: design corner (0,0) projects to (%g,%g) on sheet 2, want (110,110)", x, y)
+	}
+}
+
+// ---------------------------------------------------------------------
+// Tier 3 #109 — the tile grid must be trimmed to the design extent.
+// ---------------------------------------------------------------------
+
+// legacyTileCount is the pre-#109 formula, kept in the test file as the
+// baseline the assertions below measure against. Every "we saved a
+// sheet" claim in this section is a comparison against THIS function
+// rather than a hard-coded page total, so the tests still say something
+// if the paper defaults ever move.
+func legacyTileCount(design, step float64) int {
+	n := int(math.Ceil(design / step))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+// assertCovers is the non-negotiable half of #109. The first sheet
+// carries `content` mm and every sheet after it adds `step`, so
+// (n-1)*step + content is the total covered extent and it must reach
+// the design. Trimming a sheet the design actually needs is far worse
+// than printing a blank one: it silently truncates the pattern, and a
+// truncated 1:1 pattern does not look wrong until it is taped up on
+// the bench.
+func assertCovers(t *testing.T, n int, design, content, step float64) {
+	t.Helper()
+	covered := float64(n-1)*step + content
+	if covered < design {
+		t.Errorf("COVERAGE REGRESSION: %d sheets cover %g mm of a %g mm design "+
+			"(content %g, step %g) — the pattern would print truncated",
+			n, covered, design, content, step)
+	}
+}
+
+// TestTileGridTrimsToDesignExtent is the probe table from the #109 spec,
+// measured at the A4 default (content 190 mm, overlap 10 mm, step 180
+// mm). Each row asserts the new count, the coverage invariant, and that
+// the new count never EXCEEDS the legacy one — a "fix" that added paper
+// would be its own bug.
+func TestTileGridTrimsToDesignExtent(t *testing.T) {
+	const contentW, contentH = 190.0, 190.0
+	const stepW, stepH = 180.0, 180.0
+
+	cases := []struct {
+		designW    float64
+		want       int
+		wantLegacy int
+	}{
+		// Remainders that land inside the overlap band: the last sheet
+		// carries a full content width, so the legacy divisor bought a
+		// sheet with nothing on it.
+		{190, 1, 2},
+		{370, 2, 3},
+		{550, 3, 4},
+		{730, 4, 5},
+		// Just past the band — both formulas agree, no sheet to save.
+		{191, 2, 2},
+		{400, 3, 3},
+	}
+	for _, c := range cases {
+		t.Run(fmt.Sprintf("designW=%g", c.designW), func(t *testing.T) {
+			cols, rows := tileGrid(c.designW, 100, contentW, contentH, stepW, stepH)
+			if cols != c.want {
+				t.Errorf("tileGrid cols = %d, want %d", cols, c.want)
+			}
+			if rows != 1 {
+				t.Errorf("tileGrid rows = %d, want 1 (a 100 mm design fits one 190 mm sheet)", rows)
+			}
+			assertCovers(t, cols, c.designW, contentW, stepW)
+
+			if got := legacyTileCount(c.designW, stepW); got != c.wantLegacy {
+				t.Errorf("legacy formula gave %d columns, but this table was built assuming %d — "+
+					"the table no longer describes the bug it was written for", got, c.wantLegacy)
+			}
+			if cols > c.wantLegacy {
+				t.Errorf("tileGrid asks for MORE paper than the legacy formula (%d > %d)", cols, c.wantLegacy)
+			}
+		})
+	}
+}
+
+// TestTileGridExactContentSizeIsOneSheet is the headline case: a design
+// exactly one sheet in both directions used to bill FOUR sheets, three
+// of which carried nothing.
+func TestTileGridExactContentSizeIsOneSheet(t *testing.T) {
+	const content, step = 190.0, 180.0
+
+	cols, rows := tileGrid(content, content, content, content, step, step)
+	if cols != 1 || rows != 1 {
+		t.Errorf("a design exactly the content size tiled %d×%d, want 1×1", cols, rows)
+	}
+	assertCovers(t, cols, content, content, step)
+	assertCovers(t, rows, content, content, step)
+
+	// Negative control: the formula this replaced really did charge
+	// four sheets here, so the 1×1 above is a fix and not a tautology.
+	legacy := legacyTileCount(content, step) * legacyTileCount(content, step)
+	if legacy != 4 {
+		t.Errorf("legacy formula billed %d sheets for the exact-fit case, expected 4 — "+
+			"this test no longer pins the bug it was written for", legacy)
+	}
+}
+
+// TestTileGridZeroOverlapMatchesLegacy pins that #109 is a trim and not
+// a different tiling. With no overlap the step IS the content width,
+// there is no band for a remainder to hide in, and the new formula must
+// reduce to exactly the old one across a wide sweep.
+func TestTileGridZeroOverlapMatchesLegacy(t *testing.T) {
+	const content = 190.0
+	for d := 0.5; d < 2000; d += 0.5 {
+		cols, _ := tileGrid(d, d, content, content, content, content)
+		if want := legacyTileCount(d, content); cols != want {
+			t.Fatalf("overlap=0, designW=%g: tileGrid gave %d columns, legacy gave %d — "+
+				"with no overlap the two formulas must coincide", d, cols, want)
+		}
+	}
+}
+
+// TestTileGridCoverageNeverRegresses sweeps arbitrary design widths at
+// several paper/overlap combinations and asserts the invariant on every
+// one, plus "never more paper than before". A table of hand-picked
+// widths can miss the boundary the formula actually gets wrong; the
+// sweep cannot.
+func TestTileGridCoverageNeverRegresses(t *testing.T) {
+	papers := []struct {
+		name              string
+		contentW, overlap float64
+	}{
+		{"A4 portrait, 10 mm overlap", 190, 10},
+		{"Letter portrait, 10 mm overlap", 195.9, 10},
+		{"Letter portrait, 25 mm overlap", 195.9, 25},
+		{"A2 portrait, 0 mm overlap", 400, 0},
+	}
+	for _, p := range papers {
+		t.Run(p.name, func(t *testing.T) {
+			step := p.contentW - p.overlap
+			for d := 0.25; d < 2500; d += 0.25 {
+				cols, _ := tileGrid(d, 1, p.contentW, p.contentW, step, step)
+				assertCovers(t, cols, d, p.contentW, step)
+				if legacy := legacyTileCount(d, step); cols > legacy {
+					t.Fatalf("designW=%g: %d columns, more than the legacy %d", d, cols, legacy)
+				}
+				if cols < 1 {
+					t.Fatalf("designW=%g: %d columns — the floor is gone", d, cols)
+				}
+			}
+			// A degenerate (zero / negative) design still gets a sheet:
+			// the renderers reject those earlier, but tileGrid must not
+			// be the thing that returns a zero-page PDF.
+			for _, d := range []float64{0, -5} {
+				if cols, rows := tileGrid(d, d, p.contentW, p.contentW, step, step); cols != 1 || rows != 1 {
+					t.Errorf("tileGrid(%g, %g) = %d×%d, want 1×1", d, d, cols, rows)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveRotateFitUsesTrimmedGridOnBothBranches guards the
+// like-with-like rule at the two rotate=fit call sites. Both branches
+// have to count the same way; updating one and not the other makes
+// "fit" compare a trimmed grid against an untrimmed one and choose the
+// orientation that costs MORE sheets.
+//
+// The two rows below disagree in opposite directions, which is what
+// makes them catch a half-applied fix: mixing the formulas gives the
+// wrong answer on one row or the other, whichever branch was left
+// behind.
+//
+// Numbers are A4 portrait, 10 mm margin, 10 mm overlap: content
+// 190 × 277, step 180 × 267.
+func TestResolveRotateFitUsesTrimmedGridOnBothBranches(t *testing.T) {
+	const contentW, contentH = 190.0, 277.0
+	const stepW, stepH = 180.0, 267.0
+
+	cases := []struct {
+		name             string
+		designW, designH float64
+		want             bool
+		wantLegacy       bool
+	}{
+		// 250 × 185: trimmed, upright is 2×1 = 2 sheets and rotated is
+		// 1×1 = 1, so fit rotates. The legacy formula billed the
+		// rotated layout at 2×1 as well, called it a tie, and printed
+		// a sheet it did not need.
+		{"fit rotates once the rotated grid is trimmed", 250, 185, true, false},
+		// 190 × 280: trimmed, both orientations cost 2 sheets, so the
+		// tie rule keeps it upright. The legacy formula billed upright
+		// at 2×2 = 4 and rotated at 2×1 = 2, and turned the pattern to
+		// "save" two sheets that were never needed.
+		{"fit declines to rotate a tie the legacy grid mis-billed", 190, 280, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := resolveRotate(RotateFit, c.designW, c.designH, contentW, contentH, stepW, stepH)
+			if got != c.want {
+				uc, ur := tileGrid(c.designW, c.designH, contentW, contentH, stepW, stepH)
+				rc, rr := tileGrid(c.designH, c.designW, contentW, contentH, stepW, stepH)
+				t.Errorf("resolveRotate(fit, %g × %g) = %v, want %v (upright %d×%d=%d, rotated %d×%d=%d)",
+					c.designW, c.designH, got, c.want, uc, ur, uc*ur, rc, rr, rc*rr)
+			}
+
+			// Negative control: the legacy formula chose the OTHER
+			// orientation on this design, so the row above is a real
+			// assertion about the new counting rule.
+			legacy := legacyTileCount(c.designH, stepW)*legacyTileCount(c.designW, stepH) <
+				legacyTileCount(c.designW, stepW)*legacyTileCount(c.designH, stepH)
+			if legacy != c.wantLegacy {
+				t.Errorf("legacy formula chose rotated=%v, but this case exists because it chose %v — "+
+					"the case no longer distinguishes the two formulas", legacy, c.wantLegacy)
+			}
+			if legacy == got {
+				t.Error("old and new formulas agree on this design, so it cannot catch a half-applied fix")
+			}
+
+			// Whichever orientation was picked must still cover the
+			// design. Rotation swaps the design's axes, never the
+			// paper's.
+			dw, dh := c.designW, c.designH
+			if got {
+				dw, dh = dh, dw
+			}
+			cols, rows := tileGrid(dw, dh, contentW, contentH, stepW, stepH)
+			assertCovers(t, cols, dw, contentW, stepW)
+			assertCovers(t, rows, dh, contentH, stepH)
+		})
+	}
+}
+
+// exactPageSizeDoc is exactly one A4-portrait content area — 190 × 277
+// mm at the default 10 mm margin — so it is the worst case for the
+// pre-#109 grid: a one-sheet job billed as four. One 90° corner gives
+// it a bend-list page, which the page-count arithmetic below derives
+// rather than assumes.
+func exactPageSizeDoc() *designdoc.Doc {
+	return &designdoc.Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 190, 277},
+		Runs: []designdoc.Run{{
+			ID: "run-exact",
+			Polyline: designdoc.Polyline{
+				Points: [][2]float64{{5, 5}, {185, 5}, {185, 272}},
+			},
+			Electrodes:     []designdoc.Electrode{{PointIndex: 0}, {PointIndex: 2}},
+			TubeDiameterMM: 10,
+		}},
+	}
+}
+
+// TestRenderFromDocExactPageSizeDropsBlankTiles proves #109 through a
+// real render rather than the helper alone. A design exactly one A4
+// content area used to spool four tile pages; three of them were blank.
+//
+// The doc's non-tile pages (the bend list) are MEASURED, not assumed:
+// the same doc is rendered on A2, where one sheet is enough under
+// either formula, and the fixed page count falls out of that. So this
+// test keeps its meaning if the bend-list layout ever changes.
+func TestRenderFromDocExactPageSizeDropsBlankTiles(t *testing.T) {
+	doc := exactPageSizeDoc()
+	opts := DefaultOptions()
+	opts.ProjectName = "TrimTileGrid"
+
+	render := func(p Paper) int {
+		o := opts
+		o.Paper = p
+		out, err := RenderFromDoc(doc, o, 10)
+		if err != nil {
+			t.Fatalf("RenderFromDoc(%s): %v", p.Name, err)
+		}
+		return pdfPageCount(out)
+	}
+
+	// A2 content is 400 × 574 mm — one sheet under either formula, so
+	// this render isolates the doc's fixed (non-tile) pages.
+	fixed := render(PaperA2) - 1
+	if fixed < 1 {
+		t.Fatalf("control render gave %d fixed pages; expected at least the bend-list page", fixed)
+	}
+
+	got := render(PaperA4)
+
+	// The pre-#109 counts for this exact design/paper pairing: content
+	// 190 × 277, step 180 × 267.
+	legacyTiles := legacyTileCount(190, 180) * legacyTileCount(277, 267)
+	before := fixed + legacyTiles
+	after := fixed + 1
+	t.Logf("fixed pages=%d; tiles before=%d after=1; total before=%d after=%d",
+		fixed, legacyTiles, before, after)
+
+	if legacyTiles != 4 {
+		t.Errorf("legacy grid billed %d tiles for the exact-fit design, expected 4 — "+
+			"this test no longer exercises the headline case", legacyTiles)
+	}
+	if got != after {
+		t.Errorf("RenderFromDoc on a design exactly one A4 content area emitted %d pages, want %d "+
+			"(1 tile + %d fixed)", got, after, fixed)
+	}
+	if got >= before {
+		t.Errorf("page count did not drop: %d pages now, %d before the fix", got, before)
+	}
+}
+
+// TestRenderFromDocTrimmedGridStillCoversTheDesign is the render-level
+// half of the coverage invariant. Trimming must never drop a sheet the
+// pattern needs, so for a design just past the exact-fit boundary the
+// tile count has to go back up.
+func TestRenderFromDocTrimmedGridStillCoversTheDesign(t *testing.T) {
+	opts := DefaultOptions()
+	opts.Paper = PaperA4
+	opts.ProjectName = "TrimCoverage"
+
+	pages := func(doc *designdoc.Doc) int {
+		out, err := RenderFromDoc(doc, opts, 10)
+		if err != nil {
+			t.Fatalf("RenderFromDoc: %v", err)
+		}
+		return pdfPageCount(out)
+	}
+
+	exact := pages(exactPageSizeDoc())
+
+	// One millimetre wider than a sheet needs a second column, and the
+	// renderer has to actually emit it.
+	over := exactPageSizeDoc()
+	over.ViewBoxMM = [4]float64{0, 0, 191, 277}
+	if got := pages(over); got != exact+1 {
+		t.Errorf("a 191 × 277 mm design emitted %d pages but the 190 × 277 one emitted %d — "+
+			"the extra millimetre must buy a second column, or the pattern prints truncated",
+			got, exact)
+	}
+
+	// Likewise on the other axis.
+	tall := exactPageSizeDoc()
+	tall.ViewBoxMM = [4]float64{0, 0, 190, 278}
+	if got := pages(tall); got != exact+1 {
+		t.Errorf("a 190 × 278 mm design emitted %d pages but the 190 × 277 one emitted %d — "+
+			"the extra millimetre must buy a second row", got, exact)
 	}
 }
