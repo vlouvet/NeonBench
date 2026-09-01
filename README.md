@@ -216,7 +216,7 @@ under **Git Bash**, which ships with Git for Windows.
    skeleton-graph centerline extractor (Zhang-Suen thinning → graph
    walk → RDP simplify, all pure Go, no external binary). For typeset
    text (channel letters, "OPEN" signs, etc.) skip the upload and use
-   the editor's **Add text** tool instead (step 5) — Hershey
+   the editor's **Text** tool instead (step 5) — Hershey
    single-stroke fonts emit clean tube paths with no centerline
    extraction required, which sidesteps the topology errors that
    raster tracing can introduce at letter junctions. To start with a
@@ -278,8 +278,26 @@ under **Git Bash**, which ships with Git for Windows.
      segment.
    - **Add bend** — manual bend overrides the auto-detected list.
      Sidebar lets you Reset to auto.
-   - **Add text** — opens a modal that emits a Hershey single-stroke
-     font. For text in your design, prefer this over uploading a
+   - **Text** — type on the canvas. Click where the text should start
+     (the click point is the *baseline* of the first line, the same
+     thing a text cursor means anywhere else) and type: the glyphs
+     appear in place at the cap height and face set beside the button,
+     re-laid-out on every keystroke. Arrow keys, Home/End, Backspace,
+     Delete and Enter (new line) work as you would expect.
+     **Alt+←/→** kerns the pair the caret sits between — hold Shift for
+     a coarser step — writing into the same per-pair kerning array the
+     **Add text…** modal's drag handles use. **Esc, or a click
+     anywhere else, COMMITS** the text; nothing cancels it, because
+     losing a typed word to a stray click is the failure that actually
+     bites. Nothing reaches the design until you commit, so one undo
+     takes back the whole word rather than one letter. Editing text you
+     have already committed is not supported: the design doc stores tube
+     geometry, not the string that produced it, so a committed word is
+     tubes — delete and retype, or use node-edit.
+   - **Add text…** — opens a modal that emits a Hershey single-stroke
+     font. Use it over the inline tool when you want the transforms
+     (case, slant, stacking, arc), a preview before anything lands, or
+     drag handles for kerning. For text in your design, prefer this over uploading a
      rasterized image of typeset text — Hershey strokes are
      plotter/CNC paths designed to be drawn by a single pen, so they
      drop straight into the design as clean tube runs with no
@@ -310,8 +328,8 @@ under **Git Bash**, which ships with Git for Windows.
      script intact. The dialog's live preview shows the transformed
      result, which is the exact geometry Insert puts on the canvas.
    - **Outline text** — the *other* text tool, and the difference
-     matters. **Add text** gives you Hershey single-stroke
-     centrelines, which are already tube paths. **Outline text** reads
+     matters. The **Text** tool and **Add text…** give you Hershey
+     single-stroke centrelines, which are already tube paths. **Outline text** reads
      a customer-supplied `.ttf` / `.otf` / `.woff` and gives you the
      **filled outline** of each glyph — the edge of the ink, not the
      centre of a tube. Bend an outline as drawn and you get two tubes

@@ -35,6 +35,13 @@ import * as ops from '../lib/docOps';
 import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepRepeat';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
+import { FONTS, type FontKey } from '../lib/hershey/fonts';
+import {
+  isSessionEmpty,
+  sessionRuns,
+  type InlineTextSession,
+} from '../lib/inlineTextState';
+import { NumericField } from '../components/NumericField';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
 
@@ -61,6 +68,26 @@ export default function EditorPage() {
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setToolRaw] = useState<EditorTool>('select');
+  // Tier 2 #101 — inline canvas text. Size and face are toolbar state
+  // (the canvas reads them when a caret opens); the string, the caret
+  // and the kerning live in EditorCanvas for the length of one typing
+  // session and reach the doc once, at commit.
+  //
+  // 100 mm matches the Add-text modal's default so the two entry points
+  // produce the same size out of the box.
+  const [textCapHeightMM, setTextCapHeightMM] = useState(100);
+  const [textFontKey, setTextFontKey] = useState<FontKey>('rowmans');
+  // The live caret, or null. It lives here rather than in EditorCanvas
+  // because ending a session WRITES TO THE DOC, and the two things that
+  // end one — leaving the tool, and clicking a toolbar button — are
+  // this component's own events. Owning it there would mean committing
+  // from an effect, which lints as an error and double-fires under
+  // StrictMode's double render.
+  const [textSession, setTextSession] = useState<InlineTextSession | null>(null);
+  // Every bare-key shortcut THIS file binds — `o`, `c`, `j`, `k`, `[`,
+  // `]`, Delete/Backspace, Escape — stands down while a caret is live,
+  // and comes straight back when it closes.
+  const textCaretActive = textSession !== null;
   // Tier 3 #33a — multi-select. The selection is editor state (not
   // persisted in the design doc). Click replaces; Shift/Cmd-click
   // toggles; Cmd-A selects every run; Esc clears. The "primary"
@@ -264,6 +291,11 @@ export default function EditorPage() {
   // back. Inline (rather than via an effect) so we don't trip the
   // setState-in-effect lint rule.
   function setTool(next: EditorTool) {
+    // Tier 2 #101 — leaving the text tool COMMITS whatever is in the
+    // caret. Every other route out of a session (Esc, a click on the
+    // canvas, a click on any control outside it) commits too; there is
+    // deliberately no gesture that throws typed text away.
+    if (next !== 'text' && textSession) endTextSession(null);
     setToolRaw((prev) => {
       if (prev === 'node' && next !== 'node') setJoinArm(null);
       return next;
@@ -411,6 +443,12 @@ export default function EditorPage() {
         return;
       }
       const meta = e.metaKey || e.ctrlKey;
+      // Tier 2 #101 — a live text caret owns every unmodified key.
+      // Without this, typing "open channel" toggles Break/Move Opening
+      // on the 'o' and Connect Tubes on the 'c', mid-word. Cmd/Ctrl
+      // combinations are deliberately still live, so undo and redo keep
+      // working while typing.
+      if (textCaretActive && !meta) return;
       if (!meta) {
         if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'o') {
           // Tier 3 #61 — toggle Break/Move Opening tool. Pressing while
@@ -441,7 +479,14 @@ export default function EditorPage() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [tool]);
+    // `setTool` is deliberately not a dependency. It now closes over the
+    // text session (leaving the text tool commits it), so listing it
+    // would re-bind this window listener on every render — and the
+    // staleness it would guard against is unreachable: the only calls
+    // to `setTool` in here are the 'o' and 'c' hotkeys, which return
+    // above whenever a caret is live.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool, textCaretActive]);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
@@ -496,6 +541,11 @@ export default function EditorPage() {
           target.tagName === 'TEXTAREA' ||
           target.isContentEditable);
       if (isFormField) return;
+      // Tier 2 #101 — see the tool-hotkey handler above. Escape must
+      // reach the caret (where it COMMITS the text) rather than clear
+      // the run selection, and Delete/Backspace must edit the string
+      // rather than delete the selected runs.
+      if (textCaretActive) return;
       if (e.key === 'Escape') {
         if (joinArm) {
           e.preventDefault();
@@ -540,7 +590,7 @@ export default function EditorPage() {
     // selectAllRuns / deleteSelected close over `doc` and selection
     // state; relisting the deps keeps the closures fresh as those change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinArm, selectedRunIds, doc]);
+  }, [joinArm, selectedRunIds, doc, textCaretActive]);
 
   // Tier 3 #47 — list of GLOBAL indices (into `report.issues`) of the
   // issues that pass the severity filter. j/k keyboard nav cycles
@@ -652,6 +702,10 @@ export default function EditorPage() {
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
+      // Tier 2 #101 — 'j' and 'k' are letters first while a caret is
+      // live; jumping the viewport to the next validation issue in the
+      // middle of a word is the same class of ambush as switching tools.
+      if (textCaretActive) return;
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (visibleIssueIndices.length === 0) return;
       let dir: 1 | -1;
@@ -678,7 +732,7 @@ export default function EditorPage() {
     // jumpToIssue closes over `doc` and `report`; re-binding keeps
     // the closure fresh as those change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleIssueIndices, selectedIssueIndex, doc, report]);
+  }, [visibleIssueIndices, selectedIssueIndex, doc, report, textCaretActive]);
 
   if (error) return <p className="error">{error}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
@@ -1648,6 +1702,42 @@ export default function EditorPage() {
     setHersheyOpen(false);
   }
 
+  // Tier 2 #101 — commit one inline-text session. Unlike the modal's
+  // insert this does NOT re-centre the runs: the operator clicked where
+  // the baseline goes and watched the glyphs appear there, so moving
+  // them on commit would be the preview disagreeing with the result.
+  //
+  // ONE applyOp for the whole session, whatever was typed into it —
+  // that is what makes a single undo take back the whole word. Routed
+  // through applyOp rather than a bare editDoc whose return value we
+  // read, per CLAUDE.md's stale-result bug class.
+  // End the live caret: commit its strokes (if any), then open `next`
+  // in its place — `null` for "no caret any more", or a fresh session
+  // when the operator clicked somewhere else on the canvas to keep
+  // typing. Both setStates land in the same React batch, so the caret
+  // never blinks out between the two.
+  function endTextSession(next: InlineTextSession | null) {
+    if (textSession && !isSessionEmpty(textSession)) {
+      commitInlineText(sessionRuns(textSession));
+    }
+    setTextSession(next);
+  }
+
+  function commitInlineText(runs: HersheyRun[]) {
+    if (!doc || runs.length === 0) return;
+    const designRuns = runs.map<DesignRun>((r) => ({
+      id: 'text', // appendRuns rewrites with a unique `text-N` id
+      polyline: {
+        points: r.points.map(([x, y]) => [x, y] as [number, number]),
+        closed: false,
+      },
+      // Bug #02, same as the modal: seed the diameter from the project
+      // tube spec so the new runs report a real size, not "ø ?mm".
+      tube_diameter_mm: tubeSpec?.diameter_mm,
+    }));
+    applyOp((prev) => ({ doc: ops.appendRuns(prev, designRuns, 'text') }));
+  }
+
   // Insert the Channel Letter Wizard's runs (Tier 2 #71). The wizard
   // emits them centered on (0,0); we translate so their bbox center
   // lands on the current view-box center, exactly the same pattern as
@@ -1972,10 +2062,55 @@ export default function EditorPage() {
             >Arc</button>
             <button
               type="button"
+              className={tool === 'text' ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setTool('text')}
+              title="Type text directly on the canvas: click to place the caret, then type. Alt+←/→ kerns the pair at the caret. Esc or a click elsewhere commits."
+            >Text</button>
+            {tool === 'text' && (
+              // Size and face for the next (and current) caret. Shown
+              // only with the tool active so the toolbar doesn't grow
+              // two permanent controls that mean nothing the rest of
+              // the time.
+              <>
+                <label className="meta" title="Cap height — the literal height of a capital, in mm">
+                  {' '}size{' '}
+                  <NumericField
+                    // NOT a raw <input type="number">: a numeric `step`
+                    // makes `min` a lattice base and an off-lattice
+                    // value silently swallows form submits. This is a
+                    // millimetre measurement in an imperial trade —
+                    // 12.7, 19.05 and 25.4 all have to be typeable.
+                    // (This file is on the lint rule's legacy exempt
+                    // list, so nothing but discipline catches it here.)
+                    value={textCapHeightMM}
+                    min={1}
+                    onChange={(e) => {
+                      const v = Number(e.currentTarget.value);
+                      if (Number.isFinite(v) && v > 0) setTextCapHeightMM(v);
+                    }}
+                    style={{ width: '5rem' }}
+                    aria-label="Inline text cap height (mm)"
+                  />
+                  {' mm'}
+                </label>
+                <select
+                  value={textFontKey}
+                  onChange={(e) => setTextFontKey(e.currentTarget.value as FontKey)}
+                  aria-label="Inline text font"
+                  title="Single-stroke face for inline text"
+                >
+                  {Object.values(FONTS).map((f) => (
+                    <option key={f.key} value={f.key}>{f.displayName}</option>
+                  ))}
+                </select>
+              </>
+            )}
+            <button
+              type="button"
               className="tool-btn"
               onClick={() => setHersheyOpen(true)}
-              title="Insert Hershey single-stroke text as new tube runs"
-            >Add text</button>
+              title="Insert Hershey single-stroke text as new tube runs (modal: transforms, per-pair kerning handles, multi-line)"
+            >Add text…</button>
             <button
               type="button"
               className="tool-btn"
@@ -2181,6 +2316,14 @@ export default function EditorPage() {
           onDeleteAnnotation={deleteAnnotation}
           onPlaceBend={placeBend}
           onPlaceLabel={placeLabel}
+          textSession={textSession}
+          textOptions={{
+            font: textFontKey,
+            capHeightMM: textCapHeightMM,
+            lineHeight: 1.2,
+          }}
+          onTextSessionChange={setTextSession}
+          onEndTextSession={endTextSession}
           onPlaceDimension={placeDimension}
           onDeleteLabel={deleteLabel}
           onDeleteDimension={deleteDimension}
