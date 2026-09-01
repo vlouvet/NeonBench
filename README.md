@@ -418,6 +418,22 @@ under **Git Bash**, which ships with Git for Windows.
    should, so the canvas, the printed pattern and the DXF all agree.
    Runs in a locked layer are left out and the buttons say so.
 
+   **Step & repeat** — the same section arrays the selection into a
+   grid: a count across and down, and a pitch measured either *edge to
+   edge* (gap) or *centre to centre*. The original stays put as the
+   top-left cell. The preview line shows how many copies, how many runs
+   that adds, the overall size of the finished array and the actual
+   step, so a gap entered where a centre pitch was meant is visible
+   before you commit; arrays over 400 new runs are refused. The gap is
+   measured off the true outline too, so a row of curved tubes really
+   is that far apart. Copies carry the original's colour, diameter,
+   channel-letter face flag and depth — but **not** its raceway, since
+   a copy 500 mm away is not screwed to the same back-channel and would
+   otherwise appear on that raceway's return-strip page. Each copy of a
+   grouped selection gets its own new group ("E copy 1", "E copy 2"),
+   so a multi-run letter still travels as one unit while staying
+   separately selectable. One undo step.
+
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.
 

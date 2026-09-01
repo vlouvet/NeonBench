@@ -29,6 +29,7 @@ import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as arrange from '../lib/arrange';
 import * as ops from '../lib/docOps';
+import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepRepeat';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
@@ -1344,6 +1345,34 @@ export default function EditorPage() {
     applyOp((prev) => ({ doc: arrange.reorderRuns(prev, selectedRunIds, move) }));
   }
 
+  // Tier 3 #103 — step and repeat. One applyOp, so a 4 x 3 array is a single
+  // undo step rather than eleven.
+  //
+  // The plan is recomputed here against the RENDERED doc purely to word the
+  // toast; `applyOp` computes the doc from the same value, so the number in
+  // the message and the number of runs added cannot disagree. The op itself
+  // re-plans internally, which is what keeps it safe as a pure export.
+  //
+  // The selection is deliberately left on the ORIGINAL runs, matching the
+  // other four arrange ops: the usual next move is to array again on the
+  // other axis, and re-selecting the source by hand each time is worse than
+  // clicking the new copies when you actually want them.
+  function stepRepeatSelected(opts: StepRepeatOptions) {
+    if (!doc) return;
+    const plan = stepRepeatPlan(doc, selectedRunIds, opts);
+    if (plan.error) {
+      setStatusMessage(plan.error);
+      return;
+    }
+    applyOp((prev) => ({ doc: stepRepeat(prev, selectedRunIds, opts) }));
+    setStatusMessage(
+      `Arrayed ${plan.runIds.length} run${plan.runIds.length === 1 ? '' : 's'} ` +
+        `into a ${plan.countX} × ${plan.countY} grid — added ${plan.newRuns} run` +
+        `${plan.newRuns === 1 ? '' : 's'}. Copies keep their channel-letter settings; ` +
+        `they do not inherit the raceway.`,
+    );
+  }
+
   // Neonize replaces the selected run with parallel offset run(s) — the
   // "double-stroke" channel-letter primitive (NW #123/131/141). Default
   // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
@@ -2212,6 +2241,7 @@ export default function EditorPage() {
                 onDistribute={distributeSelected}
                 onMirror={mirrorSelected}
                 onReorder={reorderSelected}
+                onStepRepeat={stepRepeatSelected}
               />
             </div>
           )}
