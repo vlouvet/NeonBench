@@ -180,20 +180,44 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
-| Neon Design Tools | 16 | 0 | 3 | 4 |
+| Neon Design Tools | 18 | 0 | 0 | 5 |
 | Fonts & Text | 4 | 3 | 11 | 0 |
 | Design Tools | 14 | 4 | 21 | 3 |
-| Effects | 1 | 2 | 3 | 7 |
+| Effects | 3 | 2 | 1 | 7 |
 | Vector Graphics | 2 | 2 | 6 | 0 |
 | Image Manipulation | 5 | 1 | 1 | 0 |
 | Cutting/Plotting/Printing | 7 | 2 | 0 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
 | Wide Format | 0 | 0 | 0 | 7 |
-| **Totals** | **53** | **15** | **50** | **30** |
+| **Totals** | **57** | **15** | **45** | **31** |
 
 Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡. The post-Phase 3 Neon Design Tools audit (Tier 3 #60–#63 spec drafts) reclassified four rows ❌ → 🚫 (Tier 4) — **#121 Mounting Holes**, **#134 Switch Drop / Flat Blend**, **#136 Tube Support Holes**, **#137 Auto Tube Count**, **#138 Auto Spacing** — as either out of NeonBench's scope or already covered by shipped functionality (Neonize / "support" annotations). May 2026 Tier 1 + Tier 3 rounds shipped four more Neon Design Tools rows ❌ → ✅: **#120 Add Common Housings** + **#126 Create Custom Housings** (combined in PR #77), **#125 Connect Tubes** (PR #79 — jumper runs), and **#130 Move Opening / Break Tube Open** (PR #78). Late May 2026 polish round closed the groups + per-group preview loop, promoting **#140 Neon Preview for Groups** 🟡 → ✅ (PR #101 shipped the `?groupId` filter + visibility-aware preview after Tier 3 #33b/c landed groups + layers). Cumulative ✅ has gone **30 → 31 → 32 → 36 → 37** since the Tier 2 close-out; 🟡 dropped to 12; ❌ holds at 80; 🚫 sits at 19.
 
 The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that is the honest reading rather than a gap in the accounting: all four features enrich rows already marked ✅ — **#78 Node Edit Tools** (the right-click context menu and arc↔line conversion) and **#123 Auto Tube Layout** (the raceway guideline's split-at-line and the overlong-tube split). NW's advertised feature list counts a capability once; the depth behind those two rows roughly doubled without a new row to claim. Two shipped bugs were fixed in the same round (`specs/done/bug-09-preview-coplanar-crossings.md` — crossing tubes drawn coplanar in the 3D preview so glass passed through glass; `specs/done/bug-10-tube-spec-switch-desync.md` — switching the project tube spec validated the saved version rather than the live doc and left runs pinned to the old diameter), and **v0.2.0** was cut and signed from the result.
+
+The **September 2026 round (PRs #161–#165)** took **✅ 53 → 57, ❌ 50 → 45**, and
+**Neon Design Tools reached zero ❌** — every row in the category NeonBench
+exists for is now shipped or a deliberate 🚫. #104 closed the last one.
+
+**Two of those four ✅ are a correction, and the tally was wrong before this
+round.** The Neon Design Tools summary row read 16/0/3/4 while its own
+per-feature table counted 17/0/1/5 — undercounting ✅ by one and overcounting
+❌ by two, most likely since the reclassification round moved five rows to 🚫
+and the summary recorded four. The detail table is authoritative and the
+summary now matches it exactly. Worth noting **this is the only category that
+can be checked mechanically**, because it is the only one written as a per-row
+table; the rest are bullet lists against number *ranges*, which is precisely
+why they drift and why per-row attribution in Design Tools stays approximate.
+
+The round also found **five more bugs in already-merged code**, none of which
+move a tally row: Neonize offsetting an arc run's *chords* rather than its
+curve (Bug #16 — 100 mm off on a 200 mm arc, in an op three ✅ rows rest on);
+`joinRuns` dropping classification (Bug #15); `simplifyRun` and
+`insertDoubleback` both corrupting `segment_types` length so the next save
+400s; and a third live instance of the numeric-lattice bug in `VectorizePanel`.
+Cumulative count for the carry-and-remap class is now **five**, which is why
+PR #161 introduced `carryRunClassification` rather than fixing a sixth
+allow-list by hand.
 
 The **late-August 2026 parity round (PRs #144–#149)** is the largest single
 tally movement since the audit was taken: **✅ 37 → 51, ❌ 80 → 52.** Four
@@ -245,7 +269,7 @@ correctness prerequisite for three ops.
 | 130 | Move Opening / Break Tube Open | ✅ | shipped in PR #78 (Tier 3 #61): `breakOpen(doc, runId, vertexIndex)` + `moveOpening(doc, runId, newStartVertexIndex)` docOps + `'break-open'` canvas tool with hot-key `O`; live-arc-relative index invariants from PR #44 keep blockouts / annotations / bends consistent |
 | 131 | Neonize (outline → tube path) | ✅ | Closed-polyline angle-bisector offset with miter clamp; default spacing 2× tube diameter (PR #26) |
 | 132 | Neon Summary | ✅ | bend-list PDF page per run |
-| 133 | Raceway Support | ❌ | deferred — NW's intent is ambiguous (validation rule vs. hardware spec model). Revisit after gathering more trade context from a shop using NW today |
+| 133 | Raceway Support | ✅ | shipped in PR #165 (Tier 2 #104). `Doc.Raceways` — a box sharing the ID of its `"raceway"` guideline, so no third id space appears and `Run.RacewayID` already points at it. Defaults 8″×8″ (203.2 mm) per `docs/neon-rules/raceway.md`, not the 4–5″ the web quotes: those are LED-era, and a 159 mm neon transformer cannot sit across a 127 mm box. Dimensioned raceway page in the PDF; two warnings (span, transformer fit). Deleting the guideline deletes the box — a dangling raceway would 400 every later save with nothing on screen to explain it |
 | 134 | Switch Drop / Flat Blend | 🚫 | Tier 4 — terminology not in any source PDF (Miller / Strattman / Saving Neon / Blazek). May be a NW-specific 3D bend-mode that NeonBench's 2D pattern model doesn't need |
 | 135 | Tube End Gap | ✅ | Per-project optional setting, default 6.35mm; stored, displayed, in PDF footer (PR #19) |
 | 136 | Tube Support Holes | 🚫 | Tier 4 — already-shipped "support" annotations (NW #122 ✅) cover the location need; per-hole hardware geometry is graphic-design polish, not production-blocking |
@@ -288,7 +312,7 @@ Tier 4 refusal.
 - 🚫 Cast / Drop / Soft / Extruded / Perspective Shadow (5) — marketing-render filters. NeonBench answers this need with the 3D glow preview (PRs #57–63), which is a better answer than a 2D shadow filter.
 - 🚫 Clipping Paths — compositing; no meaning for a tube path.
 - 🚫 Warp — envelope distortion. Arguably "fit copy to a shaped panel", but warping a tube path invalidates bend radii; needs a design decision before anyone builds it.
-- ❌ **Weld** and **Common Weld** — boolean union of overlapping outlines. **The highest-value unbuilt row in this category.** Script and connected lettering where glyphs overlap must become ONE continuous tube path before Neonize runs, and there is no boolean op anywhere in the codebase. ⚠️ **Naming trap:** "weld" already means a *physical glass weld* in `internal/validate/rules.go` (`weldRadius`, the spacing rule for where a glassblower joins two tubes). A boolean-union feature must NOT be called weld here.
+- ✅ **Weld** and **Common Weld** — shipped in PR #162 as **union** (Tier 2 #98). `martinez-polygon-clipping@0.8.1`, lazy-loaded (+0.78 kB gzip on the main chunk). ⚠️ Deliberately **not** called weld in code: `internal/validate/rules.go` uses `weldRadius` for a *physical glass weld*. Rings are nested into a containment forest before the boolean — a flat ring list applies even-odd across the whole selection and turns two overlapping glyph bodies into a hole. Exactly-tangent flattened arcs degrade (~0.9% area into slivers); the op says so rather than hiding it
 - ❌ Text on Path — arbitrary-path text. Text-on-an-*arc* shipped in PR #146 and named this as its explicit follow-up, so it is queued, not refused.
 - 🟡 Contour · Inline/Outline — `offsetPolygon` / `offsetOpenPolyline` with miter/round/bevel corners already exists (`web/src/lib/shapes/offset.ts`) and powers Neonize + Parallel Tube Layout. The primitive is built; repeated-offset-at-a-step is the gap.
 - ✅ Knife (cut a path) — `splitRun`, `breakOpen`, `splitTubesAtRaceway` and `autoSplitOverlongTubes` all ship, exposed through the node context menu (PR #139).
@@ -503,6 +527,14 @@ Round H Tier 3 specs drafted in PR #107 alongside the Tier 2 batch. These polish
 110. **What Neonize's output should inherit** *(follow-up from #98 + Bug #15)*. `neonize`'s `withMeta` carries only diameter, colour and notes — the fifth instance of the carry-and-remap class. **But "carry everything" is the wrong fix here**, which is why it is a spec and not a bug: Neonize consumes a face *outline* and emits the *tube paths that light it*, so the output is a different kind of object. `is_channel_letter_face` must NOT carry — flagging tubes as faces would generate return-strip pages for parts that do not exist. `group_id`, `raceway_id` and `kind` should carry. Per-field reasoning and the decision date are in the spec. Spec: `specs/active/tier3-110-neonize-metadata-carry.md`.
 
 111. **`polylineLengthMM` diverges from the validator** *(filed by Bug #16's agent, deliberately not fixed there)*. The TS helper sums chords; the Go validator flattens through `ToSVG` → cubics and measures the curve. On a run with arcs the two disagree, so `autoSplitOverlongTubes` can believe it has fixed a run the validator still flags — **exactly the failure mode Tier 2 #75's spec warned about**, now real because arcs shipped. Not fixed in PR #161 because it ripples into `EditorPage.tsx`, which a parallel agent owned. Make the TS side arc-aware and re-pin the "measure the way the validator measures" invariant.
+
+98. ✅ **Union overlapping outlines** — shipped in PR #162. See the Effects note in Appendix A. The library was chosen on evidence: `polygon-clipping` (the obvious pick, and the one originally named in the spec) had been unpublished for 2½ years with half the adoption of `martinez-polygon-clipping`, which it is algorithmically derived from. **Two library traps guarded:** a ring without its closing duplicate is silently wrong (112.5 vs 175 mm²), and a zero-area ring throws. Electrodes, blockouts, annotations and bends are dropped and **counted in the toast** — no remap is honest when a vertex can end up inside the merged body on no boundary. Spec: `specs/done/tier2-98-outline-union.md`.
+
+104. ✅ **Raceway as a modelled hardware object** — shipped in PR #165. Closes NW #133 and takes **Neon Design Tools to zero ❌**. Also lands the rename the research forced: `emitRacewayStrip` → `emitNestedReturnStrip`, because it never emitted a raceway — it nests channel-letter *return* strips (width = sum of letter perimeters). Grouping unchanged; `Run.RacewayID` not renamed. Proven by page count through real `RenderFromDoc`: 3 pages with a raceway, 2 without. **The spec's own transformer example was wrong** — 4 × (159 + 25.4) = 737.6 mm fits in 900 mm — and the agent pinned the test at 700 mm rather than inflating the clearance constant to make the illustration true. Spec: `specs/done/tier2-104-raceway-hardware-model.md`.
+
+105. ✅ **Numeric input hardening** — shipped in PR #164. `NumericField` defaults to `step="any"`; 45 call sites migrated across 10 files; raw `<input type="number">` banned at **error** level, with `EditorPage.tsx` / `ArrangePanel.tsx` exempted by path (8 inputs, still to do — see row 112). **The root cause was never UI polish.** Neon is an imperial trade and NeonBench is millimetre-native, so every trade constant — 12.7, 9.525, 3.175, 19.05, 25.4, 76.2, 2438.4 (½″, ⅜″, ⅛″, ¾″, 1″, 3″, 8 ft) — lands off a `step={0.5}` lattice and is rejected by the field it belongs in. Found by probing real Chromium `checkValidity()` over 103 triples, not by reasoning in floating point. **A third live instance:** `VectorizePanel`'s auto-rotate computes 0.1° resolution into a `step={0.5}` field inside a `<form>`, so auto-rotate could leave Vectorize permanently un-submittable. **And shipped seed data was invalid on load** — 3 of 4 wall thicknesses from migration `0010`. The worst case: the channel-letter wizard silently refused **12.7 mm tube diameter**, a standard size, with Insert enabled, no console output, and the preview still reporting "2 faces · 4 tube runs". Spec: `specs/done/tier3-105-numeric-input-hardening.md`.
+
+112. **Finish row 105 in the two editor files** *(follow-up from #164)*. `EditorPage.tsx` and `ArrangePanel.tsx` hold the last 8 raw numeric inputs and are exempted by path in `eslint.config.js`, with the exemption list pinned by a test. They were left alone because PR #165 owned them; the exemption should be deleted, not inherited.
 
 ### Tier 4 — Deliberate "no for now"
 
