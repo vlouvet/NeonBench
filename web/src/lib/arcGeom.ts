@@ -268,14 +268,13 @@ function pointToSegmentDistanceMM(
 //   2. It measures to the FLATTENED curve when the run has arcs. An arc at
 //      bulge 0.5 bows a quarter of its chord off the chord, so on a strongly
 //      curved segment the chord-based answer is wrong by up to chord/4 —
-//      worst on exactly the segments that are most obviously curved. Every
-//      other consumer (render, measure, validate, export) already follows the
-//      curve; only clicking did not.
+//      worst on exactly the segments that are most obviously curved.
 //
 // Guarded on runHasArcs so a run with no curves never pays for the flatten.
 // Returns Infinity for a run with no points, so callers can compare directly.
 export function runPathDistanceMM(run: DesignRun, target: [number, number]): number {
-  const pts = runHasArcs(run) ? flatRunPoints(run) : run.polyline.points;
+  const hasArcs = runHasArcs(run);
+  const pts = hasArcs ? flatRunPoints(run) : run.polyline.points;
   if (pts.length === 0) return Infinity;
   if (pts.length === 1) return Math.hypot(pts[0][0] - target[0], pts[0][1] - target[1]);
   let best = Infinity;
@@ -283,9 +282,9 @@ export function runPathDistanceMM(run: DesignRun, target: [number, number]): num
     const d = pointToSegmentDistanceMM(target, pts[i], pts[i + 1]);
     if (d < best) best = d;
   }
-  // flatRunPoints already walks a closed run's closing segment, so only the
-  // raw-point path still has to close the loop itself.
-  if (run.polyline.closed && !runHasArcs(run)) {
+  // flatRunPoints already walks a closed run's closing segment (and lands back
+  // on points[0]), so only the raw-point path still has to close the loop.
+  if (run.polyline.closed && !hasArcs) {
     const d = pointToSegmentDistanceMM(target, pts[pts.length - 1], pts[0]);
     if (d < best) best = d;
   }
