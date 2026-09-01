@@ -20,7 +20,10 @@ web UI.
 > upload, snap-to-angle / snap-to-geometry on every drawing tool,
 > common + custom electrode housings, connect-tubes (jumper runs),
 > move-opening / break-tube-open, multi-vertex select + drag + merge
-> in node-edit mode, undo/redo, validation marker overlay with
+> in node-edit mode, a right-click node context menu, circular arc
+> segments that survive into the PDF and DXF, raceway guidelines that
+> split every tube crossing them, one-click splitting of overlong
+> tubes, undo/redo, validation marker overlay with
 > severity-filter + j/k keyboard nav + sidebar↔canvas hover linking,
 > full-spec-driven validation including derived bend radius from wall
 > thickness + technique, click-to-edit tube-spec fields with fan-out
@@ -306,7 +309,24 @@ under **Git Bash**, which ships with Git for Windows.
      valid pieces rather than dropped). Pick "Join from head/tail" in
      the run sidebar to arm a join, then click another open run's
      endpoint to merge the two polylines (self-join head + tail closes
-     the loop).
+     the loop). **Right-click any vertex** for a context menu listing
+     only the actions that apply there — insert vertex, split run,
+     break a loop open, move the opening, place or move an electrode,
+     add a housing, start a blockout, the five marks, and delete. On a
+     Mac trackpad, ctrl-click or a two-finger tap does the same. The
+     menu is an additional way in, not a replacement: every toolbar
+     tool still works as before.
+   - **Arcs** — right-click a vertex and pick **Convert to arc** to
+     bow the segment *leaving* it into a circular arc (sagitta a
+     quarter of the chord; radius 0.625 × chord). The vertex list does
+     not change, so electrodes, bends and blockouts stay put. The
+     curve is real geometry, not a drawing flourish: it flows through
+     to the validator, the bend list, the glass footage, the PDF and
+     the DXF (as a native LWPOLYLINE bulge the bender's CAM reads).
+     Note that an arc meets its straight neighbours at a ~53° corner,
+     so converting a mid-run segment usually adds two genuine
+     bend-radius warnings — that is the validator being accurate about
+     the glass, not a false positive.
    - **Snap** — toolbar toggle + mm spacing. Affects label, dimension,
      and vertex drag (run-path picks always snap to the nearest
      polyline vertex).
@@ -331,6 +351,23 @@ under **Git Bash**, which ships with Git for Windows.
    has acute corners (beveled by a miter clamp) or self-intersections
    after offset, you'll get a warning; the runs are still emitted and
    you can clean up with the node editor.
+
+   **Raceway guideline** — for channel letters sharing one back
+   channel: click **Add raceway guideline**, drag the dashed line to
+   where the raceway will sit, then click **Split tubes at raceway**.
+   Every tube crossing the line is cut at the crossing and tagged with
+   the guideline's id, which is what groups them onto a single
+   combined return-strip page in the PDF. Clicking twice does nothing
+   — each piece already ends on the line. Moving the line and
+   splitting again *adds* a second cut rather than undoing the first;
+   undo is the way back, and it is one step. Deleting the guideline
+   leaves the cuts and their raceway tag alone.
+
+   **Split overlong tubes** — the validator errors when a run exceeds
+   the tube spec's max segment length, because it will not come off a
+   single stick. The sidebar button (which shows how many runs are
+   over) cuts each into the fewest equal-arc-length pieces that fit
+   under the limit, in one undo step. Re-running it is a no-op.
 
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.
