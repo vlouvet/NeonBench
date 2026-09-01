@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -33,6 +33,16 @@ import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepR
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
+
+// Tier 2 #99 — the OpenType dialog pulls in opentype.js, which is 250 kB
+// of parser (73 kB gzipped) that most editing sessions never touch.
+// `lazy()` puts it in its own chunk, fetched the first time the operator
+// opens the dialog, so the editor's first paint pays nothing for it —
+// the same trade App.tsx already makes for the three.js preview.
+// Measured with vite 8: main chunk 576.18 kB -> 576.81 kB (+0.6 kB), plus a
+// 250.83 kB / 73.16 kB-gzip OutlineTextDialog chunk. Imported eagerly it
+// pushed the main chunk to 827.82 kB / 239.98 kB gzip instead.
+const OutlineTextDialog = lazy(() => import('../components/OutlineTextDialog'));
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -189,6 +199,10 @@ export default function EditorPage() {
   }, [sidebarWidth]);
   const [hersheyOpen, setHersheyOpen] = useState(false);
   const [channelLetterOpen, setChannelLetterOpen] = useState(false);
+  // Tier 2 #99 — OpenType outline text. Separate from `hersheyOpen`
+  // on purpose: the two dialogs emit different KINDS of run (open
+  // centreline vs closed outline) and must not be confusable.
+  const [outlineTextOpen, setOutlineTextOpen] = useState(false);
   // Tier 3 #62 — housing-picker modal target. Non-null when the
   // operator right-clicked an electrode pin; carries enough context
   // (run id + electrode index within run.electrodes) for the modal
@@ -1520,6 +1534,42 @@ export default function EditorPage() {
     setChannelLetterOpen(false);
   }
 
+  // Insert OpenType outline text (Tier 2 #99). Same centring pattern as
+  // the two dialogs above, but the runs are CLOSED contours rather than
+  // open centrelines: they are the boundary of the ink, and the operator
+  // turns them into tubes afterwards with Neonize or the channel-letter
+  // face flag. The dialog says so; this handler must not quietly convert
+  // them into anything else.
+  function insertOutlineText(runs: DesignRun[]) {
+    if (!doc || runs.length === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const r of runs) {
+      for (const [x, y] of r.polyline.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    const [vx, vy, vw, vh] = doc.view_box_mm;
+    const cx = vx + vw / 2;
+    const cy = vy + vh / 2;
+    const dx = Number.isFinite(minX) ? cx - (minX + maxX) / 2 : 0;
+    const dy = Number.isFinite(minY) ? cy - (minY + maxY) / 2 : 0;
+    const translated = runs.map<DesignRun>((r) => ({
+      ...r,
+      // Bug #02: seed diameter from the project tube spec so an inserted
+      // run reports a real size instead of "ø ?mm".
+      tube_diameter_mm: r.tube_diameter_mm ?? tubeSpec?.diameter_mm,
+      polyline: {
+        ...r.polyline,
+        points: r.polyline.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+      },
+    }));
+    editDoc((prev) => ops.appendRuns(prev, translated, 'otf'));
+    setOutlineTextOpen(false);
+  }
+
   // Switching the project's tube spec from inside the editor needs to do
   // two things atomically from the user's perspective: persist the new
   // tube_spec_id, then re-run validation against the *new* spec so the
@@ -1773,6 +1823,12 @@ export default function EditorPage() {
               onClick={() => setHersheyOpen(true)}
               title="Insert Hershey single-stroke text as new tube runs"
             >Add text</button>
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => setOutlineTextOpen(true)}
+              title="Set text in a customer-supplied OpenType/TrueType font as closed OUTLINES (not tube centrelines) — then Neonize or use as channel-letter faces"
+            >Outline text</button>
             <button
               type="button"
               className="tool-btn"
@@ -2671,6 +2727,14 @@ export default function EditorPage() {
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
         />
+      )}
+      {outlineTextOpen && (
+        <Suspense fallback={null}>
+          <OutlineTextDialog
+            onCancel={() => setOutlineTextOpen(false)}
+            onInsert={(runs) => insertOutlineText(runs)}
+          />
+        </Suspense>
       )}
       {channelLetterOpen && (
         <ChannelLetterWizardDialog
