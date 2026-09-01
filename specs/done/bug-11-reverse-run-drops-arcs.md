@@ -1,6 +1,15 @@
 # Bug #11 — `reverseRun` corrupts runs that contain arc segments
 
-> **Status:** active · found 2026-08-31 · branch `task/bug-11-reverse-run-arcs`
+> **Status:** done · found 2026-08-31 · PR #149 · branch `task/bug-11-reverse-run-arcs`
+>
+> **Outcome:** deliverables 1, 3 and 4 shipped. Deliverable 2 (arc geometry
+> preserved) is **not achievable without a schema change** and did not ship:
+> `segment_types` has only `line` and `arc`, and `arcFor` always bows left of
+> travel, so reversing a chord necessarily mirrors the bow about it. Arcs now
+> stay on the chords the operator curved, and reversing twice is an exact
+> identity, but a single reverse still flips the bow. Preserving it needs a
+> signed bulge (or `arc-cw`/`arc-ccw`) in `internal/designdoc` plus its
+> TypeScript twin — tracked as a follow-up.
 
 ## Symptom
 
