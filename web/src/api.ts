@@ -179,7 +179,64 @@ export type DesignDoc = {
   // DisallowUnknownFields, so this type and the Go struct have to move
   // together or every save 400s.
   guidelines?: Guideline[];
+  // Tier 2 #104 / NW #133 — the modelled raceway boxes. Mirrors
+  // `designdoc.Doc.Raceways`. Optional / omitted on every pre-#104 doc,
+  // which is what keeps their JSON byte-identical; the Go decoder runs
+  // with DisallowUnknownFields, so this and the Go struct move together
+  // or every save 400s.
+  raceways?: Raceway[];
 };
+
+// Tier 2 #104 / NW #133 — the rectangular aluminium box the letters mount
+// to and that houses the transformers, wiring and disconnect. Mirrors
+// `internal/designdoc.Raceway` byte-for-byte.
+//
+// `id` IS the id of the `kind: 'raceway'` guideline that supplies the box's
+// top edge — the same value `run.raceway_id` already carries. There is no
+// third id space: the guideline gives Y, this record gives X, length, height
+// and depth, and every member run already points at it. The Go decoder
+// REJECTS a raceway whose id names no raceway guideline, so deleting a
+// guideline has to delete its box too (see `removeGuideline` in docOps).
+//
+// `height_mm` / `depth_mm` of 0 (or absent) mean "use the shop default",
+// not "a box with no height".
+export type Raceway = {
+  id: string;
+  x_mm: number;
+  length_mm: number;
+  height_mm?: number;
+  depth_mm?: number;
+};
+
+// Raceway shop defaults, in millimetres. Twins of the Go constants in
+// `internal/designdoc/types.go`; `docOps.test.ts` pins them against the
+// values the PDF and validator use.
+//
+// 8 in × 8 in (203.2 mm), NOT the 4–5 in most suppliers quote. Those are
+// LED-era boxes sized around a driver. A neon transformer is 159 mm long
+// (TRANSFORMER_LENGTH_MM) and cannot sit ACROSS a 127 mm box — it has to lie
+// along the run, with nothing left over for GTO routing or hand access. See
+// docs/neon-rules/raceway.md before "correcting" these downwards.
+export const RACEWAY_DEFAULT_HEIGHT_MM = 203.2;
+export const RACEWAY_DEFAULT_DEPTH_MM = 203.2;
+
+// Longest section that ships as one piece (10 ft); longer boxes are butt
+// spliced, and the raceway page marks every seam.
+export const RACEWAY_SPLICE_MM = 3048;
+
+// Measured case length of a 10 kV / 30 mA electronic neon transformer (6¼ in).
+export const TRANSFORMER_LENGTH_MM = 159;
+
+// How far the box extends PAST the outermost letters at each end.
+//
+// THIS IS AN OPEN QUESTION, NOT A MEASURED RULE. Every source says the
+// raceway "spans the entire length of the letters"; not one says whether it
+// stops flush or overhangs — see docs/neon-rules/raceway.md, "Open
+// questions" item 1, which says to ask a shop before encoding a formula.
+// V1 is flush, because zero is the only number here nobody invented. It
+// lives in this ONE constant, applied at exactly one place in
+// `fitRacewayToRuns`, so answering the question later is a one-line edit.
+export const RACEWAY_END_MARGIN_MM = 0;
 
 // Tier 2 #74 / #91 — a construction line in the editor. Mirrors
 // `internal/designdoc.Guideline` byte-for-byte.
@@ -359,6 +416,12 @@ export type ValidationIssue = {
     | 'min_lead_in'
     | 'sharp_bend_angle'
     | 'face_perimeter_exceeds_blank'
+    // Tier 2 #104 — the two raceway hardware rules. Both are WARNINGS.
+    // Adding a member here is not enough to make an issue visible: the
+    // sidebar renders `ruleOrder` in ValidationReportView.tsx and silently
+    // drops any rule missing from that array, so both lists move together.
+    | 'raceway_span'
+    | 'raceway_transformer_fit'
     | 'unsupported_path';
   severity: 'error' | 'warning';
   message: string;

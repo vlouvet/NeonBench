@@ -437,6 +437,29 @@ under **Git Bash**, which ships with Git for Windows.
    undo is the way back, and it is one step. Deleting the guideline
    leaves the cuts and their raceway tag alone.
 
+   **Raceway box** — adding the guideline also offers to model the
+   raceway itself: the rectangular aluminium enclosure the letters
+   mount to, which houses the transformers, the wiring and the
+   disconnect. The box shares the guideline's id — the guideline is
+   its top edge — so there is no second thing to keep in sync, and the
+   tubes already tagged with that id are its members. With the
+   guideline selected, the sidebar gives you **Fit to runs** (spans the
+   member glass, arc-aware) plus exact numbers for left x, length,
+   height and depth. Defaults are 8″ × 8″ (203.2 mm), the neon-era
+   standard rather than the 4–5″ figures the web quotes for LED work:
+   a 159 mm neon transformer cannot sit across a 5″ box. Every
+   dimension is overridable, because these come from supplier pages
+   rather than the trade textbooks the rest of `docs/neon-rules/`
+   cites. The box ends **flush** with the outermost letters — no
+   source says whether a real raceway overhangs, so V1 does not invent
+   a margin (`docs/neon-rules/raceway.md`, open question 1). Two
+   warnings watch it: the box failing to span its runs (usually an
+   auto-fit that was never re-run after the letters moved) and the
+   implied transformer count not fitting along its length. Each
+   modelled box gets a dimensioned plan-view page in the print PDF,
+   with the member letters marked along it and a butt-splice line
+   every 10 ft.
+
    **Construction guides** — press on a ruler and drag into the canvas
    to pull out a guide: the top ruler gives a horizontal one, the left
    ruler a vertical one. Release back over a ruler to cancel. Drag a
@@ -508,8 +531,9 @@ under **Git Bash**, which ships with Git for Windows.
    tie keeps the un-rotated orientation, so the same design always
    comes off the bench the same way round; `?rotate=90` rotates
    unconditionally. Rotation applies to the main pattern and bend-list
-   pages only: return-strip and raceway-strip pages are unfolded 1D
-   patterns in their own coordinate space and are left alone. Mirror
+   pages only: return-strip and nested-return-strip pages are unfolded
+   1D patterns in their own coordinate space, and the raceway page is a
+   plan view of a box, so all three are left alone. Mirror
    and rotation do not commute, so the order is fixed as **mirror,
    then rotate** — mirroring is a property of the pattern (the bender
    reads through the back of the glass), rotation is a property of the
@@ -546,9 +570,13 @@ under **Git Bash**, which ships with Git for Windows.
    polyline vertex labelled with the cumulative arc length and signed
    interior turn angle so the operator knows exactly where to bend
    the strip; runs sharing a `Raceway` value are concatenated onto a
-   single combined-strip page with heavy dashed boundaries between
-   contributions, and a dashed shear line at the right end labels
-   the overlap allowance. A `face_perimeter_exceeds_blank` warning
+   single **nested return strip** page with heavy dashed boundaries
+   between contributions, and a dashed shear line at the right end
+   labels the overlap allowance. That page nests the *letter perimeter*
+   bands of several faces onto one piece of coil — it is not a drawing
+   of the raceway, which is a separate box with its own page (see
+   **Raceway box** above); it was called "Raceway strip" until Tier 2
+   #104 gave the term back to the hardware. A `face_perimeter_exceeds_blank` warning
    surfaces on the canvas marker overlay if a face's perimeter passes
    the 1168 mm Strattman coil length (NW #106).
 

@@ -1077,6 +1077,21 @@
 .diameter-picker input {
   width: 6rem;
 }
+/* Tier 2 #104 — the modelled raceway box's editor, shown in the Runs
+   sidebar while a raceway guideline is selected. */
+.raceway-box-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem;
+  border: 1px solid #9a8f7a;
+  border-radius: 4px;
+  background: rgba(154, 143, 122, 0.08);
+}
+.raceway-box-header {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
 .run-notes {
   display: flex;
   flex-direction: column;

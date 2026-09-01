@@ -4,6 +4,8 @@ import {
   api,
   parseDoc,
   parseReport,
+  RACEWAY_DEFAULT_DEPTH_MM,
+  RACEWAY_DEFAULT_HEIGHT_MM,
   type DesignDoc,
   type DesignRun,
   type DesignVersion,
@@ -1108,14 +1110,32 @@ export default function EditorPage() {
   // vertical centre of the design bbox, which is where a raceway usually
   // wants to be on a single-row sign and is in any case one drag from
   // anywhere else.
+  //
+  // Tier 2 #104 — adding the line OFFERS to model the box that hangs off it.
+  // Both mutations go through ONE editDoc so the pair is a single undo step:
+  // a guideline whose box arrived on a separate step would undo into a doc
+  // the backend rejects (a Raceway with no guideline is invalid).
   function addRacewayGuideline() {
     if (!doc) return;
     const [, y, , h] = doc.view_box_mm;
     const yMM = y + h / 2;
     const newId = ops.nextGuidelineId(doc);
-    editDoc((prev) => ops.addRacewayGuideline(prev, yMM));
+    const alsoModel = window.confirm(
+      `Raceway guideline ${newId} added.\n\n` +
+        'Also model the raceway box — the aluminium enclosure the letters mount to and ' +
+        'the transformers live in? It gets its own dimensioned page in the print PDF.\n\n' +
+        'You can add or remove it later from the sidebar.',
+    );
+    editDoc((prev) => {
+      const withGuide = ops.addRacewayGuideline(prev, yMM);
+      return alsoModel ? ops.createRaceway(withGuide, newId) : withGuide;
+    });
     setSelectedGuidelineId(newId);
-    setStatusMessage('Raceway guideline added — drag it into position.');
+    setStatusMessage(
+      alsoModel
+        ? `Raceway ${newId} added with its box — drag the line into position, then Fit to runs.`
+        : 'Raceway guideline added — drag it into position.',
+    );
   }
 
   // Tier 2 #91 — one mover for both kinds. `guides.moveGuide` reads the
@@ -1180,6 +1200,61 @@ export default function EditorPage() {
     }
     setStatusMessage(
       parts.length > 0 ? `${parts.join(' · ')}.` : 'No tubes cross this guideline.',
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Tier 2 #104 / NW #133 — the modelled raceway box
+  // -------------------------------------------------------------------------
+  //
+  // Everything here is keyed by the GUIDELINE's id, because the box shares it.
+  // `selectedRaceway` is therefore just "does the selected guideline have a
+  // box", and there is no second selection model to keep in sync.
+  const selectedRaceway =
+    doc && selectedGuidelineId ? ops.findRaceway(doc, selectedGuidelineId) : undefined;
+  const selectedRacewayMembers =
+    doc && selectedGuidelineId ? ops.racewayMemberIds(doc, selectedGuidelineId).length : 0;
+
+  function createRacewayBox() {
+    if (!doc || !selectedGuidelineId || !racewaySelected) return;
+    editDoc((prev) => ops.createRaceway(prev, selectedGuidelineId));
+    setStatusMessage(
+      `Raceway box ${selectedGuidelineId} modelled — 8in x 8in default, drag its ends or type exact numbers.`,
+    );
+  }
+
+  function fitRacewayToRuns() {
+    if (!doc || !selectedGuidelineId) return;
+    const members = ops.racewayMemberIds(doc, selectedGuidelineId).length;
+    if (members === 0) {
+      setStatusMessage(
+        `No runs carry raceway ${selectedGuidelineId} yet — split tubes at the guideline, or label runs with its id, then fit.`,
+      );
+      return;
+    }
+    editDoc((prev) => ops.fitRacewayToRuns(prev, selectedGuidelineId));
+    setStatusMessage(
+      `Raceway ${selectedGuidelineId} fitted to ${members} ${members === 1 ? 'run' : 'runs'} — ends flush with the outermost glass.`,
+    );
+  }
+
+  function setRacewayGeometry(
+    field: 'x_mm' | 'length_mm' | 'height_mm' | 'depth_mm',
+    value: number,
+  ) {
+    if (!doc || !selectedGuidelineId) return;
+    editDoc((prev) => ops.setRacewayGeometry(prev, selectedGuidelineId, { [field]: value }));
+  }
+
+  function dragRacewayEnd(id: string, end: 'left' | 'right', xMM: number) {
+    editDoc((prev) => ops.dragRacewayEnd(prev, id, end, xMM));
+  }
+
+  function removeRacewayBox() {
+    if (!doc || !selectedGuidelineId) return;
+    editDoc((prev) => ops.removeRaceway(prev, selectedGuidelineId));
+    setStatusMessage(
+      'Raceway box removed. The guideline and every raceway tag stay — un-modelling the hardware does not un-cut the glass.',
     );
   }
 
@@ -2098,6 +2173,7 @@ export default function EditorPage() {
           onSelectGuideline={setSelectedGuidelineId}
           onMoveGuideline={moveGuideline}
           onDeleteGuideline={deleteRacewayGuideline}
+          onDragRacewayEnd={dragRacewayEnd}
           onAddGuide={addConstructionGuide}
           showRulers={showRulers}
           onPlaceBlockout={placeBlockout}
@@ -2321,6 +2397,104 @@ export default function EditorPage() {
             >
               Split tubes at raceway
             </button>
+            {/* Tier 2 #104 / NW #133 — the raceway as modelled hardware.
+                Shown only when a RACEWAY guideline is selected, because the
+                box has no identity apart from that guideline: same id, top
+                edge from its y_mm. Everything here is overridable on
+                purpose — the 8in x 8in defaults are current commercial
+                practice from supplier pages, not a codified trade rule
+                (docs/neon-rules/raceway.md). */}
+            {racewaySelected && !selectedRaceway && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={createRacewayBox}
+                title="Model the aluminium box this guideline's letters mount to: 8in x 8in by default, auto-fitted to the runs already tagged with this raceway. Adds a dimensioned page to the print PDF. Tier 2 #104."
+              >
+                Model raceway box
+              </button>
+            )}
+            {racewaySelected && selectedRaceway && (
+              <div
+                className="raceway-box-editor"
+                title="The raceway is a rectangular aluminium enclosure that mounts to the building and houses the transformers, wiring and disconnect. Its top edge is this guideline; the numbers below are the rest of the box."
+              >
+                <div className="raceway-box-header">
+                  Raceway {selectedRaceway.id} · {selectedRacewayMembers}{' '}
+                  {selectedRacewayMembers === 1 ? 'run' : 'runs'}
+                  {ops.racewaySpliceCount(selectedRaceway) > 0
+                    ? ` · ${ops.racewaySpliceCount(selectedRaceway)} splice${
+                        ops.racewaySpliceCount(selectedRaceway) === 1 ? '' : 's'
+                      }`
+                    : ''}
+                </div>
+                {/* step="any" on every one of these. `min` makes a lattice
+                    out of `step`, and a default value off that lattice
+                    silently swallows the form submit — shipped twice
+                    already (CLAUDE.md, recurring bug class 3). */}
+                <label className="diameter-picker">
+                  Left x (mm)
+                  <input
+                    type="number"
+                    step="any"
+                    value={selectedRaceway.x_mm}
+                    onChange={(e) => setRacewayGeometry('x_mm', Number(e.target.value))}
+                  />
+                </label>
+                <label className="diameter-picker">
+                  Length (mm)
+                  <input
+                    type="number"
+                    step="any"
+                    value={selectedRaceway.length_mm}
+                    onChange={(e) => setRacewayGeometry('length_mm', Number(e.target.value))}
+                  />
+                </label>
+                <label
+                  className="diameter-picker"
+                  title="Box height. Empty = the 203.2mm (8in) shop default."
+                >
+                  Height (mm)
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder={String(RACEWAY_DEFAULT_HEIGHT_MM)}
+                    value={selectedRaceway.height_mm ?? ''}
+                    onChange={(e) => setRacewayGeometry('height_mm', Number(e.target.value))}
+                  />
+                </label>
+                <label
+                  className="diameter-picker"
+                  title="Box depth, front face to wall. Empty = the 203.2mm (8in) shop default — a 159mm neon transformer cannot sit across a 5in box, which is why the neon-era standard is bigger than the LED-era one."
+                >
+                  Depth (mm)
+                  <input
+                    type="number"
+                    step="any"
+                    placeholder={String(RACEWAY_DEFAULT_DEPTH_MM)}
+                    value={selectedRaceway.depth_mm ?? ''}
+                    onChange={(e) => setRacewayGeometry('depth_mm', Number(e.target.value))}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={selectedRacewayMembers === 0}
+                  onClick={fitRacewayToRuns}
+                  title="Re-size the box to span the runs tagged with this raceway, arc-aware. Ends stop FLUSH with the outermost glass: no source says whether a real raceway overhangs, so V1 does not invent a margin (docs/neon-rules/raceway.md, open question 1)."
+                >
+                  Fit to runs
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={removeRacewayBox}
+                  title="Remove the modelled box. The guideline and every raceway tag stay — the glass does not un-cut itself."
+                >
+                  Remove box
+                </button>
+              </div>
+            )}
             <button
               type="button"
               className="btn-secondary"

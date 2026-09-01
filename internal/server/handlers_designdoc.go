@@ -76,12 +76,32 @@ func (s *apiServer) handleValidateDoc(w http.ResponseWriter, r *http.Request) {
 	if spec.BendTechnique != nil {
 		limits.BendTechnique = *spec.BendTechnique
 	}
-	report, err := validate.ValidateSVG(svg, limits)
+	report, err := validateDocGeometry(svg, &req.Doc, limits)
 	if err != nil {
 		writeError(w, http.StatusUnprocessableEntity, "validate: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, report)
+}
+
+// validateDocGeometry is the whole validation pass for a DESIGN DOC: the SVG
+// rules every entry point runs, plus the doc-level rules that cannot be seen
+// through SVG at all.
+//
+// The raceway rules (Tier 2 #104) are the reason this exists. A raceway is a
+// box, not a path — it never reaches the SVG, so ValidateSVG structurally
+// cannot check it. Any caller holding a doc should go through here; a caller
+// holding only an SVG (the vectorize path) passes nil and gets exactly
+// today's report.
+func validateDocGeometry(svg []byte, doc *designdoc.Doc, limits validate.Limits) (*validate.Report, error) {
+	report, err := validate.ValidateSVG(svg, limits)
+	if err != nil {
+		return nil, err
+	}
+	if doc != nil {
+		report.Issues = append(report.Issues, validate.CheckRaceways(designdoc.RacewayInputs(doc))...)
+	}
+	return report, nil
 }
 
 // handleCreateDesignVersion accepts an edited design doc, renders SVG from
@@ -129,7 +149,7 @@ func (s *apiServer) handleCreateDesignVersion(w http.ResponseWriter, r *http.Req
 		writeStorageError(w, err)
 		return
 	}
-	reportJSON := s.runValidation(r, pid, svg)
+	reportJSON := s.runValidation(r, pid, svg, &req.Doc)
 
 	dv, err := storage.CreateDesignVersion(r.Context(), s.db, storage.CreateDesignVersionParams{
 		ProjectID:            pid,

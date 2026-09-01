@@ -156,7 +156,14 @@ Extruded is preferred where heat matters:
 
 ## ⚠️ Terminology collision in the NeonBench codebase
 
-Two distinct meanings of "raceway" are live in this repo, and one of them is
+> **Resolved in Tier 2 #104.** `emitRacewayStrip` is now
+> `emitNestedReturnStrip` and its page is titled "Nested return strip —
+> raceway {gid}"; the grouping it does is correct and was kept, as was
+> `Run.RacewayID`. `internal/printpdf/racewaypage.go` now emits the real
+> thing. The rest of this section is the analysis that forced the rename,
+> kept because the two objects are still easy to confuse.
+
+Two distinct meanings of "raceway" were live in this repo, and one of them was
 wrong:
 
 1. `Guideline{Kind: "raceway"}` and `splitTubesAtRaceway` — a horizontal line
@@ -175,5 +182,7 @@ is 100 mm — how far the *letter* projects — while a neon raceway is ~203 mm
 deep for the unrelated reason that a transformer has to fit inside. Two
 objects, two depths, one name.
 
-Renaming (2) to something like `emitNestedReturnStrip` would free the term for
-a real raceway model. See `todo.md` NW #133.
+Renaming (2) freed the term for the real raceway model, which now lives in
+`designdoc.Raceway` (identity shared with the guideline in (1)), the two
+`raceway_*` validation warnings, and the plan-view PDF page. See `todo.md`
+NW #133 and `specs/done/tier2-104-raceway-hardware-model.md`.

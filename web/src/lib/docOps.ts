@@ -16,8 +16,16 @@ import type {
   Dimension,
   Group,
   Label,
+  Raceway,
   SegmentKind,
 } from '../api';
+import {
+  RACEWAY_DEFAULT_DEPTH_MM,
+  RACEWAY_DEFAULT_HEIGHT_MM,
+  RACEWAY_END_MARGIN_MM,
+  RACEWAY_SPLICE_MM,
+} from '../api';
+import { selectionBBoxMM, type BBoxMM } from './arrange';
 import { computeBends, type BendPoint } from './bends';
 import {
   HOUSING_LIBRARY,
@@ -3160,13 +3168,203 @@ export function moveGuideline(doc: DesignDoc, id: string, yMM: number): DesignDo
 // geometry AND their raceway tag: the cut glass does not un-cut itself
 // because the construction line went away, and the pieces still share a
 // strip. Clearing the tag here would silently regroup the PDF.
+//
+// The modelled BOX does go (Tier 2 #104), and it has to: a Raceway is the
+// hardware hanging off this guideline and shares its id, so leaving one
+// behind produces a doc the Go decoder rejects — every subsequent save 400s
+// with no visible cause. Runs keeping `raceway_id` while the box goes is not
+// an inconsistency; the tag records which strip the glass shares, which is
+// still true.
 export function removeGuideline(doc: DesignDoc, id: string): DesignDoc {
   const list = doc.guidelines ?? [];
   if (!list.some((g) => g.id === id)) return doc;
   const next = list.filter((g) => g.id !== id);
   const out: DesignDoc = { ...doc, guidelines: next };
   if (next.length === 0) delete out.guidelines;
+  return removeRaceway(out, id);
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 #104 / NW #133 — the raceway as a modelled hardware object
+// ---------------------------------------------------------------------------
+
+// findRaceway looks up the box for a guideline id. Raceways share the
+// guideline's id space, so this is also "does this guideline have a box".
+export function findRaceway(doc: DesignDoc, id: string): Raceway | undefined {
+  return (doc.raceways ?? []).find((r) => r.id === id);
+}
+
+// racewayMemberIds lists the runs mounted on a raceway — every run carrying
+// the id, which after "Split tubes at raceway" is every piece that was cut at
+// the line, plus any face run labelled by hand.
+export function racewayMemberIds(doc: DesignDoc, id: string): string[] {
+  if (!id) return [];
+  return doc.runs.filter((r) => r.raceway_id === id).map((r) => r.id);
+}
+
+// racewayFitBBox is the ARC-AWARE extent of a raceway's member runs, via
+// selectionBBoxMM. Using it rather than reading polyline.points is the whole
+// point: an arc bows outside the hull of its own vertices, so a box fitted to
+// raw points stops short of the glass it is supposed to carry.
+function racewayFitBBox(doc: DesignDoc, id: string): BBoxMM | null {
+  const ids = racewayMemberIds(doc, id);
+  if (ids.length === 0) return null;
+  return selectionBBoxMM(doc, ids);
+}
+
+// writeRaceway upserts one box, preserving declaration order. Returns the
+// SAME doc when nothing changed — EditorPage's applyOp and the undo-coalescing
+// window both read reference identity to decide whether an edit happened.
+function writeRaceway(doc: DesignDoc, next: Raceway): DesignDoc {
+  const list = doc.raceways ?? [];
+  const idx = list.findIndex((r) => r.id === next.id);
+  if (idx >= 0) {
+    const cur = list[idx];
+    if (
+      cur.x_mm === next.x_mm &&
+      cur.length_mm === next.length_mm &&
+      (cur.height_mm ?? 0) === (next.height_mm ?? 0) &&
+      (cur.depth_mm ?? 0) === (next.depth_mm ?? 0)
+    ) {
+      return doc;
+    }
+    const copy = list.slice();
+    copy[idx] = next;
+    return { ...doc, raceways: copy };
+  }
+  return { ...doc, raceways: [...list, next] };
+}
+
+// fitRacewayToRuns sizes the box to the runs mounted on it.
+//
+// This is the ONE place the flush-vs-overhang assumption is applied. See
+// RACEWAY_END_MARGIN_MM: no source says whether the box stops level with the
+// outermost letters or runs past them, so V1 is flush and the answer, when a
+// shop gives us one, is a one-line change here.
+//
+// Height and depth are carried through untouched — auto-fit answers "where
+// does the box start and how long is it", never "what stock is it made from".
+export function fitRacewayToRuns(doc: DesignDoc, id: string): DesignDoc {
+  const rw = findRaceway(doc, id);
+  if (!rw) return doc;
+  const bbox = racewayFitBBox(doc, id);
+  if (!bbox) return doc;
+  return writeRaceway(doc, {
+    ...rw,
+    x_mm: bbox.minX - RACEWAY_END_MARGIN_MM,
+    length_mm: bbox.maxX - bbox.minX + 2 * RACEWAY_END_MARGIN_MM,
+  });
+}
+
+// createRaceway adds the box for an existing raceway guideline, auto-fitted
+// to its member runs.
+//
+// A guideline with no members yet gets a box spanning the design's view box
+// instead of a zero-length one: the operator asked for a raceway, and a box
+// they can see and drag is a better starting point than an invisible one they
+// have to discover. Re-running on a guideline that already has a box is a
+// no-op — use fitRacewayToRuns to re-fit.
+export function createRaceway(doc: DesignDoc, guidelineId: string): DesignDoc {
+  const guide = (doc.guidelines ?? []).find(
+    (g) => g.id === guidelineId && g.kind === 'raceway',
+  );
+  // A box whose id names no RACEWAY guideline is rejected by the Go decoder,
+  // so refusing here keeps the failure in the editor instead of at save time.
+  if (!guide) return doc;
+  if (findRaceway(doc, guidelineId)) return doc;
+  const bbox = racewayFitBBox(doc, guidelineId);
+  const [vx, , vw] = doc.view_box_mm;
+  const seeded: Raceway = bbox
+    ? {
+        id: guidelineId,
+        x_mm: bbox.minX - RACEWAY_END_MARGIN_MM,
+        length_mm: bbox.maxX - bbox.minX + 2 * RACEWAY_END_MARGIN_MM,
+      }
+    : { id: guidelineId, x_mm: vx, length_mm: vw };
+  return writeRaceway(doc, seeded);
+}
+
+// setRacewayGeometry applies a numeric-entry or drag edit. Every field is
+// operator-overridable on purpose — the defaults are current commercial
+// practice from a weaker source class than the rest of docs/neon-rules/, and
+// a shop with a different box must be able to say so.
+//
+// A non-positive height/depth is stored as `undefined` rather than 0 so it
+// keeps meaning "use the shop default" and stays out of the saved JSON.
+// Negative lengths are clamped to 0 (a box cannot be inside-out); X is free
+// to go anywhere, including negative world coordinates.
+export function setRacewayGeometry(
+  doc: DesignDoc,
+  id: string,
+  patch: Partial<Pick<Raceway, 'x_mm' | 'length_mm' | 'height_mm' | 'depth_mm'>>,
+): DesignDoc {
+  const rw = findRaceway(doc, id);
+  if (!rw) return doc;
+  const num = (v: number | undefined, fallback: number | undefined) =>
+    v != null && Number.isFinite(v) ? v : fallback;
+  const next: Raceway = {
+    id: rw.id,
+    x_mm: num(patch.x_mm, rw.x_mm) ?? rw.x_mm,
+    length_mm: Math.max(0, num(patch.length_mm, rw.length_mm) ?? rw.length_mm),
+  };
+  const h = num(patch.height_mm, rw.height_mm);
+  if (h != null && h > 0) next.height_mm = h;
+  const d = num(patch.depth_mm, rw.depth_mm);
+  if (d != null && d > 0) next.depth_mm = d;
+  return writeRaceway(doc, next);
+}
+
+// dragRacewayEnd moves one end of the box in world mm, keeping the other end
+// pinned. Dragging the left end past the right (or vice versa) collapses to a
+// zero-length box rather than flipping it inside out.
+export function dragRacewayEnd(
+  doc: DesignDoc,
+  id: string,
+  end: 'left' | 'right',
+  xMM: number,
+): DesignDoc {
+  const rw = findRaceway(doc, id);
+  if (!rw || !Number.isFinite(xMM)) return doc;
+  if (end === 'left') {
+    const right = rw.x_mm + rw.length_mm;
+    const left = Math.min(xMM, right);
+    return setRacewayGeometry(doc, id, { x_mm: left, length_mm: right - left });
+  }
+  return setRacewayGeometry(doc, id, {
+    length_mm: Math.max(0, xMM - rw.x_mm),
+  });
+}
+
+// removeRaceway drops the box while leaving the guideline and every
+// `raceway_id` alone: un-modelling the hardware does not un-cut the glass.
+export function removeRaceway(doc: DesignDoc, id: string): DesignDoc {
+  const list = doc.raceways ?? [];
+  if (!list.some((r) => r.id === id)) return doc;
+  const next = list.filter((r) => r.id !== id);
+  const out: DesignDoc = { ...doc, raceways: next };
+  if (next.length === 0) delete out.raceways;
   return out;
+}
+
+// racewayEffectiveHeightMM / racewayEffectiveDepthMM resolve the "0 means
+// shop default" sentinel. Twins of Raceway.EffectiveHeightMM /
+// EffectiveDepthMM in internal/designdoc/types.go — the canvas draws from
+// these while the PDF draws from those, so they have to agree.
+export function racewayEffectiveHeightMM(rw: Raceway): number {
+  return rw.height_mm && rw.height_mm > 0 ? rw.height_mm : RACEWAY_DEFAULT_HEIGHT_MM;
+}
+
+export function racewayEffectiveDepthMM(rw: Raceway): number {
+  return rw.depth_mm && rw.depth_mm > 0 ? rw.depth_mm : RACEWAY_DEFAULT_DEPTH_MM;
+}
+
+// racewaySpliceCount is the number of butt splices a box of this length
+// needs: sections ship at RACEWAY_SPLICE_MM (10 ft) or shorter, so exactly
+// 10 ft needs none and 25 ft arrives in three pieces with two seams. Twin of
+// Raceway.SpliceCount in Go.
+export function racewaySpliceCount(rw: Raceway): number {
+  if (rw.length_mm <= RACEWAY_SPLICE_MM) return 0;
+  return Math.max(0, Math.ceil(rw.length_mm / RACEWAY_SPLICE_MM) - 1);
 }
 
 export type SplitAtRacewayResult = {

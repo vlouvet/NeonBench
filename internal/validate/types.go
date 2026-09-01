@@ -2,7 +2,7 @@ package validate
 
 // Issue is a single validation finding with a location in millimeters.
 type Issue struct {
-	Rule     string  `json:"rule"`     // min_bend_radius | max_segment_length | min_spacing | min_lead_in | sharp_bend_angle | face_perimeter_exceeds_blank | unsupported_path | …
+	Rule     string  `json:"rule"`     // min_bend_radius | max_segment_length | min_spacing | min_lead_in | sharp_bend_angle | face_perimeter_exceeds_blank | raceway_span | raceway_transformer_fit | unsupported_path | …
 	Severity string  `json:"severity"` // "error" | "warning"
 	Message  string  `json:"message"`
 	XMM      float64 `json:"x_mm,omitempty"`
@@ -28,6 +28,16 @@ const (
 	// over the blank length, so the rule informs rather than blocks.
 	// Tier 3 #26.
 	RuleFacePerimeterExceedsBlank = "face_perimeter_exceeds_blank"
+	// RuleRacewaySpan and RuleRacewayTransformerFit are the two raceway
+	// hardware rules (Tier 2 #104 / NW #133). BOTH are warnings, and that
+	// is a source-quality decision rather than a hedge: every number behind
+	// them comes from docs/neon-rules/raceway.md, which is compiled from
+	// supplier pages and a trade forum rather than from the trade textbooks
+	// the rest of this package cites. A shop with a different box or a
+	// different transformer must not be blocked by our defaults. See
+	// CheckRaceways in rules.go.
+	RuleRacewaySpan           = "raceway_span"
+	RuleRacewayTransformerFit = "raceway_transformer_fit"
 )
 
 // Report summarizes the validation pass for a design version.
