@@ -24,4 +24,5 @@ The Saving Neon guide is a preservation/conservation document for sign owners, n
 - `letter-construction.md` — single-tube vs double-tube layouts, bend sequencing, splitting tall letters in halves (Miller p. 125: ≥ 305 mm cap height)
 - `gas-and-color.md` — noble gases, phosphor coatings, color rules, Miller's fill-pressure ranges
 - `glossary.md` — terms of art (DB, ribbon heat, blockout, GTO, bombardment, aging, dumet wire, etc.)
+- `raceway.md` — raceway / wireway geometry, gauge, mounting and length practice. **Web-sourced, not book-sourced** — all four PDFs are silent on raceways, so this file is compiled from supplier spec pages, trade press and a professional forum, and is weaker evidence than the rest of this directory. Also records a terminology collision in our own code.
 - `missing-rules.md` — rules our code currently checks (or should) where the sources are silent. Where to look next.
