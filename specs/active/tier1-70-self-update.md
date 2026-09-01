@@ -20,7 +20,18 @@ git checkout -b task/1-self-update origin/main
 
 This spec covers four sub-PRs that can ship in sequence (or be combined). Each sub-PR is independently mergeable; the version plumbing in 70a unblocks the rest.
 
-### Sub-PR 70a — Version plumbing + tag-release CI (no signing)
+### Sub-PR 70a — Version plumbing + tag-release CI (no signing) — ✅ SHIPPED
+
+**Status added 2026-09-01.** This sub-PR is done and nothing below it should be
+re-implemented: `internal/version/version.go` and `.github/workflows/release.yml`
+both exist on `main`, and v0.1.0 / v0.2.0 / v0.3.0 have all been tagged and
+released (v0.3.0 with 5 binaries, per-asset `.sha256`, `SHA256SUMS`, and a
+`SHA256SUMS.sig` signed with the FIDO2/ED25519-SK hardware key). The spec is
+kept in `specs/active/` because 70b-70d have not shipped. Read the sub-PR
+headings for status before starting work here — a multi-part spec can be
+partly done, and neither of the `AGENTS.md` hygiene checks detects that.
+
+**Original scope, for reference:**
 
 **New:**
 - `internal/version/version.go` — `var Version = "dev"`, overwritten via `-ldflags "-X 'github.com/.../internal/version.Version=v1.0.0'"` at build time. Helper `Current() string` returns the value (or `"dev"` if unset, useful for `go run` during development).

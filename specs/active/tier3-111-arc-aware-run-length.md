@@ -23,10 +23,27 @@ export function polylineLengthMM(points: [number, number][], closed = false): nu
 It takes **points only**. It cannot see `segment_types`, so it sums raw
 vertex-to-vertex chords. An arc segment is measured as its chord.
 
-**Go side** — the validator never sees the raw vertices. The pipeline is
-`designdoc.ToSVG(doc)` (arcs emitted as path curves) →
-`validate.ExtractMMPolylines` (curves flattened to many points) →
-`Polyline.Length()`. It therefore measures the **curve**.
+**Go side** — `(*Polyline).Length()` (`internal/validate/geometry.go:59`) is
+the **same chord-summing algorithm**, read side by side and confirmed:
+
+```go
+for i := 1; i < len(p.Points); i++ { total += dist(p.Points[i-1], p.Points[i]) }
+if p.Closed && len(p.Points) > 1 { total += dist(p.Points[len(p.Points)-1], p.Points[0]) }
+```
+
+**So the two functions do not disagree at all — what they are HANDED does.**
+The validator never sees raw vertices: `designdoc.ToSVG(doc)` emits arcs as
+path curves, then `validate.ExtractMMPolylines` subdivides them with
+`flattenCubic` (`internal/validate/bezier.go:6`) into many points, and only
+then is `Length()` called. Go sums ~33 short chords along the curve; TS sums
+the 1 chord across it.
+
+**This reframes the fix.** It is not "teach the length function arc maths" —
+the maths is already right. It is "flatten first, exactly as
+`ExtractMMPolylines` does for Go, then reuse the chord sum unchanged." The TS
+flattener already exists (`flatRunPoints`), so the fix is plumbing, and the
+line-only case is provably untouched because `flatRunPoints` returns the
+original array when a run has no arcs.
 
 **Measured divergence.** A one-segment run, chord `(0,0)→(100,0)`,
 `segment_types: ["arc"]`, through the real Go pipeline:
@@ -43,7 +60,7 @@ reason about this analytically; measure it.
 
 ## Why it matters
 
-`autoSplitOverlongTubes` (`docOps.ts:3023`) and the editor's overlong-run
+`autoSplitOverlongTubes` (`docOps.ts:3055`) and the editor's overlong-run
 badge (`EditorPage.tsx:651`) both ask the TS helper. On an arc-bearing run the
 TS side can conclude a run is now under `MaxSegmentLengthMM` and stop splitting
 while the Go validator still raises `RuleMaxSegmentLength`. The operator sees
@@ -60,10 +77,37 @@ abstract**. It became real when arcs shipped in #87.
    flattener — `flatRunPoints` in `web/src/lib/arcGeom.ts` — rather than
    writing new arc math. Handle `"arc"` and `"arc_r"`; both are arcs, the
    label only picks the side, and **the side does not change the length**.
-2. **Migrate the three call sites:** `docOps.ts:2981`, `docOps.ts:3023`,
-   `EditorPage.tsx:651`.
+2. **Migrate the three call sites**, located by grep on 2026-09-01:
+   `docOps.ts:3082`, `docOps.ts:3124`, `EditorPage.tsx:651`.
+
+4. **Rewrite the comment at `docOps.ts:2893`.** It currently reads "Deliberately
+   mirrors the Go validator's `(*Polyline).Length()` … if the two disagree, a
+   run the auto-split believes it fixed can still come back flagged." **That
+   comment describes this exact bug while claiming to prevent it** — true when
+   written, falsified when arcs shipped in #87. Leaving it in place leaves a
+   guarantee asserted in the code that the code does not provide.
 3. Keep a chord-summing helper if genuinely needed for polyline-only callers,
    but the default a caller reaches for must be the arc-aware one.
+
+## The closed-run asymmetry — pin this with a test
+
+`flatRunPoints` behaves differently for closed runs depending on whether the
+run has arcs, and **both paths are correct for different reasons**, which makes
+this easy to break later:
+
+* **No arcs:** returns the live `points` array unchanged — not explicitly
+  closed — so `polylineLengthMM(pts, closed=true)` must add the closing chord,
+  and does.
+* **Has arcs:** appends the flattened closing segment, so the returned array
+  *ends at* `points[0]`. `polylineLengthMM(arr, closed=true)` then adds
+  `dist(arr[last], arr[0])` = **0**, which is right only because the array is
+  already closed.
+
+So `polylineLengthMM(flatRunPoints(run), run.polyline.closed)` is correct in
+both cases, but by a coincidence rather than by construction. Say so in a
+comment, and **test a closed arc-bearing run** — not just an open one — so a
+future change to either function cannot silently double-count or drop the
+closing segment.
 
 ## The trap
 
@@ -101,7 +145,7 @@ above were re-verified 2026-09-01 and had already moved once (`docOps.ts`
 2796 -> 2897, `EditorPage.tsx` 601 -> 651). **Locate the call site by grepping
 for `polylineLengthMM`, not by line number.**
 
-Tier 3 #112 also edits this file, at lines 2158-3264. Your call site is ~1500
-lines away so a textual conflict is unlikely, but you will still need
-`gh pr update-branch` before merge. Do not restructure, reformat, or reorder
-anything in that file.
+Tier 3 #112 has since shipped (PR #173) and its edits to this file are already
+on `main`; line 651 was unaffected and is still 651. **You are the only agent
+in this round**, so no conflict is expected — but do not restructure, reformat,
+or reorder anything in that file regardless.

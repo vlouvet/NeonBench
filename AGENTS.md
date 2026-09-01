@@ -135,6 +135,14 @@ Do not use a bare `uniq -d` on the row numbers for this — it fires on every
 legitimately-duplicated row, so it reads as noise and gets ignored, which is
 worse than no check.
 
+**Neither check catches a partly-shipped multi-part spec**, and there is one:
+`tier1-70-self-update.md` covers four sub-PRs, of which 70a shipped three
+releases ago while the spec still read as entirely unstarted. It is not a
+stale-duplicate (nothing of it is in `done/`) and it has no `todo.md` status
+marker to disagree with, so both one-liners pass. When a spec is divided into
+sub-PRs, **mark each heading's status in the spec itself** — that is the only
+place the information can live.
+
 The status-disagreement check found **six** rows (87, 98, 99, 103, 104, 105)
 reporting finished work as unstarted. Anyone reading the first entry would
 conclude the task was open and could redo it. The roadmap disagreeing with
