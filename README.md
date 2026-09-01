@@ -14,7 +14,8 @@ web UI.
 > Phase 2 (editor, per-run color/diameter/notes, blockouts, bend
 > planning, double-back hairpins, channel-letter return strips with
 > raceway grouping, Hershey single-stroke text in three faces with
-> preset + optical kerning + font thumbnails, polygon-offset Neonize
+> preset + optical kerning + font thumbnails + case/slant/vertical-stack
+> /arc transforms, polygon-offset Neonize
 > with stitched single-tube output, **groups + layers panel** with
 > per-group visibility + lock toggles, multi-select + drag-drop image
 > upload, snap-to-angle / snap-to-geometry on every drawing tool,
@@ -290,6 +291,23 @@ under **Git Bash**, which ships with Git for Windows.
      height is configurable), drag the triangle handles in the
      preview to nudge per-pair kerning (1 px screen = 1 mm design),
      set the cap height in mm, hit Insert.
+
+     The **Transform** section reshapes the text without touching a
+     single vertex by hand: one-shot **case** buttons (UPPER / lower /
+     Title / Sentence — Title only touches the first letter of each
+     word, so "McDonald" survives), a **slant** slider (±45°, a shear
+     about each line's own baseline, i.e. faux-italic on any face),
+     **vertical stacking** (one glyph per line down a common axis,
+     centred on each glyph's ink rather than its advance width, with an
+     even ink-to-ink gap down the column — the blade-sign layout), and
+     **arc** (the baseline bent onto a circle
+     of a chosen radius, arching up over a doorway or sagging down).
+     They compose in a fixed order — case → layout → slant — and
+     stacking and arc are mutually exclusive. Stacking is unavailable
+     on the **Cursive** face, whose whole point is stitching adjacent
+     letters into one continuous tube; the arc bends that stitched
+     script intact. The dialog's live preview shows the transformed
+     result, which is the exact geometry Insert puts on the canvas.
    - **Pen / Rect / Circle / Arc** — draw directly on the canvas. Pen
      drops a polyline a click at a time (double-click or Enter to
      commit, Esc cancels). Rect and Circle are pointer-down →
@@ -385,7 +403,30 @@ under **Git Bash**, which ships with Git for Windows.
    URL to suppress the main pattern + bend-list pages and emit only
    the channel-letter return-strip pages — useful post-fabrication
    when the front face is bent and the operator just needs to bend
-   the metal strip. The project page panel also offers a **Download
+   the metal strip.
+
+   **Plot options.** The toolbar's print popover (the `▾` next to
+   **Print**) also carries rotation and copy count. `?rotate=fit`
+   turns the pattern 90° only when doing so needs *fewer* sheets — a
+   tie keeps the un-rotated orientation, so the same design always
+   comes off the bench the same way round; `?rotate=90` rotates
+   unconditionally. Rotation applies to the main pattern and bend-list
+   pages only: return-strip and raceway-strip pages are unfolded 1D
+   patterns in their own coordinate space and are left alone. Mirror
+   and rotation do not commute, so the order is fixed as **mirror,
+   then rotate** — mirroring is a property of the pattern (the bender
+   reads through the back of the glass), rotation is a property of the
+   paper. `?copies=N` (1–50) repeats the whole page set N times for
+   step-and-repeat work; copies multiply *pages*, never geometry, so
+   a 1:1 production pattern stays 1:1 and two letters never share a
+   sheet. Any rotated or copied sheet says so in its footer
+   (`ROTATED 90°`, `Copy 2 of 6`) — a rotated pattern found on a
+   bench a week later with nothing indicating it is a real
+   fabrication hazard. Finally, **Quick plot** next to the Print
+   button reprints with the project's last-used settings in one
+   click, no popover; hover it to see exactly what it will send.
+
+   The project page panel also offers a **Download
    DXF** button — an AutoCAD R12 ASCII file with one polyline per
    run (millimeters, layered per run id) for feeding to CNC tube
    benders; the export includes electrode `CIRCLE` markers, run +
