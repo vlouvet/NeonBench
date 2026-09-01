@@ -1,6 +1,48 @@
 # Tier 3 #110 — What Neonize's output should inherit
 
-> **Status:** active · drafted 2026-09-01
+> **Status:** done · drafted 2026-09-01 · branch `task/110-neonize-metadata-carry`
+
+> **Amendments discovered during implementation.** Every per-field call in the
+> table below survived contact with the code and shipped as written. Two things
+> about the spec did not:
+>
+> 1. **The `raceway_id` safety argument is too narrow.** The spec justifies
+>    carrying it with "`groupByRaceway` buckets only runs that are both
+>    face-flagged and raceway-tagged". That is true, and the per-run strip loop
+>    in `internal/printpdf/render.go` gates on the face flag as well, so no
+>    strip page can appear — the conclusion holds. But `RacewayID` has two more
+>    consumers that do **not** gate on the face flag:
+>    `RacewayMemberExtentMM` (`internal/designdoc/raceway.go`, which drives
+>    raceway auto-fit and the two Tier 2 #104 validation rules) and
+>    `racewayMembers` (`internal/printpdf/racewaypage.go`, which places the
+>    member marks on the raceway plan page). So carrying `raceway_id` **is**
+>    observable in output — the box now sizes to the offset tubes rather than
+>    to the face outline they replaced, which is half a spacing wider on each
+>    side. That is the right answer for the same reason those consumers ignore
+>    the face flag in the first place (`racewayMembers`' non-face fallback
+>    exists precisely for designs whose raceway members are tube pieces, not
+>    face outlines), but "safe because nothing else reads it" was not why.
+>
+> 2. **The PDF test contradicts the file scope.** The Tests section asks for a
+>    real `print.pdf` measurement while the scope section allows only
+>    `docOps.ts` and `docOps.test.ts`; a strip-page count can only be taken from
+>    Go. Resolved the way `AGENTS.md` prescribes for claims about shipped code:
+>    with a throwaway probe (`internal/printpdf/zz_probe_test.go`, deleted
+>    afterwards) fed the doc JSON the real TS `neonize` emits. One ungrouped
+>    channel-letter face, spacing 20:
+>
+>    | doc | runs | face-flagged | full PDF | strips-only |
+>    |---|---|---|---|---|
+>    | before neonize | 1 | 1 | 5 pages | 1 page |
+>    | after (shipped — flag not carried) | 2 | 0 | 4 pages | refused, `ErrNoStripsToRender` |
+>    | after (hypothetical — flag carried) | 2 | 2 | 6 pages | 2 pages |
+>
+>    The bottom row is the bug this decision avoids: two return-strip pages for
+>    metal nobody is cutting. The same probe confirmed the emitted doc — with
+>    `raceway_id`, `group_id` and `kind` on it — decodes through
+>    `DisallowUnknownFields` unchanged. The committed regression test asserts
+>    the TS-side condition those page counts are a function of (no emitted run
+>    carries the flag), which is the most the declared scope allows.
 
 ## Why this is a decision, not a bug fix
 
