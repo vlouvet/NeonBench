@@ -21,6 +21,7 @@ import {
   type HousingType,
 } from '../lib/housingLibrary';
 import type { HousingInput } from '../lib/docOps';
+import { NumericField } from './NumericField';
 
 type Tab = 'common' | 'custom';
 
@@ -175,9 +176,7 @@ export default function HousingPickerModal({
             {stockChoice !== '' && (
               <label>
                 Elevation (mm)
-                <input
-                  type="number"
-                  step="0.5"
+                <NumericField
                   min="0"
                   value={elevationMM}
                   onChange={(e) => setElevationMM(e.target.value)}
@@ -195,9 +194,7 @@ export default function HousingPickerModal({
             </p>
             <label>
               Bore diameter (mm)
-              <input
-                type="number"
-                step="0.1"
+              <NumericField
                 min="0"
                 value={boreMM}
                 onChange={(e) => setBoreMM(e.target.value)}
@@ -206,9 +203,7 @@ export default function HousingPickerModal({
             </label>
             <label>
               Elevation (mm)
-              <input
-                type="number"
-                step="0.5"
+              <NumericField
                 min="0"
                 value={elevationMM}
                 onChange={(e) => setElevationMM(e.target.value)}
