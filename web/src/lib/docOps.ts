@@ -2890,11 +2890,17 @@ function segLenMM(a: [number, number], b: [number, number]): number {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-// polylineLengthMM returns total arc length. Deliberately mirrors the Go
-// validator's `(*Polyline).Length()` (internal/validate/geometry.go),
-// closing segment included when `closed` — if the two disagree, a run
-// the auto-split believes it fixed can still come back flagged.
-export function polylineLengthMM(points: [number, number][], closed = false): number {
+// chordLengthMM sums the straight chords between consecutive points, plus the
+// closing chord when `closed`. It is the Go validator's `(*Polyline).Length()`
+// (internal/validate/geometry.go) instruction for instruction — and, exactly
+// like it, it measures whatever points it is handed and nothing else.
+//
+// It is NOT a run's length, and it used to be called `polylineLengthMM`, which
+// implied it was. A run's `segment_types` can mark a segment as an arc, and an
+// arc is not its chord (1.1591x longer at ARC_BULGE 0.5). Pass a run to
+// `runLengthMM` below; reach for this one only when a point list is genuinely
+// all you have.
+export function chordLengthMM(points: [number, number][], closed = false): number {
   let total = 0;
   for (let i = 1; i < points.length; i++) {
     total += segLenMM(points[i], points[i - 1]);
@@ -2905,10 +2911,57 @@ export function polylineLengthMM(points: [number, number][], closed = false): nu
   return total;
 }
 
+// runLengthMM is the length of the glass a run actually draws — which is to
+// say the number the Go validator will report for it, and therefore the number
+// that decides whether it comes back flagged.
+//
+// Tier 3 #111. The two sides never disagreed about the ALGORITHM: Go's
+// `(*Polyline).Length()` is the same chord sum as `chordLengthMM`. They
+// disagreed about what they were handed. The validator never sees raw
+// vertices — `designdoc.ToSVG` emits each arc segment as cubics,
+// `validate.ExtractMMPolylines` subdivides those into many points, and only
+// then is `Length()` called. So Go summed ~33 short chords along a curve where
+// this file summed the 1 chord across it, and a run the auto-split believed it
+// had fixed came back flagged.
+//
+// The fix is to flatten first, with the same flattener the editor draws with.
+// Measured against the real Go pipeline for a 100mm chord marked 'arc': Go
+// 115.8964, this 115.8776 (the two flatteners take different numbers of
+// samples), the old chord answer 100.0000. Both arc kinds measure the same —
+// which side the bow sits on moves glass, it does not add any.
+//
+// `flatRunPoints` returns the live array untouched when a run has no arcs, so
+// for a line-only run this is the same arithmetic over the same points as
+// before: provably a no-op, pinned in docOps.test.ts.
+//
+// Passing the run's own `closed` flag is correct for BOTH shapes
+// `flatRunPoints` can return, but for different reasons, so don't "simplify"
+// it away:
+//   - no arcs: the array is the live vertex list, which does not repeat
+//     points[0], so the closing chord still has to be added — and is.
+//   - has arcs: the flattened array already ENDS at points[0], so the closing
+//     chord measures 0 and adding it is a no-op.
+// docOps.test.ts pins both, because a change to either function could
+// otherwise silently drop or double-count the closing chord.
+//
+// FLATTEN VS INDEX: the points this hands to chordLengthMM exist to measure
+// shape. Electrodes, blockouts, annotations and bends index the LIVE vertex
+// array; never resolve one of those against a flattened array.
+export function runLengthMM(run: DesignRun): number {
+  return chordLengthMM(flatRunPoints(run), !!run.polyline.closed);
+}
+
 // splitRunAtArcLength cuts one OPEN run at `targetMM` measured along its
 // polyline from the first vertex, and returns the two new run ids (head
 // = the piece containing vertex 0). Returns null when the target isn't
 // strictly interior to the run, which is the caller's cue to stop.
+//
+// `targetMM` is a CHORD distance: the walk below sums `segLenMM` over raw
+// vertices, and the vertex it inserts is placed by linear interpolation along
+// a chord. It cannot honour an arc segment — a mid-arc cut has no
+// representation in a fixed-bulge schema anyway (halving a bulge-0.5 arc needs
+// bulge ~0.236 on each half), which is why `splitRun` straightens what it
+// cuts. Callers measuring glass must convert before calling.
 //
 // The cut lands mid-segment in the general case, so we insertVertex
 // first and then splitRun at the vertex we just created. When the target
@@ -3079,7 +3132,26 @@ export function autoSplitOverlongTubes(
     const run = out.runs.find((r) => r.id === sourceId);
     if (!run) continue;
     const closed = !!run.polyline.closed;
-    const length = polylineLengthMM(run.polyline.points, closed);
+    // Two metrics, deliberately (Tier 3 #111):
+    //
+    //   `length` is the glass — arcs measured as arcs — so this asks the same
+    //   question the validator will ask. A run whose chord sum sits under the
+    //   limit and whose curve does not used to walk out of here untouched and
+    //   come back flagged.
+    //
+    //   `chordMM` is the metric `cutIntoEqualPieces` walks: it places its cuts
+    //   with `splitRunAtArcLength`, which sums straight chords over the raw
+    //   vertices. Handing that walk an arc length would push every cut ~16%
+    //   too far along, and on a run needing several cuts the last one would
+    //   land past the end of the tube — no split at all, silently, on exactly
+    //   the runs this pass exists to fix. Cuts stay evenly spaced in the
+    //   metric the pieces will be measured in.
+    //
+    // For a closed run the chord walk of the loop we open below is exactly
+    // this closed chord sum, so it is measured here, before the seam vertex
+    // is appended.
+    const length = runLengthMM(run);
+    const chordMM = chordLengthMM(run.polyline.points, closed);
     if (length <= maxLengthMM) continue;
 
     // Opening a closed loop below is a visible edit in its own right and it
@@ -3108,7 +3180,11 @@ export function autoSplitOverlongTubes(
     }
 
     // `pieces` is the nominal cut count; the retry loop below bumps it
-    // when the produced geometry doesn't actually clear the limit.
+    // when the produced geometry doesn't actually clear the limit. It comes
+    // from the arc-aware length — the count the drawn glass needs — not from
+    // the chord sum the cuts are placed with. On a curved run that means one
+    // or two more pieces than the straightened chord strictly requires, which
+    // is the safe direction: too few pieces is a run that comes back flagged.
     const pieces = Math.max(2, Math.ceil(length / maxLengthMM));
     let applied: DesignDoc | null = null;
     let appliedPieces = 0;
@@ -3117,11 +3193,16 @@ export function autoSplitOverlongTubes(
     // bound keeps a pathological doc from spinning.
     for (let attempt = 0; attempt < 3 && applied === null; attempt++) {
       const n = pieces + attempt;
-      const candidate = cutIntoEqualPieces(out, sourceId, length, n);
+      const candidate = cutIntoEqualPieces(out, sourceId, chordMM, n);
       if (!candidate) break;
       const overlong = candidate.pieceIds.some((id) => {
         const r = candidate.doc.runs.find((x) => x.id === id);
-        return r ? polylineLengthMM(r.polyline.points, false) > maxLengthMM : false;
+        // Arc-aware, so the postcondition is stated in the validator's terms.
+        // Today every piece comes back straight — `splitRun` drops
+        // `segment_types`, so cutting a curved run straightens it — and this
+        // reads the same as a chord sum. It stops reading the same the moment
+        // that is fixed, which is the point.
+        return r ? runLengthMM(r) > maxLengthMM : false;
       });
       if (!overlong) {
         applied = candidate.doc;
@@ -3141,19 +3222,26 @@ export function autoSplitOverlongTubes(
   return { doc: out, runsSplit, piecesCreated, skippedClosedWithElectrodes };
 }
 
-// cutIntoEqualPieces makes `n - 1` cuts at arc-length L/n, 2L/n, … along
-// an open run. Each cut is measured from the start of the *remaining
-// tail*, not from the original vertex 0 — walking the tail avoids having
-// to track how earlier insertions shifted the vertex indices, and the
-// distances are the same either way because every piece is L/n long.
+// cutIntoEqualPieces makes `n - 1` cuts at L/n, 2L/n, … along an open run.
+// Each cut is measured from the start of the *remaining tail*, not from the
+// original vertex 0 — walking the tail avoids having to track how earlier
+// insertions shifted the vertex indices, and the distances are the same either
+// way because every piece is L/n long.
+//
+// `chordMM` is the CHORD sum of the run, not its arc-aware length: the
+// walk that places each cut (`splitRunAtArcLength`) sums straight chords over
+// the raw vertices, so the total it divides has to be in that same metric or
+// the cuts creep forward and the last one falls off the end of the tube. The
+// caller decides HOW MANY pieces from the arc-aware length; this decides WHERE
+// they fall.
 function cutIntoEqualPieces(
   doc: DesignDoc,
   runId: string,
-  totalLengthMM: number,
+  chordMM: number,
   n: number,
 ): { doc: DesignDoc; pieceIds: string[] } | null {
   if (n < 2) return null;
-  const step = totalLengthMM / n;
+  const step = chordMM / n;
   let out = doc;
   let tailId = runId;
   const pieceIds: string[] = [];

@@ -647,9 +647,7 @@ export default function EditorPage() {
   const maxSegmentLengthMM = tubeSpec?.max_segment_length_mm ?? 0;
   const overlongRunCount = useMemo(() => {
     if (!doc || !(maxSegmentLengthMM > 0)) return 0;
-    return doc.runs.filter(
-      (r) => ops.polylineLengthMM(r.polyline.points, !!r.polyline.closed) > maxSegmentLengthMM,
-    ).length;
+    return doc.runs.filter((r) => ops.runLengthMM(r) > maxSegmentLengthMM).length;
   }, [doc, maxSegmentLengthMM]);
 
   // nearestRunForPoint: replicates EditorCanvas's nearestRunId so

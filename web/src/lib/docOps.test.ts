@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { DesignDoc, DesignRun } from '../api';
+import type { DesignDoc, DesignRun, SegmentKind } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
@@ -2688,8 +2688,10 @@ describe('autoSplitOverlongTubes', () => {
     return docOf([{ id: 'r1', polyline: { points, closed: false } }]);
   }
 
-  const lengthsOf = (doc: DesignDoc) =>
-    doc.runs.map((r) => ops.polylineLengthMM(r.polyline.points, !!r.polyline.closed));
+  // Arc-aware (Tier 3 #111): on the line-only docs below this is the same
+  // chord sum it always was, and on the arc docs it is the number the Go
+  // validator would report.
+  const lengthsOf = (doc: DesignDoc) => doc.runs.map((r) => ops.runLengthMM(r));
 
   it('splits 1500mm into 2 pieces of ~750mm against a 1000mm limit', () => {
     const res = ops.autoSplitOverlongTubes(lineDoc(1500), 1000);
@@ -2839,21 +2841,183 @@ describe('autoSplitOverlongTubes', () => {
     expect(ops.autoSplitOverlongTubes(doc, -5).doc).toBe(doc);
     expect(ops.autoSplitOverlongTubes(doc, Number.NaN).doc).toBe(doc);
   });
+
+  // Tier 3 #111. A 900mm chord marked 'arc' is 1043mm of glass — the Go
+  // validator says so (probed: 1043.2042). Before this fix the TS side asked
+  // the chord, saw 900, and left the run alone against a 1000mm limit while
+  // RuleMaxSegmentLength kept flagging it. This test FAILS on the pre-#111
+  // code (runsSplit 0), which is what makes it worth having.
+  const arcDoc = (chordMM: number): DesignDoc =>
+    docOf([
+      {
+        id: 'r1',
+        polyline: { points: [[0, 0], [chordMM, 0]], closed: false, segment_types: ['arc'] },
+      },
+    ]);
+
+  it('splits a run whose ARC length is over the limit though its chord is not', () => {
+    const doc = arcDoc(900);
+    // The premise, asserted rather than assumed: chord under, glass over.
+    expect(ops.chordLengthMM(doc.runs[0].polyline.points, false)).toBeCloseTo(900, 9);
+    expect(ops.runLengthMM(doc.runs[0])).toBeGreaterThan(1000);
+
+    const res = ops.autoSplitOverlongTubes(doc, 1000);
+    expect(res.runsSplit).toBe(1);
+    expect(res.doc.runs).toHaveLength(2);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(1000);
+  });
+
+  // The piece count comes from the arc length (11 pieces for 1043mm at a
+  // 100mm limit) but the cuts are placed in the chord metric the walk
+  // actually measures. Handing the walk the arc length instead pushes every
+  // cut ~16% too far and the 10th falls off the end of the tube, at which
+  // point the whole split is abandoned and the run stays overlong — a
+  // regression the earlier "is it over the limit" test cannot see.
+  //
+  // NOTE the pieces come back STRAIGHT: `splitRun` drops `segment_types`, so
+  // cutting a curved run straightens it and the doc loses 143mm of glass.
+  // That is a pre-existing bug (reported with #111, not fixed here — a
+  // mid-arc cut has no representation in a fixed-bulge schema), so this
+  // asserts the piece count and the limit, not the total.
+  it('still cuts a long arc run into enough pieces to clear the limit', () => {
+    const res = ops.autoSplitOverlongTubes(arcDoc(900), 100);
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(11);
+    expect(res.doc.runs).toHaveLength(11);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(100);
+  });
+
+  it('measures a closed arc-bearing loop as glass before deciding to open it', () => {
+    const loop: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [300, 0], [300, 300], [0, 300]],
+        closed: true,
+        segment_types: ['arc', 'arc', 'arc', 'line'],
+      },
+    };
+    // Chord perimeter 1200; as glass it is ~1343 (three 300mm chords bowed).
+    expect(ops.chordLengthMM(loop.polyline.points, true)).toBeCloseTo(1200, 9);
+    expect(ops.runLengthMM(loop)).toBeGreaterThan(1300);
+
+    const res = ops.autoSplitOverlongTubes(docOf([loop]), 1250);
+    expect(res.runsSplit).toBe(1);
+    expect(res.doc.runs.every((r) => r.polyline.closed === false)).toBe(true);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(1250);
+  });
 });
 
-describe('polylineLengthMM', () => {
+describe('chordLengthMM', () => {
   // Mirrors internal/validate/geometry.go — the closing segment counts for a
-  // closed polyline. If these two ever disagree the auto-split "fixes" runs
-  // the validator still flags.
+  // closed polyline. This one measures the points it is handed and nothing
+  // else; runLengthMM below is what a caller holding a RUN must ask.
   it('counts the closing segment only when closed', () => {
     const square: [number, number][] = [[0, 0], [10, 0], [10, 10], [0, 10]];
-    expect(ops.polylineLengthMM(square, false)).toBeCloseTo(30, 9);
-    expect(ops.polylineLengthMM(square, true)).toBeCloseTo(40, 9);
+    expect(ops.chordLengthMM(square, false)).toBeCloseTo(30, 9);
+    expect(ops.chordLengthMM(square, true)).toBeCloseTo(40, 9);
   });
 
   it('is zero for a degenerate polyline', () => {
-    expect(ops.polylineLengthMM([], false)).toBe(0);
-    expect(ops.polylineLengthMM([[5, 5]], true)).toBe(0);
+    expect(ops.chordLengthMM([], false)).toBe(0);
+    expect(ops.chordLengthMM([[5, 5]], true)).toBe(0);
+  });
+});
+
+// Tier 3 #111 — the TS side measured an arc as its chord while the Go
+// validator measured the curve, so the auto-split and the overlong badge could
+// both call a run fixed that came back flagged.
+//
+// These are Go/TS AGREEMENT tests. The `GO_*` constants below were measured on
+// 2026-09-01 by pushing the same run through the real Go pipeline —
+// `designdoc.ToSVG` → `validate.ExtractMMPolylines` → `(*Polyline).Length()` —
+// not derived from the arc formula, because the two sides flatten with
+// different samplers (Go emits cubics and subdivides them adaptively: 33
+// points for the 100mm chord below; arcGeom walks the circle at 5°: 23). They
+// agree to about 3 parts in 10,000, which is what the tolerances allow. A
+// tolerance loose enough to admit the chord answer would make these vacuous,
+// so each one also asserts the chord answer is nowhere near.
+describe('runLengthMM (arc-aware run length)', () => {
+  const GO_OPEN_ARC_100_MM = 115.8964;
+  const GO_CLOSED_SQUARE_3ARCS_MM = 447.6891;
+  const GO_OPEN_ARC_900_MM = 1043.2042;
+
+  const openArc = (segType: SegmentKind = 'arc'): DesignRun => ({
+    id: 'r1',
+    polyline: { points: [[0, 0], [100, 0]], closed: false, segment_types: [segType] },
+  });
+  const closedSquare = (segment_types?: SegmentKind[]): DesignRun => ({
+    id: 'r1',
+    polyline: {
+      points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+      closed: true,
+      ...(segment_types ? { segment_types } : {}),
+    },
+  });
+
+  it('agrees with the Go validator on a single arc segment', () => {
+    const got = ops.runLengthMM(openArc());
+    expect(Math.abs(got - GO_OPEN_ARC_100_MM)).toBeLessThan(0.05);
+    // The failure this replaces: the chord is 15.9mm short of the glass, so a
+    // tolerance that admitted it would be admitting the bug.
+    expect(ops.chordLengthMM(openArc().polyline.points, false)).toBeCloseTo(100, 9);
+    expect(Math.abs(100 - GO_OPEN_ARC_100_MM)).toBeGreaterThan(1);
+  });
+
+  it('measures a flipped arc identically — the side moves glass, not length', () => {
+    expect(ops.runLengthMM(openArc('arc_r'))).toBe(ops.runLengthMM(openArc('arc')));
+  });
+
+  it('is exactly the chord sum for a line-only run — a provable no-op', () => {
+    const line: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [300, 0], [300, 400]], closed: false },
+    };
+    expect(ops.runLengthMM(line)).toBe(ops.chordLengthMM(line.polyline.points, false));
+    expect(ops.runLengthMM(line)).toBe(700);
+    // Same with an all-'line' segment_types array, which is inert by design.
+    const declared: DesignRun = {
+      ...line,
+      polyline: { ...line.polyline, segment_types: ['line', 'line'] },
+    };
+    expect(ops.runLengthMM(declared)).toBe(700);
+  });
+
+  // flatRunPoints returns two DIFFERENT shapes for a closed run, and passing
+  // `closed` is right for both — for opposite reasons. Pin the shapes here so
+  // a change to either function can't silently drop or double-count the
+  // closing chord.
+  it('counts a closed run’s closing chord exactly once — with arcs and without', () => {
+    const plain = closedSquare();
+    // No arcs: the live vertex array, which does NOT repeat points[0].
+    expect(flatRunPoints(plain)).toBe(plain.polyline.points);
+    expect(ops.runLengthMM(plain)).toBeCloseTo(400, 9);
+
+    const curved = closedSquare(['arc', 'arc', 'arc', 'line']);
+    const flat = flatRunPoints(curved);
+    // Has arcs: the flattened array already ENDS at points[0], so the closing
+    // chord it adds is zero-length.
+    expect(flat[flat.length - 1]).toEqual(curved.polyline.points[0]);
+    const got = ops.runLengthMM(curved);
+    expect(Math.abs(got - GO_CLOSED_SQUARE_3ARCS_MM)).toBeLessThan(0.1);
+    // Neither of the two ways to get the closing chord wrong: 100mm dropped
+    // (measuring the flattened array as open) or 100mm counted twice.
+    expect(Math.abs(got - (GO_CLOSED_SQUARE_3ARCS_MM - 100))).toBeGreaterThan(50);
+    expect(Math.abs(got - (GO_CLOSED_SQUARE_3ARCS_MM + 100))).toBeGreaterThan(50);
+  });
+
+  it('agrees with the Go validator on a 900mm chord too', () => {
+    const long: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [900, 0]], closed: false, segment_types: ['arc'] },
+    };
+    const got = ops.runLengthMM(long);
+    expect(Math.abs(got - GO_OPEN_ARC_900_MM) / GO_OPEN_ARC_900_MM).toBeLessThan(0.001);
+    expect(got).toBeGreaterThan(1000); // the chord (900) is under; the glass is not
+  });
+
+  it('is zero for a degenerate run', () => {
+    expect(ops.runLengthMM({ id: 'r1', polyline: { points: [], closed: false } })).toBe(0);
+    expect(ops.runLengthMM({ id: 'r1', polyline: { points: [[5, 5]], closed: true } })).toBe(0);
   });
 });
 
@@ -3053,12 +3217,9 @@ describe('raceway guideline ops', () => {
       id: 'o',
       polyline: { points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true },
     };
-    const before = ops.polylineLengthMM(sq.polyline.points, true);
+    const before = ops.runLengthMM(sq);
     const res = ops.splitTubesAtRaceway(withLine([sq], 50), 'rw1');
-    const after = res.doc.runs.reduce(
-      (acc, r) => acc + ops.polylineLengthMM(r.polyline.points, false),
-      0,
-    );
+    const after = res.doc.runs.reduce((acc, r) => acc + ops.runLengthMM(r), 0);
     expect(after).toBeCloseTo(before, 6);
   });
 
