@@ -112,12 +112,15 @@ describe('the no-restricted-syntax rule behind NumericField', () => {
     expect(await lint(good, 'src/components/zz-lint-probe.tsx')).toHaveLength(0);
   });
 
-  it('exempts exactly the wrapper plus the two known follow-up files', async () => {
+  it('exempts exactly one file: the wrapper', async () => {
     // Asserted against the RESOLVED config for every source file, not
     // against the exported list, so it measures the rule's actual reach. If
     // someone exempts another file to make their lint error go away, this
-    // fails and makes them say so out loud. The two page entries are the
-    // row 105 follow-up and are expected to shrink to zero, never grow.
+    // fails and makes them say so out loud. EditorPage.tsx and
+    // ArrangePanel.tsx were the row 105 follow-up; Tier 3 #112 migrated
+    // their call sites and removed them, so the list is now at its floor.
+    // `eslint.config.test.js` pins the exported list and scans src for the
+    // element itself — the check an exempted file could never get.
     const cwd = new URL('../..', import.meta.url).pathname;
     const eslint = new ESLint({ cwd });
     // `import.meta.glob` rather than a filesystem walk: `src` is browser
@@ -139,10 +142,6 @@ describe('the no-restricted-syntax rule behind NumericField', () => {
       else expect(severity).toBe(2);
     }
 
-    expect(exempt).toEqual([
-      'src/components/ArrangePanel.tsx',
-      'src/components/NumericField.tsx',
-      'src/pages/EditorPage.tsx',
-    ]);
+    expect(exempt).toEqual(['src/components/NumericField.tsx']);
   });
 });

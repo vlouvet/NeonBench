@@ -33,28 +33,24 @@ export const NUMERIC_INPUT_RULE = {
     'when the quantity really is a discrete counter.',
 }
 
-// Files where the raw element is tolerated. Kept as a named export so the
-// test suite can assert the list has not quietly grown.
+// The one file where the raw element is tolerated: the wrapper itself, since
+// it is what the rule points everyone at. Kept as a named export because
+// `eslint.config.test.js` asserts this list is exactly one entry.
 //
-//   * NumericField.tsx is the wrapper itself — the one place the raw element
-//     legitimately appears, since it is what the rule points everyone at.
+// THE LIST DOES NOT GROW. Tier 3 #112 removed the last two entries
+// (`src/pages/EditorPage.tsx` and `src/components/ArrangePanel.tsx`, held
+// back by row 105 because they were being rewritten on a parallel branch) and
+// migrated their 12 call sites to <NumericField>. Adding a path back is never
+// the fix for a lint error here: an exempted file is invisible to the rule,
+// not merely quieter. While EditorPage was exempt its raw-input count went
+// from 4 to 8 (PR #165) with every check in the repo green, and the count
+// this comment used to quote was stale by the time anyone read it. Fix the
+// call site, or extend <NumericField> until it can serve the call site.
 //
-//   * EditorPage.tsx and ArrangePanel.tsx are a ROW 105 FOLLOW-UP. They still
-//     hold 8 raw numeric inputs between them (EditorPage 4, ArrangePanel 4).
-//     They are the repo's two highest-traffic frontend files (see the
-//     file-coupling map in CLAUDE.md) and were being rewritten on a parallel
-//     branch while row 105 landed, so migrating them was deliberately left
-//     out of this PR's file scope rather than fought over in a merge.
-//
-// The rule stays `error` everywhere else. It is NOT downgraded to a warning
+// The rule is `error` everywhere else and is NOT downgraded to a warning
 // anywhere — a warning is precisely how the prose version of this rule
-// failed. Delete the two page entries together with the follow-up that
-// migrates those 8 call sites to <NumericField>.
-export const NUMERIC_INPUT_EXEMPT_FILES = [
-  'src/components/NumericField.tsx',
-  'src/pages/EditorPage.tsx',
-  'src/components/ArrangePanel.tsx',
-]
+// failed.
+export const NUMERIC_INPUT_EXEMPT_FILES = ['src/components/NumericField.tsx']
 
 export default defineConfig([
   globalIgnores(['dist']),
