@@ -1,5 +1,5 @@
 import type { DesignRun } from '../api';
-import { arcCubics, runHasArcs, segmentIndexBetween, segmentTypeAt } from './arcGeom';
+import { arcCubics, isArcKind, runHasArcs, segmentIndexBetween, segmentTypeAt } from './arcGeom';
 
 export type RunArcs = {
   // Indices into run.polyline.points. `live` is always non-empty for valid
@@ -102,8 +102,13 @@ export function indicesToD(
     }
     if (hasArcs && run) {
       const hit = segmentIndexBetween(indices[i - 1], indices[i], n, !!run.polyline.closed);
-      if (hit && segmentTypeAt(run, hit.seg) === 'arc') {
-        const cubics = arcCubics(points[hit.seg], points[(hit.seg + 1) % n], hit.reversed);
+      if (hit && isArcKind(segmentTypeAt(run, hit.seg))) {
+        const cubics = arcCubics(
+          points[hit.seg],
+          points[(hit.seg + 1) % n],
+          segmentTypeAt(run, hit.seg),
+          hit.reversed,
+        );
         if (cubics.length > 0) {
           for (const c of cubics) {
             parts.push(`C${c.c1x} ${c.c1y} ${c.c2x} ${c.c2y} ${c.x} ${c.y}`);

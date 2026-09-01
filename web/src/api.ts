@@ -269,6 +269,18 @@ export type Bend = {
   live_index: number;
 };
 
+// SegmentKind is one entry of `polyline.segment_types`. Mirrors the Go
+// constants in internal/designdoc/types.go exactly — the decoder there rejects
+// anything else, so a value TypeScript invents is a 400 on save, not a
+// rendering quirk.
+//
+// Tier 3 #87 — 'arc_r' is the same circle mirrored about its chord. The side
+// is stored rather than derived because arcFor bows to the left of TRAVEL, so
+// reversing a point list moves the bow; a stored side flips with the reversal
+// and the drawn shape survives (Bug #11). 'arc' keeps its pre-#87 meaning, so
+// every saved document reads back unchanged.
+export type SegmentKind = 'line' | 'arc' | 'arc_r';
+
 export type DesignRun = {
   id: string;
   polyline: {
@@ -280,7 +292,7 @@ export type DesignRun = {
     // Mirrors `designdoc.Polyline.SegmentTypes`; the Go decoder validates the
     // length at unmarshal, so a mismatched array is a 400, not a silent
     // disagreement about which segment is curved.
-    segment_types?: ('line' | 'arc')[];
+    segment_types?: SegmentKind[];
   };
   tube_diameter_mm?: number;
   color?: string;

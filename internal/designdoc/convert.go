@@ -313,8 +313,8 @@ func emitPath(buf *bytes.Buffer, indices []int, pl *Polyline, closed, isBlockout
 		}
 		prev := indices[j-1]
 		seg, reversed, ok := SegmentIndexBetween(prev, idx, n, pl.Closed)
-		if ok && pl.SegmentType(seg) == SegmentArc {
-			cubics := ArcCubics(points[seg], points[(seg+1)%n], reversed)
+		if ok && IsArcType(pl.SegmentType(seg)) {
+			cubics := ArcCubics(points[seg], points[(seg+1)%n], pl.SegmentType(seg), reversed)
 			if len(cubics) > 0 {
 				for _, c := range cubics {
 					fmt.Fprintf(buf, "C%s %s %s %s %s %s ",

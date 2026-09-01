@@ -602,10 +602,11 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 							p := run.Polyline.Points[cur]
 							px, py := toPage(p[0], p[1])
 							segIdx, reversed, ok := designdoc.SegmentIndexBetween(prev, cur, nPts, run.Polyline.Closed)
-							if ok && run.Polyline.SegmentType(segIdx) == designdoc.SegmentArc {
+							if ok && designdoc.IsArcType(run.Polyline.SegmentType(segIdx)) {
 								cubics := designdoc.ArcCubics(
 									run.Polyline.Points[segIdx],
 									run.Polyline.Points[(segIdx+1)%nPts],
+									run.Polyline.SegmentType(segIdx),
 									reversed,
 								)
 								if len(cubics) > 0 {

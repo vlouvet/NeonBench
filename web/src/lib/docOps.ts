@@ -847,19 +847,24 @@ function perpDist(p: [number, number], a: [number, number], b: [number, number])
 // n. Leaving them alone is what Bug #11 reported — curvature jumping onto
 // whichever chords happened to inherit the old indices.
 //
-// KNOWN LIMITATION — arc handedness. `arcFor(p0, p1)` always bows toward
-// (-dy, dx), i.e. to the LEFT of travel, and `segment_types` cannot say
-// otherwise: internal/designdoc/types.go admits exactly "line" and "arc".
-// Reversing a chord flips that normal, so after ONE reverse each arc is
-// drawn mirrored about its (unchanged) chord. Vertices, chords, radii and
-// arc lengths all survive; only the side the bow falls on does not.
-// Preserving it properly needs a signed bulge — or "arc-cw"/"arc-ccw" — in
-// the schema, a Go-and-TypeScript change well outside this function. Two
-// consequences fall out of that and are pinned by tests:
-//   - reverseRun is an involution. Reversing twice restores the exact shape,
-//     because the two handedness flips cancel.
-//   - a mirror is reflect-then-reverse, and there the reflection's handedness
-//     flip cancels the reversal's, so mirrored arcs land on the right side.
+// ARC HANDEDNESS — Tier 3 #87. `arcFor` bows toward (-dy, dx), i.e. to the
+// LEFT of travel, so reversing a chord moves the bow to the other side. A
+// boolean "is an arc" therefore could not survive a reversal at all, which is
+// what Bug #11 reported and what PR #149's index remap could not fix.
+//
+// `segment_types` now stores the side ('arc' vs 'arc_r'), so the fix is to
+// flip each carried value as it moves: the two flips — the one the reversal
+// forces on the geometry, and the one applied to the stored side — cancel,
+// and the drawn curve does not move at all. Reversing an arc run is now
+// shape-preserving, which is what "reverse" has always claimed.
+//
+// The invariant that pins it is geometric, not a field assertion:
+// flatRunPoints(reversed) equals flatRunPoints(original) reversed.
+//
+// Do NOT add this flip to `mirrorRuns` in arrange.ts. A mirror is
+// reflect-then-reverse: the reflection already flips handedness once, the
+// reversal flips it back, and the stored side must stay put. Flipping there
+// too is a double-flip that inverts every mirrored curve.
 export function reverseRun(doc: DesignDoc, runId: string): DesignDoc {
   return mapRun(doc, runId, reversedRun);
 }
@@ -883,10 +888,13 @@ function reversedRun(run: DesignRun): DesignRun {
   // decoder rejects an array that isn't exactly segmentCount long.
   if (run.polyline.segment_types) {
     const count = segmentCount(run);
-    const moved: ('line' | 'arc')[] = [];
+    const moved: SegmentKind[] = [];
     for (let j = 0; j < count; j++) {
       const src = closed ? (((n - 2 - j) % n) + n) % n : n - 2 - j;
-      moved.push(segmentTypeAt(run, src));
+      // Index remap AND side flip. The remap alone was Bug #11's fix and
+      // still left every bow mirrored; the flip is what makes the reversal
+      // shape-preserving.
+      moved.push(flipArcKind(segmentTypeAt(run, src)));
     }
     polyline.segment_types = moved;
   }

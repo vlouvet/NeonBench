@@ -215,8 +215,20 @@ func EmitDXFDialect(w io.Writer, doc *designdoc.Doc, dialect Dialect) error {
 			// entity, and no approximation error to argue about at the bench.
 			// A bulge is emitted only on the vertex an arc leaves, and omitted
 			// entirely on all-line runs so existing DXF output is unchanged.
-			if run.Polyline.SegmentType(i) == designdoc.SegmentArc {
-				pairFloat(&b, 42, designdoc.ArcBulge)
+			//
+			// Tier 3 #87 — the SIGN carries the direction: a DXF bulge is
+			// positive counter-clockwise from this vertex to the next, which
+			// is the side "arc" has always bowed to. A flipped arc ("arc_r")
+			// sweeps clockwise, so it must go out NEGATIVE. Emitting +0.5 for
+			// both sides would hand the bender a mirror-image curve on every
+			// flipped segment while the screen and the PDF showed the right
+			// one.
+			if st := run.Polyline.SegmentType(i); designdoc.IsArcType(st) {
+				bulge := designdoc.ArcBulge
+				if designdoc.ArcFlipped(st) {
+					bulge = -bulge
+				}
+				pairFloat(&b, 42, bulge)
 			}
 		}
 	}

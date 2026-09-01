@@ -27,7 +27,7 @@
 
 import type { DesignRun } from '../api';
 import { blockoutSegments, runArcs } from '../lib/runArcs';
-import { flattenSegment, segmentIndexBetween, segmentTypeAt } from '../lib/arcGeom';
+import { flattenSegment, isArcKind, segmentIndexBetween, segmentTypeAt } from '../lib/arcGeom';
 
 export interface RunSegment {
   // Polyline point pairs ([x, y] in mm, doc-Y convention). Hand
@@ -130,13 +130,22 @@ export function splitRunBySegments(run: DesignRun): RunSegment[] {
         }
         const prev = s.liveIndices[k - 1];
         const hit = segmentIndexBetween(prev, idx, points.length, !!run.polyline.closed);
-        const isArc = !!hit && segmentTypeAt(run, hit.seg) === 'arc';
-        if (isArc && hit) {
+        const segType = hit ? segmentTypeAt(run, hit.seg) : 'line';
+        if (isArcKind(segType) && hit) {
           const a = points[hit.seg];
           const b = points[(hit.seg + 1) % points.length];
+          // A backwards walk traces the SAME circle, so it must flatten the
+          // forward segment and walk those samples in reverse. Flattening
+          // b -> a instead asks arcFor for the arc that bows left of b -> a,
+          // which is the mirror of this one; and the samples then came out
+          // ordered from the far end, so the tube zigzagged across the chord.
+          // Probed before the fix on a=(0,0) b=(100,0): the walk began at
+          // (3.3, -4.1) — mirrored bow, wrong end — and should begin at
+          // (96.7, +4.1).
+          const fwd = flattenSegment(a, b, segType);
           const samples = hit.reversed
-            ? flattenSegment(b, a, true).slice(0, -1).reverse().concat([a])
-            : flattenSegment(a, b, true);
+            ? [...fwd.slice(0, -1).reverse(), a]
+            : fwd;
           for (const pt of samples) expanded.push(pt);
           localOf.push(expanded.length - 1);
           continue;
