@@ -708,8 +708,7 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 				totalBends += len(bs)
 			}
 			if totalBends > 0 {
-				drawBendListPage(pdf, opts, doc, bendsByRun)
-				stampCopyMarker(pdf, opts, pageH, copyNo, copies)
+				drawBendListPage(pdf, opts, doc, bendsByRun, pageH, copyNo, copies)
 			}
 		}
 	}
@@ -903,8 +902,14 @@ func shortRunID(id string) string {
 // drawBendListPage emits a final page listing each run's bends in order
 // with arc-length offset and turn angle, plus electrode count, total tube
 // length, and any per-run color/diameter overrides.
-func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsByRun map[string][]designdoc.BendPoint) {
+// The bend list can spill onto continuation pages for a long design, so
+// the Tier 2 #93 copy marker is stamped by this function rather than by
+// the caller — otherwise only the LAST sheet of a multi-page bend list
+// would carry it, and the pages in between would be unattributable in a
+// step-and-repeat stack. No-op for a single copy.
+func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsByRun map[string][]designdoc.BendPoint, pageH float64, copyNo, copies int) {
 	pdf.AddPage()
+	stampCopyMarker(pdf, opts, pageH, copyNo, copies)
 	mx := opts.MarginMM
 	pdf.SetFont("Helvetica", "B", 14)
 	pdf.Text(mx, mx+8, "Bend list")
@@ -984,6 +989,7 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 				// Page break inside the special-bend list too.
 				if y > opts.Paper.HeightMM-mx-15 {
 					pdf.AddPage()
+					stampCopyMarker(pdf, opts, pageH, copyNo, copies)
 					y = mx + 8
 				}
 			}
@@ -1008,6 +1014,7 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 		// Page break: leave some margin from the footer area.
 		if y > opts.Paper.HeightMM-mx-15 {
 			pdf.AddPage()
+			stampCopyMarker(pdf, opts, pageH, copyNo, copies)
 			y = mx + 8
 		}
 	}

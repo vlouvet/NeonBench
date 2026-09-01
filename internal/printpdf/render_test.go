@@ -2,6 +2,7 @@ package printpdf
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -770,5 +771,75 @@ func faceStripDoc() *designdoc.Doc {
 				},
 			},
 		},
+	}
+}
+
+// TestBendListCopyMarkerOnEveryContinuationPage — a long design spills
+// the bend list onto continuation pages, and every one of them has to
+// carry the copy marker. Stamping only the last sheet would leave the
+// pages in between unattributable in a step-and-repeat stack, which is
+// exactly the ambiguity the marker exists to prevent.
+func TestBendListCopyMarkerOnEveryContinuationPage(t *testing.T) {
+	opts := DefaultOptions()
+	opts.ProjectName = "LongBendList"
+	opts.DesignVersionLabel = "v1"
+
+	// 40 L-shaped runs: one 90° bend each, ~12 mm of bend-list height
+	// apiece, which overflows a single Letter page several times over.
+	doc := &designdoc.Doc{Version: 1, ViewBoxMM: [4]float64{0, 0, 200, 100}}
+	bends := make(map[string][]designdoc.BendPoint, 40)
+	for i := 0; i < 40; i++ {
+		id := fmt.Sprintf("run-%d", i)
+		run := designdoc.Run{
+			ID: id,
+			Polyline: designdoc.Polyline{
+				Points: [][2]float64{{0, 0}, {50, 0}, {50, 40}},
+			},
+			TubeDiameterMM: 10,
+		}
+		doc.Runs = append(doc.Runs, run)
+		bends[id] = designdoc.EffectiveBends(run, 10)
+	}
+
+	pdf := gofpdf.NewCustom(&gofpdf.InitType{
+		OrientationStr: "P",
+		UnitStr:        "mm",
+		Size:           gofpdf.SizeType{Wd: opts.Paper.WidthMM, Ht: opts.Paper.HeightMM},
+	})
+	pdf.SetCompression(false)
+	pdf.SetMargins(opts.MarginMM, opts.MarginMM, opts.MarginMM)
+	pdf.SetAutoPageBreak(false, 0)
+	drawBendListPage(pdf, opts, doc, bends, opts.Paper.HeightMM, 2, 3)
+
+	pages := pdf.PageCount()
+	if pages < 2 {
+		t.Fatalf("fixture produced a %d-page bend list; it must spill to exercise continuation pages", pages)
+	}
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if got := strings.Count(buf.String(), "Copy 2 of 3"); got != pages {
+		t.Errorf("bend list spans %d pages but carries %d copy markers — "+
+			"continuation pages are unattributable in a printed stack", pages, got)
+	}
+
+	// And a single copy still stamps nothing, so the default PDF is
+	// unchanged from pre-Tier-2-#93 output.
+	solo := gofpdf.NewCustom(&gofpdf.InitType{
+		OrientationStr: "P",
+		UnitStr:        "mm",
+		Size:           gofpdf.SizeType{Wd: opts.Paper.WidthMM, Ht: opts.Paper.HeightMM},
+	})
+	solo.SetCompression(false)
+	solo.SetMargins(opts.MarginMM, opts.MarginMM, opts.MarginMM)
+	solo.SetAutoPageBreak(false, 0)
+	drawBendListPage(solo, opts, doc, bends, opts.Paper.HeightMM, 1, 1)
+	var soloBuf bytes.Buffer
+	if err := solo.Output(&soloBuf); err != nil {
+		t.Fatalf("output: %v", err)
+	}
+	if strings.Contains(soloBuf.String(), "Copy ") {
+		t.Error("single-copy bend list carries a copy marker; it must stay silent")
 	}
 }
