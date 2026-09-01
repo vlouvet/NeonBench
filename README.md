@@ -14,7 +14,8 @@ web UI.
 > Phase 2 (editor, per-run color/diameter/notes, blockouts, bend
 > planning, double-back hairpins, channel-letter return strips with
 > raceway grouping, Hershey single-stroke text in three faces with
-> preset + optical kerning + font thumbnails, polygon-offset Neonize
+> preset + optical kerning + font thumbnails + case/slant/vertical-stack
+> /arc transforms, polygon-offset Neonize
 > with stitched single-tube output, **groups + layers panel** with
 > per-group visibility + lock toggles, multi-select + drag-drop image
 > upload, snap-to-angle / snap-to-geometry on every drawing tool,
@@ -290,6 +291,23 @@ under **Git Bash**, which ships with Git for Windows.
      height is configurable), drag the triangle handles in the
      preview to nudge per-pair kerning (1 px screen = 1 mm design),
      set the cap height in mm, hit Insert.
+
+     The **Transform** section reshapes the text without touching a
+     single vertex by hand: one-shot **case** buttons (UPPER / lower /
+     Title / Sentence — Title only touches the first letter of each
+     word, so "McDonald" survives), a **slant** slider (±45°, a shear
+     about each line's own baseline, i.e. faux-italic on any face),
+     **vertical stacking** (one glyph per line down a common axis,
+     centred on each glyph's ink rather than its advance width, with an
+     even ink-to-ink gap down the column — the blade-sign layout), and
+     **arc** (the baseline bent onto a circle
+     of a chosen radius, arching up over a doorway or sagging down).
+     They compose in a fixed order — case → layout → slant — and
+     stacking and arc are mutually exclusive. Stacking is unavailable
+     on the **Cursive** face, whose whole point is stitching adjacent
+     letters into one continuous tube; the arc bends that stitched
+     script intact. The dialog's live preview shows the transformed
+     result, which is the exact geometry Insert puts on the canvas.
    - **Pen / Rect / Circle / Arc** — draw directly on the canvas. Pen
      drops a polyline a click at a time (double-click or Enter to
      commit, Esc cancels). Rect and Circle are pointer-down →
