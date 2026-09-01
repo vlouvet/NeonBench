@@ -167,7 +167,10 @@ func EmitEPSWithOptions(w io.Writer, doc *designdoc.Doc, opts Options) error {
 
 	// Runs: one stroked path per non-empty Run.
 	for _, run := range doc.Runs {
-		pts := run.Polyline.Points
+		// Tier 3 #78 — flattened so a stroked arc follows the curve. Only the
+		// DRAWING flattens; anything resolving an electrode or annotation index
+		// keeps reading Polyline.Points, whose indices flattening would shift.
+		pts := run.Polyline.FlatPoints()
 		if len(pts) == 0 {
 			continue
 		}
@@ -220,7 +223,9 @@ func geometryBBox(doc *designdoc.Doc) (minX, minY, maxX, maxY float64, ok bool) 
 	minX, minY = math.Inf(1), math.Inf(1)
 	maxX, maxY = math.Inf(-1), math.Inf(-1)
 	for _, run := range doc.Runs {
-		for _, p := range run.Polyline.Points {
+		// An arc bulges outside the hull of its endpoints, so the bbox has to
+		// see the flattened curve or the page clips it.
+		for _, p := range run.Polyline.FlatPoints() {
 			if p[0] < minX {
 				minX = p[0]
 			}

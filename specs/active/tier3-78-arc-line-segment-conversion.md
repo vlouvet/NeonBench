@@ -1,6 +1,24 @@
 # Tier 3 #78 — Arc ↔ line segment conversion in node-edit
 
 > **Status:** active · drafted 2026-05-09 · branch `task/3-arc-line-segment-conversion` · NW parity (node-edit menu item)
+>
+> **Split into two PRs.** The backend half (schema, geometry, and every Go
+> consumer) ships first and is inert on its own — nothing can create an arc
+> yet, so all existing docs behave identically. The editor half (TS types,
+> ops, canvas render, context-menu items) follows. The split avoids a state
+> where arcs exist but some emitter silently mishandles them.
+>
+> **Representation: a circular arc, not a bezier.** The spec asks for a bezier
+> with control points at chord/4. A circle through the same two points with the
+> same sagitta is strictly better here: exact in SVG, PDF and DXF with no
+> approximation, an exact arc length (no Simpson's rule needed), and — the one
+> that matters — a real radius, so the min-bend-radius rule catches a curve too
+> tight for the glass instead of it being found at the bending table. The
+> sagitta/half-chord ratio is 0.5, which is exactly AutoCAD's bulge, so DXF
+> emits it as a native LWPOLYLINE bulge with nothing lost.
+>
+> **Deliverable 4 (Simpson's rule) is therefore not implemented** — a circular
+> arc's length is r·θ in closed form.
 
 ## Goal
 

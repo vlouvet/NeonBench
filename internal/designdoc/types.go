@@ -1,5 +1,11 @@
 package designdoc
 
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
+
 // Doc is the structured editable representation of a neon design. It carries
 // enough information to round-trip through the editor and re-render to SVG.
 // All coordinates are in millimeters.
@@ -204,6 +210,110 @@ type Blockout struct {
 type Polyline struct {
 	Points [][2]float64 `json:"points"` // pairs of [x, y] in mm
 	Closed bool         `json:"closed"`
+	// SegmentTypes classifies each SEGMENT, so it is one shorter than
+	// Points for an open polyline (Tier 3 #78). nil — the shape every
+	// pre-#78 blob has — means every segment is a straight line, so old
+	// docs load and render identically.
+	//
+	// The only non-default value is "arc": the glass between those two
+	// vertices follows a circular arc rather than the chord. Crucially this
+	// does NOT change the vertex list. Electrodes, bends, blockouts and
+	// annotations all index into Points, and an arc that inserted vertices
+	// would silently renumber every one of them. An arc changes what is
+	// drawn BETWEEN two vertices, nothing else.
+	SegmentTypes []string `json:"segment_types,omitempty"`
+}
+
+// Segment type values. Anything else is rejected at unmarshal.
+const (
+	SegmentLine = "line"
+	SegmentArc  = "arc"
+)
+
+// ArcBulge is the arc's sagitta expressed as a fraction of half the chord —
+// the same quantity AutoCAD calls a bulge. 0.5 means the arc bows out from
+// its chord by a quarter of the chord's length, which is the "simplest gentle
+// curve through these two endpoints" the spec asks for.
+//
+// Everything else about the arc falls out of this one number, so the curve
+// stays a genuine circle: included angle 4·atan(0.5) ≈ 106.26°, radius
+// 0.625·chord, arc length ≈ 1.159·chord. That matters more than it might
+// look. A circle is exactly representable as an SVG `A`, a PDF arc and a DXF
+// ARC entity, so no emitter has to approximate; and the min-bend-radius rule
+// is about a real radius, so an arc too tight for the glass is caught by the
+// validator rather than discovered at the bending table.
+const ArcBulge = 0.5
+
+// SegmentType returns the type of the segment leaving vertex i. Out-of-range
+// indices and a nil/short SegmentTypes all answer "line", which is what makes
+// the field safe to omit.
+func (p *Polyline) SegmentType(i int) string {
+	if i < 0 || i >= len(p.SegmentTypes) {
+		return SegmentLine
+	}
+	if p.SegmentTypes[i] == SegmentArc {
+		return SegmentArc
+	}
+	return SegmentLine
+}
+
+// HasArcs reports whether any segment is an arc — lets every consumer keep
+// its existing fast path untouched for the overwhelmingly common case.
+func (p *Polyline) HasArcs() bool {
+	for _, t := range p.SegmentTypes {
+		if t == SegmentArc {
+			return true
+		}
+	}
+	return false
+}
+
+// SegmentCount is the number of segments the polyline draws: one per gap for
+// an open run, plus the closing segment when Closed.
+func (p *Polyline) SegmentCount() int {
+	n := len(p.Points)
+	if n < 2 {
+		return 0
+	}
+	if p.Closed {
+		return n
+	}
+	return n - 1
+}
+
+// UnmarshalJSON enforces the SegmentTypes invariants at the door: one entry
+// per segment, and only known values. A mismatched array is a bug in whatever
+// wrote the blob, and letting it through would mean every consumer silently
+// disagreeing about which segment is curved.
+//
+// The nested decoder keeps DisallowUnknownFields, which the server's decoder
+// sets on the outer document — a custom UnmarshalJSON would otherwise quietly
+// re-open this one object to typo'd keys.
+func (p *Polyline) UnmarshalJSON(data []byte) error {
+	type polylineAlias Polyline
+	var alias polylineAlias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&alias); err != nil {
+		return err
+	}
+	out := Polyline(alias)
+	if len(out.SegmentTypes) > 0 {
+		want := out.SegmentCount()
+		if len(out.SegmentTypes) != want {
+			return fmt.Errorf(
+				"polyline: segment_types has %d entries, want %d (one per segment for %d points, closed=%v)",
+				len(out.SegmentTypes), want, len(out.Points), out.Closed)
+		}
+		for i, t := range out.SegmentTypes {
+			if t != SegmentLine && t != SegmentArc {
+				return fmt.Errorf("polyline: segment_types[%d] = %q, want %q or %q",
+					i, t, SegmentLine, SegmentArc)
+			}
+		}
+	}
+	*p = out
+	return nil
 }
 
 // Electrode marks a tube end. PointIndex is the index into the parent run's

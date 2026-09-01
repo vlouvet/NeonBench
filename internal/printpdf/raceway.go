@@ -115,10 +115,12 @@ func emitRacewayStrip(pdf *gofpdf.Fpdf, opts Options, racewayID string, runs []d
 	contributions := make([]runContribution, 0, len(runs))
 	var totalPerimeter, maxDepth float64
 	for _, run := range runs {
-		points := run.Polyline.Points
 		closed := run.Polyline.Closed
-		perim := polylinePerimeterMM(points, closed)
-		marks := returnStripBendMarks(points, closed)
+		// Arc-aware, same as the single-run strip: an arc contributes its true
+		// length and one bend mark per real vertex, not one per flattened
+		// sample (Tier 3 #78).
+		perim := run.Polyline.LengthMM()
+		marks := returnStripBendMarks(&run.Polyline, closed)
 		depth := runDepthMM(run, projectDepthMM)
 		contributions = append(contributions, runContribution{
 			ID:            run.ID,

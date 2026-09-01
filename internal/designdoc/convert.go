@@ -77,7 +77,7 @@ func ToSVG(doc *Doc) []byte {
 		segments := splitByBlockouts(liveIndices, run.Blockouts, closed)
 		dbPoints := doublebackWorldPoints(run, liveIndices)
 		for _, seg := range segments {
-			emitPath(&buf, seg.Indices, run.Polyline.Points, seg.Closed, seg.IsBlockout, run.TubeDiameterMM, dbPoints, run.IsChannelLetterFace)
+			emitPath(&buf, seg.Indices, &run.Polyline, seg.Closed, seg.IsBlockout, run.TubeDiameterMM, dbPoints, run.IsChannelLetterFace)
 		}
 	}
 	buf.WriteString(`</svg>`)
@@ -257,7 +257,8 @@ func doublebackWorldPoints(run Run, liveIndices []int) []string {
 	return pairs
 }
 
-func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isBlockout bool, diameterMM float64, dbPoints []string, isChannelLetterFace bool) {
+func emitPath(buf *bytes.Buffer, indices []int, pl *Polyline, closed, isBlockout bool, diameterMM float64, dbPoints []string, isChannelLetterFace bool) {
+	points := pl.Points
 	if len(indices) < 2 {
 		return
 	}
@@ -299,13 +300,32 @@ func emitPath(buf *bytes.Buffer, indices []int, points [][2]float64, closed, isB
 		}
 		fmt.Fprintf(buf, `<path fill="none" stroke="black" stroke-width="%s" stroke-linecap="round" stroke-linejoin="round"%s%s%s d="`, fmtFloat(strokeMM), diameterAttr, dbAttr, faceAttr)
 	}
+	// Tier 3 #78 — a step across an arc segment emits cubics instead of an L.
+	// The walk can run either way around a closed run, so which segment joins
+	// two positions (and whether it is crossed backwards) is resolved rather
+	// than assumed.
+	n := len(points)
 	for j, idx := range indices {
-		cmd := "L"
-		if j == 0 {
-			cmd = "M"
-		}
 		p := points[idx]
-		fmt.Fprintf(buf, "%s%s %s ", cmd, fmtFloat(p[0]), fmtFloat(p[1]))
+		if j == 0 {
+			fmt.Fprintf(buf, "M%s %s ", fmtFloat(p[0]), fmtFloat(p[1]))
+			continue
+		}
+		prev := indices[j-1]
+		seg, reversed, ok := SegmentIndexBetween(prev, idx, n, pl.Closed)
+		if ok && pl.SegmentType(seg) == SegmentArc {
+			cubics := ArcCubics(points[seg], points[(seg+1)%n], reversed)
+			if len(cubics) > 0 {
+				for _, c := range cubics {
+					fmt.Fprintf(buf, "C%s %s %s %s %s %s ",
+						fmtFloat(c.C1X), fmtFloat(c.C1Y),
+						fmtFloat(c.C2X), fmtFloat(c.C2Y),
+						fmtFloat(c.X), fmtFloat(c.Y))
+				}
+				continue
+			}
+		}
+		fmt.Fprintf(buf, "L%s %s ", fmtFloat(p[0]), fmtFloat(p[1]))
 	}
 	if closed {
 		buf.WriteByte('Z')
