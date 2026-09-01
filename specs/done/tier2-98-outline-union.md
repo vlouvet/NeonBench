@@ -1,6 +1,6 @@
 # Tier 2 #98 — Union overlapping outlines ("Weld")
 
-> **Status:** done · PR #NNN · drafted 2026-08-31 · branch `task/2-outline-union`
+> **Status:** done · PR #162 · drafted 2026-08-31 · branch `task/2-outline-union`
 
 ## Goal
 
