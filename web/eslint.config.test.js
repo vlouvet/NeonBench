@@ -27,10 +27,10 @@ import { NUMERIC_INPUT_RULE, NUMERIC_INPUT_EXEMPT_FILES } from './eslint.config.
 //      which is the check that would have caught PR #165's four additions on
 //      the day they landed, and that catches a file which does not exist yet.
 //
-// Both are a module scan and a filesystem scan. That is deliberate: there is
-// no DOM test environment in this repo (`vite.config.ts` declares no `test`
-// block and neither jsdom nor testing-library is a dependency), so nothing
-// here needs one.
+// One is a module import, the other a scan of the source text. That is
+// deliberate: there is no DOM test environment in this repo (`vite.config.ts`
+// declares no `test` block and neither jsdom nor testing-library is a
+// dependency), so nothing here needs one.
 
 const WRAPPER = 'src/components/NumericField.tsx';
 
@@ -98,7 +98,7 @@ describe('the raw numeric-input ban', () => {
     // Positive control: the wrapper is the one file that must still contain
     // the raw element (it is what the rule points everyone at). If this stops
     // being reported, the scan has broken, not the codebase.
-    expect(counts[WRAPPER], 'the scan no longer finds the wrapper own raw input').toBe(1);
+    expect(counts[WRAPPER], "the scan no longer finds the wrapper's own raw input").toBe(1);
 
     expect(
       Object.keys(counts),
