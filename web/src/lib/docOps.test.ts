@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
@@ -3938,5 +3938,596 @@ describe('joinRuns and arc segments (Bug #14)', () => {
     expect(joined.polyline.points.length).toBe(6);
     // a:[arc,line] + bridge:line + b:[arc,line]
     expect(joined.polyline.segment_types).toEqual(['arc', 'line', 'line', 'arc', 'line']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #16 — Neonize offsets an arc run's CHORDS, not its curve.
+//
+// `neonize` fed `src.polyline.points` straight to the offset primitives at all
+// four call sites and never consulted `polyline.segment_types`. An arc's
+// sagitta is a quarter of its chord (ARC_BULGE 0.5), so a 200 mm arc put the
+// generated parallel path 50 mm off the glass — a clean parallel outline of a
+// shape nobody drew.
+//
+// The regression that would hurt most is the line-only one: three shipped
+// parity rows (NW #131 Neonize, #141 Parallel Tube Layout, #123 Auto Tube
+// Layout) rest on this operation, so a line-only run has to come out
+// byte-identical to what it did before the fix. That test is first on purpose.
+// ---------------------------------------------------------------------------
+describe('neonize and arc segments (Bug #16)', () => {
+  // Minimum distance from p to the polyline through pts (segments, not
+  // vertices — a vertex-only measure calls a point beside a long straight
+  // "far away" when it is sitting right on the glass).
+  function distToPath(p: [number, number], pts: [number, number][], closed = false): number {
+    let best = Infinity;
+    const n = pts.length;
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      const abx = b[0] - a[0];
+      const aby = b[1] - a[1];
+      const len2 = abx * abx + aby * aby;
+      let t = len2 > 0 ? ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(p[0] - (a[0] + t * abx), p[1] - (a[1] + t * aby));
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  // Densely resample an emitted offset path so the check covers the whole
+  // path, not just its vertices. Pre-fix the offset of a 2-vertex arc run IS
+  // its two endpoints, and both of those sit at exactly spacing/2 from the
+  // curve — a vertex-only assertion passes on the broken code.
+  function densify(pts: [number, number][], closed = false): [number, number][] {
+    const out: [number, number][] = [];
+    const n = pts.length;
+    const last = closed ? n : n - 1;
+    for (let i = 0; i < last; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      const steps = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 2));
+      for (let k = 0; k < steps; k++) {
+        out.push([a[0] + ((b[0] - a[0]) * k) / steps, a[1] + ((b[1] - a[1]) * k) / steps]);
+      }
+    }
+    out.push(pts[n - 1]);
+    return out;
+  }
+
+  function arcRunDoc(
+    points: [number, number][],
+    segment_types: ('line' | 'arc' | 'arc_r')[],
+    closed = false,
+  ): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 400, 400],
+      runs: [{
+        id: 'a',
+        polyline: { points, closed, segment_types },
+        tube_diameter_mm: 12,
+      }],
+    };
+  }
+
+  // ---- THE REGRESSION PIN. Written and run first, on purpose. -------------
+  it('a line-only OPEN run neonizes byte-identically to the pre-fix output', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 200, 200],
+      runs: [{
+        id: 'zig',
+        polyline: {
+          points: [[0, 0], [40, 0], [40, 30], [90, 30], [90, 90]],
+          closed: false,
+        },
+        tube_diameter_mm: 12,
+      }],
+    };
+    const { doc: out } = ops.neonize(doc, 'zig', 20);
+    // Captured from the pre-fix implementation. flatRunPoints returns the
+    // ORIGINAL array when a run has no arcs, so the flatten must be a no-op
+    // here — down to the last digit.
+    expect(out.runs[0].polyline.points).toEqual([[0, -10], [50, -10], [50, 20], [100, 20], [100, 90]]);
+    expect(out.runs[1].polyline.points).toEqual([[0, 10], [30, 10], [30, 40], [80, 40], [80, 90]]);
+  });
+
+  it('a line-only run with an explicit all-line segment_types is also unchanged', () => {
+    const withTypes = arcRunDoc(
+      [[0, 0], [40, 0], [40, 30], [90, 30], [90, 90]],
+      ['line', 'line', 'line', 'line'],
+    );
+    const { doc: out } = ops.neonize(withTypes, 'a', 20);
+    expect(out.runs[0].polyline.points).toEqual([[0, -10], [50, -10], [50, 20], [100, 20], [100, 90]]);
+    expect(out.runs[1].polyline.points).toEqual([[0, 10], [30, 10], [30, 40], [80, 40], [80, 90]]);
+  });
+
+  it('a line-only CLOSED square is unchanged (outer 120x120, inner 80x80)', () => {
+    const sq = arcRunDoc([[0, 0], [100, 0], [100, 100], [0, 100]], ['line', 'line', 'line', 'line'], true);
+    const { doc: out } = ops.neonize(sq, 'a', 20);
+    const xs = out.runs[0].polyline.points.map((p) => p[0]);
+    const ys = out.runs[0].polyline.points.map((p) => p[1]);
+    expect(Math.min(...xs)).toBeCloseTo(-10, 6);
+    expect(Math.max(...xs)).toBeCloseTo(110, 6);
+    expect(Math.min(...ys)).toBeCloseTo(-10, 6);
+    expect(Math.max(...ys)).toBeCloseTo(110, 6);
+  });
+
+  // ---- THE INVARIANT ------------------------------------------------------
+  it('every point of both offsets sits spacing/2 from the TRUE CURVE, not the chord', () => {
+    // One 200 mm arc. Bulge 0.5 puts its apex 50 mm off the chord, so the
+    // pre-fix offset (a straight line 10 mm off the chord) misses the glass
+    // by tens of mm at mid-span — and reports ~100 mm here, because the
+    // nearest point on the real curve is then an endpoint.
+    const doc = arcRunDoc([[0, 0], [200, 0]], ['arc']);
+    const truth = flatRunPoints(doc.runs[0]);
+    const { doc: out } = ops.neonize(doc, 'a', 20);
+    for (const run of [out.runs[0], out.runs[1]]) {
+      for (const p of densify(run.polyline.points)) {
+        const d = distToPath(p, truth);
+        expect(d).toBeGreaterThan(10 - 0.3);
+        expect(d).toBeLessThan(10 + 0.3);
+      }
+    }
+  });
+
+  it('the offsets follow the bow: an arc run yields curved paths, not two-point chords', () => {
+    const { doc: out } = ops.neonize(arcRunDoc([[0, 0], [200, 0]], ['arc']), 'a', 20);
+    // Pre-fix both offsets were exactly 2 points — the chord's endpoints.
+    expect(out.runs[0].polyline.points.length).toBeGreaterThan(10);
+    expect(out.runs[1].polyline.points.length).toBeGreaterThan(10);
+    // 'arc' bows to the LEFT of travel: (dx,dy)=(200,0) → normal (0,1), so the
+    // apex is at (100, +50) and the offset pair straddles it at 40 and 60.
+    // Pre-fix, offsetting the chord put the whole pair between -10 and +10.
+    const ys = [...out.runs[0].polyline.points, ...out.runs[1].polyline.points].map((p) => p[1]);
+    expect(Math.max(...ys)).toBeCloseTo(60, 1);
+    // The butt caps are normal to the CURVE's tangent at the endpoints, and an
+    // arc leaves its chord at half the included angle (53.13°), so the ends
+    // tilt below y=0 rather than sitting on it. -10*cos(53.13°) = -6, plus the
+    // half-sample rotation the flattened first segment introduces.
+    expect(Math.min(...ys)).toBeGreaterThan(-7);
+    expect(Math.min(...ys)).toBeLessThan(-5);
+  });
+
+  it('an arc_r run offsets to the other side (the flipped bow is honoured)', () => {
+    const doc = arcRunDoc([[0, 0], [200, 0]], ['arc_r']);
+    const truth = flatRunPoints(doc.runs[0]);
+    const { doc: out } = ops.neonize(doc, 'a', 20);
+    const ys = [...out.runs[0].polyline.points, ...out.runs[1].polyline.points].map((p) => p[1]);
+    // Exact mirror of the 'arc' case: apex at (100, -50), offsets at -40/-60.
+    expect(Math.min(...ys)).toBeCloseTo(-60, 1);
+    expect(Math.max(...ys)).toBeLessThan(7);
+    expect(Math.max(...ys)).toBeGreaterThan(5);
+    for (const run of [out.runs[0], out.runs[1]]) {
+      for (const p of densify(run.polyline.points)) {
+        const d = distToPath(p, truth);
+        expect(d).toBeGreaterThan(10 - 0.3);
+        expect(d).toBeLessThan(10 + 0.3);
+      }
+    }
+  });
+
+  it('a CLOSED run with arc sides yields inner and outer paths that never cross the source', () => {
+    // Even-odd point-in-polygon against the FLATTENED source. "Does not
+    // cross" is the containment statement: every outer-offset point outside
+    // the puffy source, every inner-offset point inside it. Measuring a
+    // distance instead would trip on the legitimate miter clamping at the
+    // four sharp corners where two bows meet.
+    function inside(p: [number, number], poly: [number, number][]): boolean {
+      let hit = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const [xi, yi] = poly[i];
+        const [xj, yj] = poly[j];
+        if ((yi > p[1]) !== (yj > p[1])
+          && p[0] < ((xj - xi) * (p[1] - yi)) / (yj - yi) + xi) hit = !hit;
+      }
+      return hit;
+    }
+    // arc_r bows to the RIGHT of travel, which on this vertex order is
+    // outward — a puffy square, 50 mm of sagitta per 200 mm side. (Plain
+    // 'arc' would bow all four sides inward until opposite bows touch.)
+    const doc = arcRunDoc(
+      [[0, 0], [200, 0], [200, 200], [0, 200]],
+      ['arc_r', 'arc_r', 'arc_r', 'arc_r'],
+      true,
+    );
+    const truth = flatRunPoints(doc.runs[0]);
+    const { doc: out } = ops.neonize(doc, 'a', 20);
+    const [outerRun, innerRun] = [out.runs[0], out.runs[1]];
+    expect(outerRun.polyline.closed).toBe(true);
+    expect(innerRun.polyline.closed).toBe(true);
+    for (const p of densify(outerRun.polyline.points, true)) {
+      expect(inside(p, truth)).toBe(false);
+    }
+    for (const p of densify(innerRun.polyline.points, true)) {
+      expect(inside(p, truth)).toBe(true);
+    }
+    // Negative control: the pre-fix behaviour offset the CHORDS, i.e. the
+    // plain 200×200 square. Its +10 expansion is [-10,210]², which lies
+    // inside the puffy source along every side — so the old output failed
+    // the containment above rather than passing it vacuously.
+    expect(inside([-5, 100], truth)).toBe(true);
+  });
+
+  it('flattening density keeps the OFFSET within a sane chord error without exploding the vertex count', () => {
+    // Eight arc segments — a stand-in for a curve-heavy OpenType glyph.
+    const pts: [number, number][] = [];
+    const types: ('line' | 'arc' | 'arc_r')[] = [];
+    for (let i = 0; i <= 8; i++) {
+      pts.push([i * 50, 0]);
+      if (i < 8) types.push('arc');
+    }
+    const { doc: out } = ops.neonize(arcRunDoc(pts, types), 'a', 20);
+    const n = out.runs[0].polyline.points.length;
+    // arcGeom samples an arc every 5 degrees over its ~106.26 degree sweep =
+    // 22 points per segment. Eight arcs is ~176 — bounded, not exponential.
+    expect(n).toBeGreaterThan(100);
+    expect(n).toBeLessThan(260);
+
+    // Chord error of the emitted offset against the true offset circle, on a
+    // SINGLE arc — a junction between two arcs turns the path by the full
+    // included angle (106.26°) and its miter spike is not a flattening error.
+    // Chord 200 → radius 125 about (100, -75); the two offsets ride
+    // concentric at 135 and 115. Measure each sampled SEGMENT's midpoint:
+    // the sagitta of the flattening is r*(1-cos(step/2)) ≈ 0.12 mm at 135 mm
+    // with arcGeom's 5° step. That is 0.06% of the arc — fine for a bender,
+    // and it does not grow with the vertex count.
+    const single = ops.neonize(arcRunDoc([[0, 0], [200, 0]], ['arc']), 'a', 20).doc;
+    const r = 125;
+    const cx = 100;
+    const cy = -75;
+    let maxErr = 0;
+    let measured = 0;
+    for (const run of [single.runs[0], single.runs[1]]) {
+      const p = run.polyline.points;
+      // Skip the first and last emitted segment: those carry the butt caps,
+      // which sit off the ring by construction.
+      for (let i = 1; i < p.length - 2; i++) {
+        const mx = (p[i][0] + p[i + 1][0]) / 2;
+        const my = (p[i][1] + p[i + 1][1]) / 2;
+        // |ring - r| is 10 on both sides; the residual is the chord error.
+        maxErr = Math.max(maxErr, Math.abs(Math.abs(Math.hypot(mx - cx, my - cy) - r) - 10));
+        measured++;
+      }
+    }
+    expect(measured).toBeGreaterThan(20); // the sample actually found segments
+    expect(maxErr).toBeLessThan(0.2);
+  });
+
+  it('the stitched variant is built from the flattened curve too', () => {
+    const doc = arcRunDoc([[0, 0], [200, 0]], ['arc']);
+    const truth = flatRunPoints(doc.runs[0]);
+    const { doc: out } = ops.neonize(doc, 'a', 20, { stitch: true });
+    expect(out.runs.length).toBe(1);
+    const stitched = out.runs[0].polyline.points;
+    expect(stitched.length).toBeGreaterThan(20);
+    // The hairpins at each end sit outside the spacing band by design, so
+    // check the body of each parallel leg rather than every vertex.
+    const onBand = stitched.filter((p) => {
+      const d = distToPath(p, truth);
+      return d > 10 - 0.3 && d < 10 + 0.3;
+    });
+    expect(onBand.length).toBeGreaterThan(stitched.length / 2);
+  });
+
+  it('the emitted runs carry NO segment_types — the offset of an arc is not representable', () => {
+    // An offset circular arc IS a circular arc of a different radius, but
+    // segment_types can only express the one fixed bulge implied by a chord.
+    // So the offset ships flattened, and must not claim otherwise: a stale
+    // array here is exactly the wrong-length blob the Go decoder 400s on.
+    const { doc: out } = ops.neonize(arcRunDoc([[0, 0], [200, 0]], ['arc']), 'a', 20);
+    expect(out.runs[0].polyline.segment_types).toBeUndefined();
+    expect(out.runs[1].polyline.segment_types).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #15 — joinRuns dropped the merged run's classification fields.
+//
+// The merged run was built from an allow-list of three fields (diameter,
+// color, notes) under a comment that read as if it were complete. The five
+// missing ones — is_channel_letter_face, channel_letter_depth_mm, raceway_id,
+// group_id, kind — are the ones that drive the PDF strip pages, the raceway
+// grouping, the layer membership and the 3D render. Joining the two halves of
+// a channel-letter face silently stopped emitting its return-strip page: the
+// same loss PR #140 fixed for splitRun, arrived at from the other direction.
+// ---------------------------------------------------------------------------
+describe('joinRuns carries classification (Bug #15)', () => {
+  function run(id: string, pts: [number, number][], extra: Partial<DesignRun> = {}): DesignRun {
+    return { id, polyline: { points: pts, closed: false }, ...extra };
+  }
+  function pair(a: Partial<DesignRun>, b: Partial<DesignRun> = {}): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        run('a', [[0, 0], [10, 0], [20, 0]], a),
+        run('b', [[20, 0], [30, 0], [40, 0]], b),
+      ],
+    };
+  }
+  const join = (doc: DesignDoc) => ops.joinRuns(doc, 'a', 'tail', 'b', 'head').runs[0];
+
+  it('two channel-letter faces merge into a face and keep the depth override', () => {
+    const joined = join(pair(
+      { is_channel_letter_face: true, channel_letter_depth_mm: 90 },
+      { is_channel_letter_face: true, channel_letter_depth_mm: 90 },
+    ));
+    expect(joined.is_channel_letter_face).toBe(true);
+    expect(joined.channel_letter_depth_mm).toBe(90);
+  });
+
+  it('a face joined to a NON-face is still a face (the either-side rule)', () => {
+    // Losing the strip page is the expensive error, so the flag survives from
+    // whichever side has it — including when that side is runB.
+    expect(join(pair({ is_channel_letter_face: true }, {})).is_channel_letter_face).toBe(true);
+    expect(join(pair({}, { is_channel_letter_face: true })).is_channel_letter_face).toBe(true);
+  });
+
+  it('channel_letter_depth_mm comes from B when A has none', () => {
+    const joined = join(pair({ is_channel_letter_face: true }, { channel_letter_depth_mm: 75 }));
+    expect(joined.channel_letter_depth_mm).toBe(75);
+  });
+
+  it('a channel_letter_depth_mm disagreement takes A and warns rather than silently picking', () => {
+    const warned: string[] = [];
+    const spy = vi.spyOn(console, 'warn').mockImplementation((m: unknown) => {
+      warned.push(String(m));
+    });
+    const joined = join(pair({ channel_letter_depth_mm: 90 }, { channel_letter_depth_mm: 120 }));
+    spy.mockRestore();
+    expect(joined.channel_letter_depth_mm).toBe(90);
+    expect(warned.join(' ')).toMatch(/depth/i);
+  });
+
+  it('raceway_id and group_id survive from A, and from B when A has none', () => {
+    expect(join(pair({ raceway_id: 'gl1' }, {})).raceway_id).toBe('gl1');
+    expect(join(pair({}, { raceway_id: 'gl1' })).raceway_id).toBe('gl1');
+    expect(join(pair({ raceway_id: 'gl1' }, { raceway_id: 'gl2' })).raceway_id).toBe('gl1');
+    expect(join(pair({ group_id: 'g1' }, {})).group_id).toBe('g1');
+    expect(join(pair({}, { group_id: 'g2' })).group_id).toBe('g2');
+    expect(join(pair({ group_id: 'g1' }, { group_id: 'g2' })).group_id).toBe('g1');
+  });
+
+  it('jumper + jumper stays a jumper', () => {
+    expect(join(pair({ kind: 'jumper' }, { kind: 'jumper' })).kind).toBe('jumper');
+  });
+
+  it('jumper + live tube is a LIVE TUBE, not a jumper', () => {
+    // The counter-intuitive one, and the only field where "inherit runA's"
+    // would be actively wrong. A jumper is glass-sleeved lead wire; welding it
+    // to live glass makes the union live, so the result must not claim to be
+    // dark. Inheriting A would have made the A-first case a jumper.
+    //
+    // Note this assertion also passed on the BROKEN code, which dropped `kind`
+    // outright — it is only meaningful paired with the jumper+jumper case
+    // above, which failed. Bug class 7: an assertion that cannot fail is not
+    // a test.
+    expect(join(pair({ kind: 'jumper' }, {})).kind ?? '').toBe('');
+    expect(join(pair({}, { kind: 'jumper' })).kind ?? '').toBe('');
+    expect(join(pair({ kind: 'jumper' }, { kind: '' })).kind ?? '').toBe('');
+  });
+
+  it('joining two plain runs is unchanged — no classification keys appear', () => {
+    const joined = join(pair({}, {}));
+    expect('is_channel_letter_face' in joined).toBe(false);
+    expect('channel_letter_depth_mm' in joined).toBe(false);
+    expect('raceway_id' in joined).toBe(false);
+    expect('group_id' in joined).toBe(false);
+    expect('kind' in joined).toBe(false);
+    expect(joined.polyline.points).toEqual([[0, 0], [10, 0], [20, 0], [30, 0], [40, 0]]);
+  });
+
+  it('classification survives every endpoint combination, not just tail-to-head', () => {
+    // head/tail combinations route through reversedRun first; the carry has to
+    // happen after that, on the reversed copies, or the reversal loses it.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        run('a', [[0, 0], [10, 0], [20, 0]], { is_channel_letter_face: true, raceway_id: 'gl1' }),
+        run('b', [[40, 0], [30, 0], [20, 0]], { group_id: 'g1' }),
+      ],
+    };
+    for (const [ea, eb] of [['tail', 'tail'], ['head', 'head'], ['head', 'tail']] as const) {
+      const merged = ops.joinRuns(doc, 'a', ea, 'b', eb).runs[0];
+      expect(merged.is_channel_letter_face).toBe(true);
+      expect(merged.raceway_id).toBe('gl1');
+      expect(merged.group_id).toBe('g1');
+    }
+  });
+
+  it('a self-join (closing a run into a loop) keeps everything it already had', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [run('a', [[0, 0], [10, 0], [10, 10], [0, 10]], {
+        is_channel_letter_face: true,
+        channel_letter_depth_mm: 90,
+        raceway_id: 'gl1',
+        group_id: 'g1',
+        kind: 'jumper',
+      })],
+    };
+    const closed = ops.joinRuns(doc, 'a', 'head', 'a', 'tail').runs[0];
+    expect(closed.polyline.closed).toBe(true);
+    expect(closed.is_channel_letter_face).toBe(true);
+    expect(closed.channel_letter_depth_mm).toBe(90);
+    expect(closed.raceway_id).toBe('gl1');
+    expect(closed.group_id).toBe('g1');
+    expect(closed.kind).toBe('jumper');
+  });
+
+  it('splitRun still carries the same five fields (the shared helper did not regress PR #140)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [run('a', [[0, 0], [10, 0], [20, 0], [30, 0]], {
+        is_channel_letter_face: true,
+        channel_letter_depth_mm: 90,
+        raceway_id: 'gl1',
+        group_id: 'g1',
+        kind: 'jumper',
+      })],
+    };
+    const halves = ops.splitRun(doc, 'a', 2).runs;
+    expect(halves.length).toBe(2);
+    for (const h of halves) {
+      expect(h.is_channel_letter_face).toBe(true);
+      expect(h.channel_letter_depth_mm).toBe(90);
+      expect(h.raceway_id).toBe('gl1');
+      expect(h.group_id).toBe('g1');
+      expect(h.kind).toBe('jumper');
+      // `direction` is deliberately NOT carried — it means something only on
+      // a closed run with two electrodes, and both halves are open.
+      expect('direction' in h).toBe(false);
+    }
+  });
+
+  it('splitting a plain run still produces no classification keys', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [run('a', [[0, 0], [10, 0], [20, 0], [30, 0]])],
+    };
+    for (const h of ops.splitRun(doc, 'a', 2).runs) {
+      expect('is_channel_letter_face' in h).toBe(false);
+      expect('raceway_id' in h).toBe(false);
+      expect('group_id' in h).toBe(false);
+      expect('kind' in h).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #16's neighbour audit — the ops next door that also assume raw points.
+//
+// Both of these change a run's VERTEX COUNT and left `polyline.segment_types`
+// exactly as they found it. The array is then the wrong length, which is not
+// a cosmetic drift: internal/designdoc/types.go's UnmarshalJSON enforces
+// len(SegmentTypes) == segmentCount at the door, so the next save of that doc
+// is a 400 and the operator loses the edit with no idea why. Every arc after
+// the touch point also lands on the wrong segment in the meantime.
+// ---------------------------------------------------------------------------
+describe('segment_types survives vertex-count changes (Bug #16 neighbour audit)', () => {
+  // The invariant the Go decoder enforces: one entry per gap, plus the
+  // closing segment when the run is closed.
+  function expectWellFormed(run: DesignRun) {
+    const st = run.polyline.segment_types;
+    if (!st) return;
+    const n = run.polyline.points.length;
+    expect(st.length).toBe(run.polyline.closed ? n : n - 1);
+  }
+
+  describe('simplifyRun', () => {
+    // A long straight with redundant collinear vertices, then one arc. RDP
+    // measures deviation from the CHORD, so it cannot see an arc's bow at all
+    // — it would drop the vertex defining a 50 mm sagitta as "straight".
+    function doc(): DesignDoc {
+      return {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        runs: [{
+          id: 'a',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0], [30, 0], [40, 0], [240, 0]],
+            closed: false,
+            segment_types: ['line', 'line', 'line', 'line', 'arc'],
+          },
+        }],
+      };
+    }
+
+    it('leaves a well-formed segment_types array after dropping vertices', () => {
+      const out = ops.simplifyRun(doc(), 'a', 1).runs[0];
+      // The collinear middles collapse, so something was actually dropped.
+      expect(out.polyline.points.length).toBeLessThan(6);
+      expectWellFormed(out);
+    });
+
+    it('keeps the arc: the drawn shape is unchanged where the curve lives', () => {
+      const out = ops.simplifyRun(doc(), 'a', 1).runs[0];
+      // Both ends of the arc segment survive, and it is still an arc.
+      expect(out.polyline.points).toContainEqual([40, 0]);
+      expect(out.polyline.points).toContainEqual([240, 0]);
+      const last = out.polyline.points.length - 2;
+      expect(isArcKind(segmentTypeAt(out, last))).toBe(true);
+      // The geometric invariant: the apex of the bow is still 50 mm off the
+      // chord. Measured through flatRunPoints, not raw vertices.
+      const ys = flatRunPoints(out).map((p) => p[1]);
+      expect(Math.max(...ys)).toBeCloseTo(50, 6);
+    });
+
+    it('a line-only run simplifies exactly as before', () => {
+      const plain: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 100, 100],
+        runs: [{
+          id: 'a',
+          polyline: {
+            points: [[0, 0], [10, 0], [20, 0], [30, 0], [40, 0], [40, 40]],
+            closed: false,
+          },
+        }],
+      };
+      const out = ops.simplifyRun(plain, 'a', 1).runs[0];
+      expect(out.polyline.points).toEqual([[0, 0], [40, 0], [40, 40]]);
+      expect(out.polyline.segment_types).toBeUndefined();
+    });
+  });
+
+  describe('insertDoubleback', () => {
+    function doc(types: ('line' | 'arc' | 'arc_r')[]): DesignDoc {
+      return {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        runs: [{
+          id: 'a',
+          polyline: {
+            points: [[0, 0], [100, 0], [200, 0]],
+            closed: false,
+            segment_types: types,
+          },
+          tube_diameter_mm: 10,
+        }],
+      };
+    }
+
+    it('splices four line entries into segment_types for the four new vertices', () => {
+      const out = ops.insertDoubleback(doc(['line', 'arc']), 'a', 0, 0.5).runs[0];
+      expect(out.polyline.points.length).toBe(7);
+      expectWellFormed(out);
+      // The arc was on segment 1 and must still be, four vertices later.
+      expect(out.polyline.segment_types)
+        .toEqual(['line', 'line', 'line', 'line', 'line', 'arc']);
+    });
+
+    it('refuses to hairpin an ARC segment rather than placing the U on its chord', () => {
+      // The hairpin is built by interpolating p1 -> p2 linearly, so on an arc
+      // it would land on the chord — up to a quarter of the chord off the
+      // glass. Refusing is the honest answer until the placement is arc-aware.
+      const before = doc(['arc', 'line']);
+      const out = ops.insertDoubleback(before, 'a', 0, 0.5).runs[0];
+      expect(out.polyline.points).toEqual(before.runs[0].polyline.points);
+      expect(out.polyline.segment_types).toEqual(['arc', 'line']);
+    });
+
+    it('a run with no segment_types does not grow one', () => {
+      const plain: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        runs: [{
+          id: 'a',
+          polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+          tube_diameter_mm: 10,
+        }],
+      };
+      const out = ops.insertDoubleback(plain, 'a', 0, 0.5).runs[0];
+      expect(out.polyline.points.length).toBe(7);
+      expect('segment_types' in out.polyline).toBe(false);
+    });
   });
 });
