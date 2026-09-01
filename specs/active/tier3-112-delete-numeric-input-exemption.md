@@ -121,8 +121,10 @@ from being live, in the two files most likely to get one.
 - `NumericField` spreads `...rest` **before** applying `type`/`step`, so
   `className` (EditorPage 2158 `snap-input`), `style` (`fieldInputStyle`),
   `placeholder`, `min`, `max`, `value`, `onChange` and `data-testid` all pass
-  through unchanged. `ArrangePanel`'s four `data-testid` hooks are used by
-  existing tests — they must survive verbatim or those tests break.
+  through unchanged. Preserve `ArrangePanel`'s four `data-testid` hooks
+  verbatim, but be aware **nothing currently uses them** — grepped 2026-09-01,
+  they appear only in `ArrangePanel.tsx` itself. Keep them for whoever wires up
+  a browser test later; do not treat them as a safety net.
 - **`snapMM` changes spinner feel.** Going from `step="0.5"` to `step="any"`
   makes arrow keys move by the browser default of 1 rather than 0.5. That is a
   real, deliberate UX change and the documented cost of the rule. Note it in
@@ -141,4 +143,12 @@ from being live, in the two files most likely to get one.
   numeric input is reintroduced anywhere under `web/src`. **Verify it is
   non-vacuous** by reverting one call site and watching it go red before you
   claim it works.
-- Existing `ArrangePanel` tests still pass unmodified.
+- `npm test` still passes. **Note the coverage you do NOT have:** there is no
+  DOM test environment in this repo — `vite.config.ts` declares no `test`
+  block and neither jsdom, happy-dom nor testing-library is a dependency, so
+  vitest runs in plain node and no component can be rendered in a test. There
+  is no `ArrangePanel` component test and you cannot write one. **Do not add a
+  DOM test harness to make this verifiable — that is a separate decision, not
+  part of this row.** The two tests in deliverables 3 and 4 are a filesystem
+  and module scan, which is exactly why they work here. Verify the visual
+  result by running a real build and looking at the two panels.
