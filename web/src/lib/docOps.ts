@@ -2256,6 +2256,23 @@ export function autoHousingAllElectrodes(
 //   - Self-intersection in the inner offset is auto-trimmed (heuristic;
 //     figure-8 cases still need manual cleanup).
 //
+// ARCS (Bug #16): the source is offset through `flatRunPoints`, so the
+// generated paths follow the drawn curve rather than its chords. Two
+// consequences the operator is owed, and which have nowhere better to live
+// until the warning channel stops unmounting the editor (see the note by
+// `warnings` below):
+//
+//   - THE EMITTED RUNS CARRY NO `segment_types`. The offset of a circular arc
+//     is a circular arc of a different radius, but `segment_types` can only
+//     express the one fixed bulge ARC_BULGE implies for a given chord, so that
+//     curve is not representable. The offsets ship as flattened polylines: the
+//     operator trades curve fidelity — those segments can no longer be flipped
+//     or re-radiused — for a path that actually follows the glass.
+//   - DENSITY. `arcGeom` samples at 5°, i.e. 22 points per arc segment. On a
+//     200 mm chord (radius 125, offset ring 135) the sampled offset's sagitta
+//     error is 0.12 mm, 0.06% of the arc. Vertex count grows linearly at ~22
+//     per arc — a curve-heavy glyph gets bigger, not unbounded.
+//
 // Failure modes:
 //   - <3 vertices on a closed run (or <2 on open) → returns the doc
 //     unchanged.
@@ -2401,17 +2418,17 @@ export function neonize(
   }
 
   // Stitch any non-empty warnings into a single user-facing string.
+  //
+  // NOTE — deliberately NOT warning that arcs were flattened, even though the
+  // operator is owed that fact. This channel is not a toast: EditorPage's
+  // neonizeSelected pipes it into `setError`, and EditorPage early-returns
+  // `if (error) return <p className="error">{error}</p>` — the entire editor
+  // unmounts, taking the unsaved doc with it. Verified in a browser: adding a
+  // warning here replaced the editor with a bare red line of text. The two
+  // warnings below already do that, rarely; one that fired on EVERY arc
+  // neonize would make it the normal outcome. Filed as a separate bug. Until
+  // the channel is a real toast, the fact is stated in the doc-comment above.
   const warnings: string[] = [];
-  if (runHasArcs(src)) {
-    // The offset of a circular arc IS a circular arc — of a different radius.
-    // `segment_types` can only express the one fixed bulge that ARC_BULGE
-    // implies for a given chord, so that curve is not representable and the
-    // emitted runs ship as flattened polylines. The operator is trading curve
-    // fidelity (they can no longer flip or re-radius those segments) for a
-    // path that actually follows the glass; say so rather than let them
-    // discover it at the node editor.
-    warnings.push('Arc segments were flattened — the offsets are polylines, not arcs.');
-  }
   if (outer.selfIntersected) {
     warnings.push('Outer offset self-intersects — clean up with the node editor.');
   }
