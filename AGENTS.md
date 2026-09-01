@@ -67,6 +67,61 @@ Then say this explicitly in the dispatch prompt: **a wrong premise is a
 finding — report it, don't silently work around it.** The best results in both
 rounds came from agents that pushed back on the spec.
 
+## The spec has to be on `origin/main` before you dispatch
+
+A worktree agent branches from `origin/main`. **Untracked files in your working
+tree do not exist inside its worktree**, so a spec you just wrote and have not
+pushed is invisible to the agent that needs it — it will improvise, or stall
+asking for a file that is right there on your disk.
+
+So the order is: spec PR → merged → dispatch. That is what PR #154 did for six
+specs at once, and batching is the cheap way to pay the round-trip.
+
+Two ways this bites:
+
+- **Half a round is dispatchable and half is not.** In the September 2026 round
+  #101 and #110 already had specs on main and went immediately, while #109 and
+  #111 had to wait on a spec PR. Check which specs are *tracked* (`git ls-files
+  specs/active/`) before planning the round, not after.
+- **Do not work around it by having the agent write the spec itself.** That is
+  how `specs/active/bug-14-*.md` ended up duplicating `specs/done/bug-14-*.md`,
+  with the active copy still reading "blocked on PR #149 merging first" for a
+  fix that had shipped in PR #152.
+
+## Spec hygiene between rounds
+
+Two mechanical checks, both one-liners, both of which have caught real drift:
+
+```sh
+# A spec in active/ that also exists in done/ is a stale leftover.
+for f in specs/active/*.md; do [ -f "specs/done/$(basename "$f")" ] && echo "STALE: $f"; done
+
+# An Appendix B row number carrying DISAGREEING status markers. A row appearing
+# twice is normal and expected — the original "planned" entry keeps the
+# rationale, the later entry records the outcome. What is broken is when the
+# two disagree, because the first one then reports shipped work as unstarted.
+python3 - <<'EOF'
+import re, collections
+apx = open('todo.md').read().split('## Appendix B')[1]
+seen = collections.defaultdict(set)
+for n, rest in re.findall(r'^(\d+)\. (.{0,3})', apx, re.M):
+    seen[n].add('done' if rest.startswith('\u2705') else 'open')
+for n, st in sorted(seen.items(), key=lambda kv: int(kv[0])):
+    if len(st) > 1:
+        print(f'DISAGREES: row {n} is listed as both open and shipped')
+EOF
+```
+
+Do not use a bare `uniq -d` on the row numbers for this — it fires on every
+legitimately-duplicated row, so it reads as noise and gets ignored, which is
+worse than no check.
+
+The status-disagreement check found **six** rows (87, 98, 99, 103, 104, 105)
+reporting finished work as unstarted. Anyone reading the first entry would
+conclude the task was open and could redo it. The roadmap disagreeing with
+itself is the most expensive kind of staleness here, because it silently
+converts a docs bug into duplicated engineering.
+
 ## Dispatching a sub-agent
 
 For substantial tasks (deliverables that would take a 100+ line prompt):
