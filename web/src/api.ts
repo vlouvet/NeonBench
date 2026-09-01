@@ -251,7 +251,17 @@ export type Bend = {
 
 export type DesignRun = {
   id: string;
-  polyline: { points: [number, number][]; closed: boolean };
+  polyline: {
+    points: [number, number][];
+    closed: boolean;
+    // Tier 3 #78 — one entry per SEGMENT, so one shorter than `points` for an
+    // open run (and the same length as it for a closed one). Absent — the
+    // shape every pre-#78 doc has — means every segment is a straight line.
+    // Mirrors `designdoc.Polyline.SegmentTypes`; the Go decoder validates the
+    // length at unmarshal, so a mismatched array is a 400, not a silent
+    // disagreement about which segment is curved.
+    segment_types?: ('line' | 'arc')[];
+  };
   tube_diameter_mm?: number;
   color?: string;
   electrodes?: { point_index: number }[];

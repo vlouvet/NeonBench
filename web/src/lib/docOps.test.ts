@@ -3210,3 +3210,102 @@ describe('splitRun classification', () => {
     expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
   });
 });
+
+// Tier 3 #78 — an arc changes what is drawn BETWEEN two vertices. The vertex
+// list must not move, because electrodes, bends, blockouts and annotations all
+// index into it.
+describe('setSegmentType', () => {
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 400, 400],
+    runs,
+  });
+  const line3 = (): DesignRun => ({
+    id: 'r1',
+    polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+  });
+
+  it('allocates the array lazily, filled with line', () => {
+    const next = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    expect(next.runs[0].polyline.segment_types).toEqual(['line', 'arc']);
+  });
+
+  // Back-compat is not decoration here: the Go decoder validates the array's
+  // length, so a doc that carries a redundant all-line array is just noise
+  // that can drift out of sync. Dropping it keeps old docs byte-identical.
+  it('drops the array again when the last arc is straightened', () => {
+    let doc = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    doc = ops.convertSegmentToLine(doc, 'r1', 1);
+    expect('segment_types' in doc.runs[0].polyline).toBe(false);
+  });
+
+  it('never changes the vertex list', () => {
+    const before = line3();
+    const next = ops.convertSegmentToArc(docOf([before]), 'r1', 0);
+    expect(next.runs[0].polyline.points).toEqual(before.polyline.points);
+  });
+
+  it('leaves index-anchored data untouched', () => {
+    const run: DesignRun = {
+      ...line3(),
+      electrodes: [{ point_index: 0 }, { point_index: 2 }],
+      bends: [{ live_index: 1 }],
+      annotations: [{ kind: 'support', live_index: 1 }],
+    };
+    const next = ops.convertSegmentToArc(docOf([run]), 'r1', 1).runs[0];
+    expect(next.electrodes).toEqual(run.electrodes);
+    expect(next.bends).toEqual(run.bends);
+    expect(next.annotations).toEqual(run.annotations);
+  });
+
+  it('keeps the array exactly one entry per segment', () => {
+    // Open: points-1. Closed: points, because the closing segment counts.
+    const open = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    expect(open.runs[0].polyline.segment_types).toHaveLength(2);
+    const closedRun: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [100, 0], [100, 100]], closed: true },
+    };
+    const closed = ops.convertSegmentToArc(docOf([closedRun]), 'r1', 2);
+    expect(closed.runs[0].polyline.segment_types).toHaveLength(3);
+    expect(closed.runs[0].polyline.segment_types?.[2]).toBe('arc');
+  });
+
+  it('refuses an out-of-range segment, and a no-op returns the same doc', () => {
+    const doc = docOf([line3()]);
+    expect(ops.convertSegmentToArc(doc, 'r1', -1)).toBe(doc);
+    expect(ops.convertSegmentToArc(doc, 'r1', 2)).toBe(doc); // only 2 segments: 0,1
+    expect(ops.convertSegmentToArc(doc, 'nope', 0)).toBe(doc);
+    expect(ops.convertSegmentToLine(doc, 'r1', 0)).toBe(doc); // already a line
+  });
+
+  // A circle needs two distinct endpoints. Marking a zero-length segment as an
+  // arc would leave it flagged curved and silently drawn straight everywhere.
+  it('refuses to curve a zero-length segment', () => {
+    const dup: DesignRun = {
+      id: 'r1',
+      polyline: { points: [[0, 0], [0, 0], [100, 0]], closed: false },
+    };
+    const doc = docOf([dup]);
+    expect(ops.convertSegmentToArc(doc, 'r1', 0)).toBe(doc);
+    expect(ops.convertSegmentToArc(doc, 'r1', 1)).not.toBe(doc);
+  });
+
+  it('converts several segments independently', () => {
+    let doc = docOf([{
+      id: 'r1',
+      polyline: { points: [[0, 0], [100, 0], [200, 0], [300, 0]], closed: false },
+    }]);
+    doc = ops.convertSegmentToArc(doc, 'r1', 0);
+    doc = ops.convertSegmentToArc(doc, 'r1', 2);
+    expect(doc.runs[0].polyline.segment_types).toEqual(['arc', 'line', 'arc']);
+    doc = ops.convertSegmentToLine(doc, 'r1', 0);
+    expect(doc.runs[0].polyline.segment_types).toEqual(['line', 'line', 'arc']);
+  });
+
+  it('does not mutate the input doc', () => {
+    const doc = docOf([line3()]);
+    ops.convertSegmentToArc(doc, 'r1', 1);
+    expect(doc.runs[0].polyline.segment_types).toBeUndefined();
+  });
+});

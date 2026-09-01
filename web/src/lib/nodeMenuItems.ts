@@ -1,5 +1,6 @@
 import type { DesignDoc } from '../api';
 import { runArcs } from './runArcs';
+import { segmentTypeAt } from './arcGeom';
 
 // Tier 3 #76 — every action the node-edit context menu can offer at a
 // vertex. Deliberately a closed union rather than free-form strings: the
@@ -21,6 +22,8 @@ export type NodeMenuActionId =
   | 'mark-doubleback'
   | 'mark-drop-bend'
   | 'mark-special-bend'
+  | 'convert-to-arc'
+  | 'convert-to-line'
   | 'delete-vertex';
 
 // Items are grouped so the menu can rule between them. Order within the
@@ -101,6 +104,25 @@ export function availableActionsForVertex(
       hint: 'Hold Shift for the right side',
       group: 'geometry',
     });
+    // Tier 3 #78 — the segment LEAVING this vertex. Only one of the two shows,
+    // because offering "convert to line" on a segment that is already straight
+    // is a row that does nothing. Needs a non-zero chord: an arc through two
+    // coincident points has no circle.
+    if (segmentTypeAt(run, vertexIndex) === 'arc') {
+      items.push({
+        id: 'convert-to-line',
+        label: 'Convert to line',
+        hint: 'Straighten the segment after this vertex',
+        group: 'geometry',
+      });
+    } else {
+      items.push({
+        id: 'convert-to-arc',
+        label: 'Convert to arc',
+        hint: 'Curve the segment after this vertex',
+        group: 'geometry',
+      });
+    }
   }
   // splitRun slices the point list and clears `closed`, which drops a
   // closed loop's closing segment on the floor — the two pieces no longer

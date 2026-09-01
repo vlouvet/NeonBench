@@ -1,5 +1,6 @@
 import type { DesignRun } from '../api';
 import { runArcs } from './runArcs';
+import { vertexArcRadiusMM, vertexTurnDeg, walkSegmentLengthMM } from './arcGeom';
 
 export type BendPoint = {
   liveIndex: number;       // index into the live arc (matches blockout/annotation index space)
@@ -27,16 +28,29 @@ export function effectiveBends(run: DesignRun, projectDiameterMM = DEFAULT_DIAME
   if (liveIdx.length < 3) return [];
   const pts = liveIdx.map((i) => run.polyline.points[i]);
   const n = pts.length;
+  // Tier 3 #78 — an arc is ~15.9% longer than its chord, so chord-summing
+  // would place every downstream callout short along the glass. Mirrors
+  // designdoc.EffectiveBends; the editor's list and the printed page have to
+  // agree or the operator is reading two different documents.
   const arcLen = new Array<number>(n).fill(0);
-  for (let i = 1; i < n; i++) arcLen[i] = arcLen[i - 1] + distance(pts[i - 1], pts[i]);
+  for (let i = 1; i < n; i++) {
+    arcLen[i] = arcLen[i - 1] + walkSegmentLengthMM(run, liveIdx[i - 1], liveIdx[i]);
+  }
   return run.bends
     .filter((b) => b.live_index >= 0 && b.live_index < n)
     .map((b) => {
       const li = b.live_index;
-      const a = pts[Math.max(0, li - 1)];
-      const c = pts[Math.min(n - 1, li + 1)];
-      const turn = vertexTurn(a, pts[li], c);
-      const r = circumradius3(a, pts[li], c);
+      const lo = Math.max(0, li - 1);
+      const hi = Math.min(n - 1, li + 1);
+      const a = pts[lo];
+      const c = pts[hi];
+      // Magnitude: an arc leaves and rejoins its chord at half the included
+      // angle, and this field has always reported an unsigned angle.
+      const turn =
+        (Math.abs(vertexTurnDeg(run, liveIdx[lo], liveIdx[li], liveIdx[hi])) * Math.PI) / 180;
+      // When an arc meets the vertex, its radius is the one the bender forms.
+      const arcR = vertexArcRadiusMM(run, liveIdx[lo], liveIdx[li], liveIdx[hi]);
+      const r = arcR > 0 ? arcR : circumradius3(a, pts[li], c);
       return {
         liveIndex: li,
         pointIndex: liveIdx[li],
@@ -61,11 +75,20 @@ export function computeBends(run: DesignRun, projectDiameterMM = DEFAULT_DIAMETE
   const pts = liveIdx.map((i) => run.polyline.points[i]);
   const n = pts.length;
 
+  // Tier 3 #78 — arc-aware, same reasoning as effectiveBends above.
   const arcLen = new Array<number>(n).fill(0);
-  for (let i = 1; i < n; i++) arcLen[i] = arcLen[i - 1] + distance(pts[i - 1], pts[i]);
+  for (let i = 1; i < n; i++) {
+    arcLen[i] = arcLen[i - 1] + walkSegmentLengthMM(run, liveIdx[i - 1], liveIdx[i]);
+  }
 
   const turn = new Array<number>(n).fill(0);
-  for (let i = 1; i < n - 1; i++) turn[i] = vertexTurn(pts[i - 1], pts[i], pts[i + 1]);
+  // Magnitude, not signed: detection below thresholds on size, so a signed
+  // value would make every right-hand bend fall under it and disappear. The Go
+  // side shipped exactly that bug once.
+  for (let i = 1; i < n - 1; i++) {
+    turn[i] =
+      (Math.abs(vertexTurnDeg(run, liveIdx[i - 1], liveIdx[i], liveIdx[i + 1])) * Math.PI) / 180;
+  }
 
   // 3-vertex window sum smooths out single-vertex jitter from polyline
   // flattening without erasing real local maxima.
@@ -86,10 +109,13 @@ export function computeBends(run: DesignRun, projectDiameterMM = DEFAULT_DIAMETE
   let bestVal = 0;
   function flush() {
     if (!inBend || bestI < 0) return;
-    const a = pts[Math.max(0, bestI - 1)];
+    const lo = Math.max(0, bestI - 1);
+    const hi = Math.min(n - 1, bestI + 1);
+    const a = pts[lo];
     const b = pts[bestI];
-    const c = pts[Math.min(n - 1, bestI + 1)];
-    const r = circumradius3(a, b, c);
+    const c = pts[hi];
+    const arcR = vertexArcRadiusMM(run, liveIdx[lo], liveIdx[bestI], liveIdx[hi]);
+    const r = arcR > 0 ? arcR : circumradius3(a, b, c);
     raw.push({
       liveIndex: bestI,
       pointIndex: liveIdx[bestI],
@@ -137,20 +163,6 @@ function distance(a: [number, number], b: [number, number]): number {
   const dx = a[0] - b[0];
   const dy = a[1] - b[1];
   return Math.sqrt(dx * dx + dy * dy);
-}
-
-function vertexTurn(a: [number, number], b: [number, number], c: [number, number]): number {
-  const ax = b[0] - a[0];
-  const ay = b[1] - a[1];
-  const bx = c[0] - b[0];
-  const by = c[1] - b[1];
-  const la = Math.hypot(ax, ay);
-  const lb = Math.hypot(bx, by);
-  if (la === 0 || lb === 0) return 0;
-  let cos = (ax * bx + ay * by) / (la * lb);
-  if (cos > 1) cos = 1;
-  if (cos < -1) cos = -1;
-  return Math.acos(cos);
 }
 
 function circumradius3(a: [number, number], b: [number, number], c: [number, number]): number {

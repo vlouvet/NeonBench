@@ -81,6 +81,7 @@ export default function EditorCanvas({
   onDeleteElectrode,
   onElectrodeContextMenu,
   onSetTool,
+  onSetSegmentType,
   selectedGuidelineId,
   onSelectGuideline,
   onMoveGuideline,
@@ -181,6 +182,10 @@ export default function EditorCanvas({
   // lands the far end. Optional: without it that one item is withheld
   // rather than offered as a dead row.
   onSetTool?: (tool: EditorTool) => void;
+  // Tier 3 #78 — curve or straighten the segment leaving a vertex. Optional:
+  // without it the two menu items are withheld rather than offered as dead
+  // rows.
+  onSetSegmentType?: (runId: string, segmentIndex: number, type: 'line' | 'arc') => void;
   // Tier 2 #74 — raceway guidelines. Selection lives in EditorPage because
   // the sidebar's "Split tubes at raceway" action is gated on it; the canvas
   // owns only the drag. All optional so a caller that does not want
@@ -1947,6 +1952,12 @@ export default function EditorCanvas({
       case 'mark-special-bend':
         if (liveIndex >= 0) onPlaceBend(runId, liveIndex);
         break;
+      case 'convert-to-arc':
+        onSetSegmentType?.(runId, vertexIndex, 'arc');
+        break;
+      case 'convert-to-line':
+        onSetSegmentType?.(runId, vertexIndex, 'line');
+        break;
       case 'delete-vertex':
         onDeleteVertex(runId, vertexIndex);
         break;
@@ -2104,7 +2115,7 @@ export default function EditorCanvas({
             const selected = primarySelectedRunIdSet.has(run.id);
             const arcs = runArcs(run);
             const inactiveD = arcs.inactive.length > 1
-              ? indicesToD(arcs.inactive, run.polyline.points, false)
+              ? indicesToD(arcs.inactive, run.polyline.points, false, run)
               : '';
             const segs = blockoutSegments(arcs.live, run.blockouts, arcs.liveClosed);
             const liveStroke = colorHex(run.color);
@@ -2117,7 +2128,7 @@ export default function EditorCanvas({
               tool === 'select' ? 'pointer' : 'crosshair';
             // When a colored run is selected we still want a clear selection
             // signal, so draw a wider semi-transparent pink halo underneath.
-            const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed);
+            const liveD = indicesToD(arcs.live, run.polyline.points, arcs.liveClosed, run);
             return (
               <g key={run.id}>
                 {inactiveD && (
@@ -2175,6 +2186,7 @@ export default function EditorCanvas({
                     seg.liveIndices,
                     run.polyline.points,
                     arcs.liveClosed && segs.length === 1 && !seg.isBlockout,
+                    run,
                   );
                   if (seg.isBlockout) {
                     // Blockouts are painted-out tube — they don't glow, so
@@ -3083,7 +3095,10 @@ export default function EditorCanvas({
           x={nodeMenu.x}
           y={nodeMenu.y}
           items={availableActionsForVertex(doc, nodeMenu.runId, nodeMenu.vertexIndex).filter(
-            (item) => item.id !== 'blockout-from-here' || !!onSetTool,
+            (item) =>
+              (item.id !== 'blockout-from-here' || !!onSetTool) &&
+              ((item.id !== 'convert-to-arc' && item.id !== 'convert-to-line') ||
+                !!onSetSegmentType),
           )}
           onPick={dispatchNodeMenu}
           onClose={() => setNodeMenu(null)}

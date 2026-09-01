@@ -25,6 +25,7 @@ import {
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection } from './runArcs';
+import { segmentCount, segmentTypeAt } from './arcGeom';
 import {
   offsetOpenPolyline,
   offsetPolygon,
@@ -3015,4 +3016,74 @@ function openClosedRunAtCrossing(
     delete next.direction;
     return next;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3 #78 — arc / line segment conversion
+// ---------------------------------------------------------------------------
+
+// setSegmentType marks one segment of a run as a straight line or a circular
+// arc. The vertex list never changes — an arc alters what is drawn BETWEEN two
+// vertices, so every electrode, bend, blockout and annotation index survives
+// untouched. That is the whole reason the field is per-segment rather than
+// per-vertex.
+//
+// The `segment_types` array is allocated lazily, filled with 'line', the first
+// time a segment is curved; setting the last arc back to a line drops the
+// array again so the doc round-trips byte-identically to a pre-#78 one. The Go
+// decoder validates the array's length at unmarshal, so a wrong-length array
+// is a failed save rather than a silent disagreement — which makes keeping it
+// exactly `segmentCount` long a correctness requirement, not tidiness.
+export function setSegmentType(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+  type: 'line' | 'arc',
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  const count = segmentCount(run);
+  if (segmentIndex < 0 || segmentIndex >= count) return doc;
+  if (segmentTypeAt(run, segmentIndex) === type) return doc;
+
+  // An arc needs two distinct endpoints to define a circle. Refusing here
+  // keeps a degenerate segment from being marked curved and then silently
+  // drawn straight by every consumer.
+  if (type === 'arc') {
+    const pts = run.polyline.points;
+    const a = pts[segmentIndex];
+    const b = pts[(segmentIndex + 1) % pts.length];
+    if (a[0] === b[0] && a[1] === b[1]) return doc;
+  }
+
+  const next: ('line' | 'arc')[] = [];
+  for (let i = 0; i < count; i++) {
+    next.push(i === segmentIndex ? type : segmentTypeAt(run, i));
+  }
+
+  return mapRun(doc, runId, (r) => {
+    const polyline = { ...r.polyline };
+    if (next.some((t) => t === 'arc')) {
+      polyline.segment_types = next;
+    } else {
+      delete polyline.segment_types;
+    }
+    return { ...r, polyline };
+  });
+}
+
+export function convertSegmentToArc(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+): DesignDoc {
+  return setSegmentType(doc, runId, segmentIndex, 'arc');
+}
+
+export function convertSegmentToLine(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+): DesignDoc {
+  return setSegmentType(doc, runId, segmentIndex, 'line');
 }

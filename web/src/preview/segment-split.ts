@@ -27,6 +27,7 @@
 
 import type { DesignRun } from '../api';
 import { blockoutSegments, runArcs } from '../lib/runArcs';
+import { flattenSegment, segmentIndexBetween, segmentTypeAt } from '../lib/arcGeom';
 
 export interface RunSegment {
   // Polyline point pairs ([x, y] in mm, doc-Y convention). Hand
@@ -110,18 +111,52 @@ export function splitRunBySegments(run: DesignRun): RunSegment[] {
       // index falls inside this segment's slice. Translate to a
       // segment-local (zero-based) index so the renderer can hand it
       // straight to `liftPointsAtJumps` without further translation.
+      // Tier 3 #78 — expand arc segments into their sampled curve so the
+      // preview shows the tube bending. Without this a curved segment is two
+      // vertices, and CatmullRom through two points is a straight line: the 2D
+      // canvas and the printed pattern would show a curve while the 3D preview
+      // showed a chord.
+      //
+      // `localOf[k]` is where walk position k landed in the expanded array,
+      // which is what the jump / drop-bend indices below are remapped through.
+      const expanded: [number, number][] = [];
+      const localOf: number[] = [];
+      for (let k = 0; k < s.liveIndices.length; k++) {
+        const idx = s.liveIndices[k];
+        if (k === 0) {
+          localOf.push(expanded.length);
+          expanded.push(points[idx]);
+          continue;
+        }
+        const prev = s.liveIndices[k - 1];
+        const hit = segmentIndexBetween(prev, idx, points.length, !!run.polyline.closed);
+        const isArc = !!hit && segmentTypeAt(run, hit.seg) === 'arc';
+        if (isArc && hit) {
+          const a = points[hit.seg];
+          const b = points[(hit.seg + 1) % points.length];
+          const samples = hit.reversed
+            ? flattenSegment(b, a, true).slice(0, -1).reverse().concat([a])
+            : flattenSegment(a, b, true);
+          for (const pt of samples) expanded.push(pt);
+          localOf.push(expanded.length - 1);
+          continue;
+        }
+        localOf.push(expanded.length);
+        expanded.push(points[idx]);
+      }
+
       const segLocalJumps: number[] = [];
       for (const ji of jumpPolylineIdxs) {
-        const localIdx = s.liveIndices.indexOf(ji);
-        if (localIdx >= 0) segLocalJumps.push(localIdx);
+        const walkIdx = s.liveIndices.indexOf(ji);
+        if (walkIdx >= 0) segLocalJumps.push(localOf[walkIdx]);
       }
       const segLocalDropBends: number[] = [];
       for (const di of dropBendPolylineIdxs) {
-        const localIdx = s.liveIndices.indexOf(di);
-        if (localIdx >= 0) segLocalDropBends.push(localIdx);
+        const walkIdx = s.liveIndices.indexOf(di);
+        if (walkIdx >= 0) segLocalDropBends.push(localOf[walkIdx]);
       }
       return {
-        points: s.liveIndices.map((idx) => points[idx]),
+        points: expanded,
         isBlockout: s.isBlockout,
         // Only a single, unbroken, live, closed loop renders as a
         // closed tube. Any blockout breaks the loop into open arcs.
