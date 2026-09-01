@@ -2080,8 +2080,9 @@ export default function EditorPage() {
                     // value silently swallows form submits. This is a
                     // millimetre measurement in an imperial trade —
                     // 12.7, 19.05 and 25.4 all have to be typeable.
-                    // (This file is on the lint rule's legacy exempt
-                    // list, so nothing but discipline catches it here.)
+                    // (Tier 3 #112 took this file off the lint rule's
+                    // legacy exempt list, so the rule now catches it
+                    // here rather than relying on discipline.)
                     value={textCapHeightMM}
                     min={1}
                     onChange={(e) => {
@@ -2154,9 +2155,12 @@ export default function EditorPage() {
               onClick={() => setSnapEnabled((v) => !v)}
               title={`Snap labels, dimensions, and vertex drags to a ${snapMM}mm grid`}
             >Snap {snapEnabled ? 'on' : 'off'}</button>
-            <input
-              type="number"
-              step="0.5"
+            {/* Tier 3 #112 — was `step="0.5" min="0.1"`, which made the
+                valid set 0.1, 0.6, 1.1, … : a 1mm snap grid was off the
+                lattice. `min` is kept as a plain lower bound; the arrow
+                keys now step by the browser default of 1 instead of 0.5,
+                which is the documented cost of the rule. */}
+            <NumericField
               min="0.1"
               value={snapMM}
               onChange={(e) => {
@@ -2571,24 +2575,23 @@ export default function EditorPage() {
                       }`
                     : ''}
                 </div>
-                {/* step="any" on every one of these. `min` makes a lattice
-                    out of `step`, and a default value off that lattice
-                    silently swallows the form submit — shipped twice
-                    already (CLAUDE.md, recurring bug class 3). */}
+                {/* <NumericField> on every one of these: it renders
+                    step="any", which is what these already declared by
+                    hand. `min` makes a lattice out of a numeric `step`,
+                    and a default value off that lattice silently swallows
+                    the form submit — shipped twice already (CLAUDE.md,
+                    recurring bug class 3). Tier 3 #112 moved the guarantee
+                    from discipline to the type system. */}
                 <label className="diameter-picker">
                   Left x (mm)
-                  <input
-                    type="number"
-                    step="any"
+                  <NumericField
                     value={selectedRaceway.x_mm}
                     onChange={(e) => setRacewayGeometry('x_mm', Number(e.target.value))}
                   />
                 </label>
                 <label className="diameter-picker">
                   Length (mm)
-                  <input
-                    type="number"
-                    step="any"
+                  <NumericField
                     value={selectedRaceway.length_mm}
                     onChange={(e) => setRacewayGeometry('length_mm', Number(e.target.value))}
                   />
@@ -2598,9 +2601,7 @@ export default function EditorPage() {
                   title="Box height. Empty = the 203.2mm (8in) shop default."
                 >
                   Height (mm)
-                  <input
-                    type="number"
-                    step="any"
+                  <NumericField
                     placeholder={String(RACEWAY_DEFAULT_HEIGHT_MM)}
                     value={selectedRaceway.height_mm ?? ''}
                     onChange={(e) => setRacewayGeometry('height_mm', Number(e.target.value))}
@@ -2611,9 +2612,7 @@ export default function EditorPage() {
                   title="Box depth, front face to wall. Empty = the 203.2mm (8in) shop default — a 159mm neon transformer cannot sit across a 5in box, which is why the neon-era standard is bigger than the LED-era one."
                 >
                   Depth (mm)
-                  <input
-                    type="number"
-                    step="any"
+                  <NumericField
                     placeholder={String(RACEWAY_DEFAULT_DEPTH_MM)}
                     value={selectedRaceway.depth_mm ?? ''}
                     onChange={(e) => setRacewayGeometry('depth_mm', Number(e.target.value))}
@@ -2807,9 +2806,10 @@ export default function EditorPage() {
               </label>
               <label className="diameter-picker">
                 Diameter (mm)
-                <input
-                  type="number"
-                  step="0.5"
+                {/* Tier 3 #112 — was `step="0.5" min="1"`, a lattice that
+                    excluded the two most common trade sizes: 12.7 (1/2in)
+                    and 9.525 (3/8in). */}
+                <NumericField
                   min="1"
                   value={selectedRun.tube_diameter_mm ?? ''}
                   placeholder="project default"
@@ -2851,9 +2851,9 @@ export default function EditorPage() {
                     title="Optional per-run depth (mm) override for this face's return strip. Empty = use the project default. Lets you mix tall and shallow returns in one project (Tier 3 #26)."
                   >
                     Depth (mm)
-                    <input
-                      type="number"
-                      step="1"
+                    {/* Tier 3 #112 — was `step="1" min="10"`, which put
+                        76.2 (3in) and 127 (5in) off the lattice. */}
+                    <NumericField
                       min="10"
                       max="500"
                       value={selectedRun.channel_letter_depth_mm ?? ''}
@@ -3260,9 +3260,10 @@ function PathOpsRow({
     <div className="path-ops-row">
       <label className="diameter-picker">
         Simplify ε (mm)
-        <input
-          type="number"
-          step="0.1"
+        {/* Tier 3 #112 — was `step="0.1" min="0"`; PR #158's flatten
+            tolerance shipped the same shape and 0.05 / 0.25 are exactly
+            the values it could not express. */}
+        <NumericField
           min="0"
           value={eps}
           onChange={(e) => setEps(Number(e.target.value))}
