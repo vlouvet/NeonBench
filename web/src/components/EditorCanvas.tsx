@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
-import type { DesignDoc, DesignRun, ValidationIssue } from '../api';
+import type { DesignDoc, DesignRun, SegmentKind, ValidationIssue } from '../api';
 import { isGroupVisible } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
+import { runPathDistanceMM } from '../lib/arcGeom';
 import { colorHex } from '../lib/neonColors';
 import NodeContextMenu from './NodeContextMenu';
 import {
@@ -90,6 +91,7 @@ export default function EditorCanvas({
   onElectrodeContextMenu,
   onSetTool,
   onSetSegmentType,
+  onFlipSegmentArc,
   selectedGuidelineId,
   onSelectGuideline,
   onMoveGuideline,
@@ -192,10 +194,18 @@ export default function EditorCanvas({
   // lands the far end. Optional: without it that one item is withheld
   // rather than offered as a dead row.
   onSetTool?: (tool: EditorTool) => void;
-  // Tier 3 #78 — curve or straighten the segment leaving a vertex. Optional:
-  // without it the two menu items are withheld rather than offered as dead
-  // rows.
-  onSetSegmentType?: (runId: string, segmentIndex: number, type: 'line' | 'arc') => void;
+  // Tier 3 #78 / #87 — curve or straighten the segment leaving a vertex.
+  // `type` is a SegmentKind, so 'arc_r' (the other side) is as sayable as
+  // 'arc'. Optional: without it the two menu items are withheld rather than
+  // offered as dead rows.
+  onSetSegmentType?: (runId: string, segmentIndex: number, type: SegmentKind) => void;
+  // Tier 3 #87 — move an already-curved segment's bow to the other side of its
+  // chord. Deliberately NOT expressed as onSetSegmentType(..., 'arc_r'): which
+  // side is "the other one" depends on the side the doc currently holds, and
+  // reading that here rather than inside the op is the stale-read shape
+  // CLAUDE.md's bug-class 3 warns about. `flipSegmentArc` reads it from the
+  // doc it is handed.
+  onFlipSegmentArc?: (runId: string, segmentIndex: number) => void;
   // Tier 2 #74 / #91 — guidelines, both raceway and construction.
   // Selection lives in EditorPage because the sidebar's "Split tubes at
   // raceway" action is gated on it; the canvas owns only the drag. All
@@ -1753,12 +1763,18 @@ export default function EditorCanvas({
   // elsewhere so the markers feel sized like the rest of the canvas chrome.
   const issueMarkerR = Math.max(8 / transform.k, 4);
 
-  // Find the run whose polyline passes closest to a given world-space
-  // point. Used by click-to-select on a marker. Returns `null` when the
-  // doc has no runs. We measure to every polyline vertex (cheap; the
-  // canvas already does the same in nearestPointIndex for electrode
-  // placement); for typical signs (≤ a few thousand vertices total)
-  // this is well under a millisecond.
+  // Find the run whose glass passes closest to a given world-space point.
+  // Used by click-to-select on a validation marker. Returns `null` when the
+  // doc has no selectable runs.
+  //
+  // Tier 3 #87 — this measures to the PATH, via runPathDistanceMM, and the
+  // path follows the curve. It used to measure to VERTICES, which was wrong
+  // twice over: a marker halfway along a 400 mm straight run is 200 mm from
+  // either end of it, and an arc at bulge 0.5 bows a quarter of its chord
+  // away from the vertices entirely. Both errors are largest exactly where a
+  // validation marker likes to sit — mid-segment, on a tight curve.
+  // runPathDistanceMM is guarded on runHasArcs internally, so a doc with no
+  // curves never pays for a flatten.
   //
   // Tier 3 #33c — hidden + locked runs are skipped so a background
   // click can't pick a run that the canvas is hiding or click-
@@ -1770,14 +1786,10 @@ export default function EditorCanvas({
     for (const run of doc.runs) {
       if (!isRunVisible(run)) continue;
       if (isRunLocked(run)) continue;
-      for (const p of run.polyline.points) {
-        const dx = p[0] - target[0];
-        const dy = p[1] - target[1];
-        const d = dx * dx + dy * dy;
-        if (d < bestD) {
-          bestD = d;
-          bestId = run.id;
-        }
+      const d = runPathDistanceMM(run, target);
+      if (d < bestD) {
+        bestD = d;
+        bestId = run.id;
       }
     }
     return bestId;
@@ -2026,6 +2038,9 @@ export default function EditorCanvas({
         break;
       case 'convert-to-line':
         onSetSegmentType?.(runId, vertexIndex, 'line');
+        break;
+      case 'flip-arc':
+        onFlipSegmentArc?.(runId, vertexIndex);
         break;
       case 'delete-vertex':
         onDeleteVertex(runId, vertexIndex);
@@ -3314,6 +3329,7 @@ export default function EditorCanvas({
           items={availableActionsForVertex(doc, nodeMenu.runId, nodeMenu.vertexIndex).filter(
             (item) =>
               (item.id !== 'blockout-from-here' || !!onSetTool) &&
+              (item.id !== 'flip-arc' || !!onFlipSegmentArc) &&
               ((item.id !== 'convert-to-arc' && item.id !== 'convert-to-line') ||
                 !!onSetSegmentType),
           )}

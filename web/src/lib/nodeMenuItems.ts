@@ -1,6 +1,6 @@
 import type { DesignDoc } from '../api';
 import { runArcs } from './runArcs';
-import { segmentTypeAt } from './arcGeom';
+import { isArcKind, segmentTypeAt } from './arcGeom';
 
 // Tier 3 #76 — every action the node-edit context menu can offer at a
 // vertex. Deliberately a closed union rather than free-form strings: the
@@ -24,6 +24,7 @@ export type NodeMenuActionId =
   | 'mark-special-bend'
   | 'convert-to-arc'
   | 'convert-to-line'
+  | 'flip-arc'
   | 'delete-vertex';
 
 // Items are grouped so the menu can rule between them. Order within the
@@ -108,11 +109,24 @@ export function availableActionsForVertex(
     // because offering "convert to line" on a segment that is already straight
     // is a row that does nothing. Needs a non-zero chord: an arc through two
     // coincident points has no circle.
-    if (segmentTypeAt(run, vertexIndex) === 'arc') {
+    //
+    // Tier 3 #87 — asks isArcKind, not `=== 'arc'`. A flipped arc ('arc_r') is
+    // still an arc, and a bare equality check offered "Convert to arc" on a
+    // segment that already was one, which setSegmentType then no-ops.
+    if (isArcKind(segmentTypeAt(run, vertexIndex))) {
       items.push({
         id: 'convert-to-line',
         label: 'Convert to line',
         hint: 'Straighten the segment after this vertex',
+        group: 'geometry',
+      });
+      // Tier 3 #87 — offered only on a segment that is already curved: a
+      // straight one has no side to flip, and inventing one would make this a
+      // second, differently-named "Convert to arc".
+      items.push({
+        id: 'flip-arc',
+        label: 'Flip arc',
+        hint: 'Bow the segment the other way — same length',
         group: 'geometry',
       });
     } else {

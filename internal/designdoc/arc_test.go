@@ -617,3 +617,56 @@ func TestReversedPolylineWithFlippedSidesIsTheSameShape(t *testing.T) {
 		t.Errorf("lengths differ: %v vs %v", fwd.LengthMM(), rev.LengthMM())
 	}
 }
+
+// The cubics are what the SVG writer, the EPS/AI export and the PDF page all
+// draw from, so the side has to reach them. A flipped arc whose cubics still
+// bowed the unflipped way would show the operator the right curve on the
+// canvas and print its mirror — the exact split this schema exists to close.
+func TestArcCubicsFollowTheSide(t *testing.T) {
+	p0 := [2]float64{0, 0}
+	p1 := [2]float64{100, 0}
+
+	if got := ArcCubics(p0, p1, SegmentLine, false); got != nil {
+		t.Errorf("a line segment produced cubics: %v", got)
+	}
+
+	up := ArcCubics(p0, p1, SegmentArc, false)
+	down := ArcCubics(p0, p1, SegmentArcR, false)
+	if len(up) != len(down) || len(up) == 0 {
+		t.Fatalf("cubic counts differ or empty: %d vs %d", len(up), len(down))
+	}
+	sawBow := false
+	for i := range up {
+		if math.Abs(up[i].C1Y) > 1 {
+			sawBow = true
+		}
+		if math.Abs(up[i].C1X-down[i].C1X) > 1e-9 || math.Abs(up[i].C1Y+down[i].C1Y) > 1e-9 ||
+			math.Abs(up[i].C2X-down[i].C2X) > 1e-9 || math.Abs(up[i].C2Y+down[i].C2Y) > 1e-9 ||
+			math.Abs(up[i].X-down[i].X) > 1e-9 || math.Abs(up[i].Y+down[i].Y) > 1e-9 {
+			t.Fatalf("cubic %d is not a reflection: %+v vs %+v", i, up[i], down[i])
+		}
+	}
+	if !sawBow {
+		t.Error("the control points never left the chord; the test proves nothing")
+	}
+
+	// End to end through the SVG writer, which is what the validator, the EPS
+	// export and the printed pattern all consume.
+	docFor := func(st string) string {
+		return string(ToSVG(&Doc{
+			Version:   1,
+			ViewBoxMM: [4]float64{0, 0, 200, 200},
+			Runs: []Run{{
+				ID:       "r1",
+				Polyline: Polyline{Points: [][2]float64{p0, p1}, SegmentTypes: []string{st}},
+			}},
+		}))
+	}
+	upSVG, downSVG := docFor(SegmentArc), docFor(SegmentArcR)
+	if !strings.Contains(upSVG, "C") || !strings.Contains(downSVG, "C") {
+		t.Fatal("the SVG writer emitted no cubic for an arc segment")
+	}
+	if upSVG == downSVG {
+		t.Error("the two sides produced byte-identical SVG; the side never reached the writer")
+	}
+}

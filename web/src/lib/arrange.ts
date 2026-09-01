@@ -16,7 +16,7 @@
 //
 //   2. Mirroring is NOT a coordinate negation. See `mirrorRun` below.
 
-import type { Annotation, Bend, Blockout, DesignDoc, DesignRun } from '../api';
+import type { Annotation, Bend, Blockout, DesignDoc, DesignRun, SegmentKind } from '../api';
 import { flatRunPoints, runHasArcs } from './arcGeom';
 import { runArcs } from './runArcs';
 
@@ -271,6 +271,18 @@ export function distributeRuns(
 // untouched, which is a latent bug there and the reason this file does the
 // remapping itself rather than delegating.
 //
+// DO NOT ALSO FLIP THE STORED SIDE — Tier 3 #87. `segment_types` can now say
+// which side an arc bows to ('arc' vs 'arc_r'), and `reversedRun` in docOps.ts
+// flips that value as it reverses, because there a reversal is the ONLY
+// handedness flip in play. Here there are two: the reflection flips it once
+// and the reversal flips it back. The stored side is therefore already correct
+// after the remap, for BOTH values — 'arc_r' reflected reads as left-of-travel,
+// and reversing that reads as right-of-travel again. Flipping it here as well
+// would be a double flip that silently inverts every mirrored curve while
+// leaving the vertices, and any test that compares them, perfectly happy. The
+// arbiter is the invariant test in arrange.test.ts: flatRunPoints(mirrored)
+// must equal the mirrored flatRunPoints(original), reversed.
+//
 // Runs with no arc segments are mirrored by coordinate flip alone: there is no
 // handedness to preserve, and reversing them for nothing would gratuitously
 // swap which end of the tube the operator thinks of as the start.
@@ -320,12 +332,12 @@ function reverseMirrored(run: DesignRun, flipped: [number, number][]): DesignRun
 
   // segment_types: new segment j joins new vertices j and j+1, i.e. old
   // vertices (n-1-j) and (n-2-j) — so it IS old segment (n-2-j), walked
-  // backwards. An arc walked backwards is the same circle, so the type
-  // carries unchanged. Open runs never wrap (j <= n-2 keeps n-2-j >= 0);
+  // backwards. The value carries UNCHANGED, side and all: see the double-flip
+  // note on mirrorRuns. Open runs never wrap (j <= n-2 keeps n-2-j >= 0);
   // closed runs wrap the final entry back onto old segment n-1, which is the
   // "reversed and shifted" shape the naive `.reverse()` gets wrong.
   const st = run.polyline.segment_types;
-  let segment_types: ('line' | 'arc')[] | undefined;
+  let segment_types: SegmentKind[] | undefined;
   if (st) {
     segment_types = st.map((_, j) => {
       const oldSeg = (((n - 2 - j) % n) + n) % n;

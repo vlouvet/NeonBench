@@ -16,6 +16,7 @@ import type {
   Dimension,
   Group,
   Label,
+  SegmentKind,
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
 import {
@@ -25,7 +26,7 @@ import {
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection, runArcs } from './runArcs';
-import { segmentCount, segmentTypeAt } from './arcGeom';
+import { flipArcKind, isArcKind, segmentCount, segmentTypeAt } from './arcGeom';
 import {
   offsetOpenPolyline,
   offsetPolygon,
@@ -1546,15 +1547,13 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
 // Annotations / electrodes / blockouts / bends are transformed through
 // the reversal + concatenation. The math is bug-prone — see tests.
 //
-// KNOWN LIMITATION — arc handedness, the same one reverseRun carries. Any
-// endpoint combination other than tail-to-head reverses an input, and
-// `arcFor` always bows to the LEFT of travel while `segment_types` admits
-// only "line" and "arc". So a reversed arc keeps its chord, radius and arc
-// length but is drawn mirrored about that chord. Which segments are curved
-// is preserved exactly; which side the bow falls on is not. Fixing that
-// needs a signed bulge (or "arc-cw"/"arc-ccw") in internal/designdoc and its
-// TypeScript twin — Tier 3 #87. A tail-to-head join reverses nothing and so
-// preserves the drawn shape outright.
+// ARC HANDEDNESS — was a known limitation, resolved by Tier 3 #87. Any
+// endpoint combination other than tail-to-head reverses an input, and `arcFor`
+// bows to the LEFT of travel, so a reversal used to draw every arc mirrored
+// about its (unchanged) chord. The reversal here is the shared `reversedRun`,
+// which now flips each segment's stored side ('arc' <-> 'arc_r') as it remaps
+// it, so the drawn curve stays put for ALL FOUR endpoint combinations. A
+// tail-to-head join still reverses nothing at all.
 export function joinRuns(
   doc: DesignDoc,
   runIdA: string,
@@ -1611,7 +1610,7 @@ export function joinRuns(
   // reversed or not — decayed to a straight chord. Build it only when one of
   // the inputs actually had one, so a pre-#78 pair still round-trips without
   // growing the key.
-  let joinedTypes: ('line' | 'arc')[] | undefined;
+  let joinedTypes: SegmentKind[] | undefined;
   if (a.polyline.segment_types || b.polyline.segment_types) {
     joinedTypes = [];
     for (let j = 0; j < joinedPts.length - 1; j++) {
@@ -3169,7 +3168,7 @@ export function setSegmentType(
   doc: DesignDoc,
   runId: string,
   segmentIndex: number,
-  type: 'line' | 'arc',
+  type: SegmentKind,
 ): DesignDoc {
   const run = doc.runs.find((r) => r.id === runId);
   if (!run) return doc;
@@ -3179,22 +3178,23 @@ export function setSegmentType(
 
   // An arc needs two distinct endpoints to define a circle. Refusing here
   // keeps a degenerate segment from being marked curved and then silently
-  // drawn straight by every consumer.
-  if (type === 'arc') {
+  // drawn straight by every consumer. Both sides are equally undefined on a
+  // zero-length chord, so the guard asks isArcKind rather than naming 'arc'.
+  if (isArcKind(type)) {
     const pts = run.polyline.points;
     const a = pts[segmentIndex];
     const b = pts[(segmentIndex + 1) % pts.length];
     if (a[0] === b[0] && a[1] === b[1]) return doc;
   }
 
-  const next: ('line' | 'arc')[] = [];
+  const next: SegmentKind[] = [];
   for (let i = 0; i < count; i++) {
     next.push(i === segmentIndex ? type : segmentTypeAt(run, i));
   }
 
   return mapRun(doc, runId, (r) => {
     const polyline = { ...r.polyline };
-    if (next.some((t) => t === 'arc')) {
+    if (next.some((t) => isArcKind(t))) {
       polyline.segment_types = next;
     } else {
       delete polyline.segment_types;
@@ -3217,4 +3217,23 @@ export function convertSegmentToLine(
   segmentIndex: number,
 ): DesignDoc {
   return setSegmentType(doc, runId, segmentIndex, 'line');
+}
+
+// flipSegmentArc — Tier 3 #87. Move an arc's bow to the other side of its
+// chord. The endpoints, the radius and the arc LENGTH are all unchanged; only
+// which side the glass falls on moves, so no takeoff, estimate or validation
+// number shifts under a flip.
+//
+// A no-op on a straight segment: there is no side to flip, and inventing one
+// would turn "flip" into a second, differently-named "convert to arc".
+export function flipSegmentArc(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  const current = segmentTypeAt(run, segmentIndex);
+  if (!isArcKind(current)) return doc;
+  return setSegmentType(doc, runId, segmentIndex, flipArcKind(current));
 }

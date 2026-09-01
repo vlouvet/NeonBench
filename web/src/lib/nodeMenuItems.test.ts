@@ -246,4 +246,31 @@ describe('availableActionsForVertex — arc conversion', () => {
     expect(availableActionsForVertex(docOf([run]), 'r1', 1).map((i) => i.id))
       .toContain('convert-to-arc');
   });
+
+  // Tier 3 #87 — flip-arc.
+  it('offers flip-arc only where there is a bow to flip', () => {
+    const run = straight();
+    run.polyline.segment_types = ['arc', 'line'];
+    expect(availableActionsForVertex(docOf([run]), 'r1', 0).map((i) => i.id))
+      .toContain('flip-arc');
+    // Segment 1 is straight; segment 2 does not exist on an open 3-vertex run.
+    expect(availableActionsForVertex(docOf([run]), 'r1', 1).map((i) => i.id))
+      .not.toContain('flip-arc');
+    expect(availableActionsForVertex(docOf([run]), 'r1', 2).map((i) => i.id))
+      .not.toContain('flip-arc');
+    expect(availableActionsForVertex(docOf([straight()]), 'r1', 0).map((i) => i.id))
+      .not.toContain('flip-arc');
+  });
+
+  // The bug this guards: the gate used to be `=== 'arc'`, so an already-
+  // flipped segment fell through to the else branch and was offered "Convert
+  // to arc" — a row that setSegmentType then no-ops.
+  it('treats arc_r as an arc, not as something to convert INTO an arc', () => {
+    const run = straight();
+    run.polyline.segment_types = ['arc_r', 'line'];
+    const ids = availableActionsForVertex(docOf([run]), 'r1', 0).map((i) => i.id);
+    expect(ids).toContain('convert-to-line');
+    expect(ids).toContain('flip-arc');
+    expect(ids).not.toContain('convert-to-arc');
+  });
 });

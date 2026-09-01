@@ -45,6 +45,23 @@ function pointsClose(a: [number, number], b: [number, number]): boolean {
   return Math.abs(a[0] - b[0]) <= EPS && Math.abs(a[1] - b[1]) <= EPS;
 }
 
+// sagittaMM is how far a single-segment run's flattened curve strays from its
+// own chord — 0 for a line, chord/4 for an arc at ARC_BULGE 0.5. Unsigned on
+// purpose: which SIDE is what the point-set comparison decides, and asserting
+// a sign here would only restate the label the test is trying to check.
+function sagittaMM(run: DesignRun): number {
+  const pts = run.polyline.points;
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const len = Math.hypot(dx, dy);
+  return flatRunPoints(run).reduce(
+    (m, p) => Math.max(m, Math.abs((p[0] - a[0]) * dy - (p[1] - a[1]) * dx) / len),
+    0,
+  );
+}
+
 // Compare two flattened polylines as POINT SETS. Mirroring a run that has arc
 // segments has to reverse its vertex order (see arrange.ts), which reverses —
 // and, on a closed run, rotates, changing which vertex is the duplicated
@@ -294,6 +311,52 @@ describe('mirrorRuns — the arc-handedness invariant', () => {
         mirrorPts(flatRunPoints(before), axis, cx, cy),
       );
     });
+  }
+
+  // Tier 3 #87 — the double-flip trap, pinned for BOTH sides.
+  //
+  // The stored side must be carried across a mirror UNCHANGED. A mirror is
+  // reflect-then-reverse: the reflection flips handedness once and the
+  // reversal flips it back, so the label is already right. Flipping it as
+  // well (which `reverseRun` in docOps.ts correctly does, because there the
+  // reversal is the only flip) inverts every mirrored curve while leaving the
+  // vertices — and any vertex-only test — perfectly happy.
+  for (const axis of ['h', 'v'] as const) {
+    for (const side of ['arc', 'arc_r'] as const) {
+      it(`mirror '${axis}' of a '${side}' run keeps the side and mirrors the curve`, () => {
+        const before: DesignRun = {
+          ...arcRun('a'),
+          polyline: { ...arcRun('a').polyline, segment_types: [side] },
+        };
+        const box = arrange.runBBoxMM(before)!;
+        const cx = (box.minX + box.maxX) / 2;
+        const cy = (box.minY + box.maxY) / 2;
+        const after = arrange.mirrorRuns(docOf(before), ['a'], axis).runs[0];
+
+        // The label does NOT change. This is the assertion the double-flip
+        // would break.
+        expect(after.polyline.segment_types).toEqual([side]);
+
+        const want = mirrorPts(flatRunPoints(before), axis, cx, cy);
+        expectSamePointSet(flatRunPoints(after), want);
+        expectReversedSequence(flatRunPoints(after), want);
+
+        // Teeth, part 1: the curve genuinely bows 10 mm off its own chord, so
+        // "same point set" is not just saying "still a straight line".
+        expect(sagittaMM(after)).toBeCloseTo(10, 6);
+
+        // Teeth, part 2: had this file ALSO flipped the side, the result would
+        // be the run below — same vertices, same bbox width, and a completely
+        // different curve. Asserting it fails the same invariant is what makes
+        // the passing case above mean something.
+        const doubleFlipped: DesignRun = {
+          ...after,
+          polyline: { ...after.polyline, segment_types: [side === 'arc' ? 'arc_r' : 'arc'] },
+        };
+        expect(() => expectSamePointSet(flatRunPoints(doubleFlipped), want)).toThrow();
+        expect(sagittaMM(doubleFlipped)).toBeCloseTo(10, 6);
+      });
+    }
   }
 
   it('mirrors a MIXED run (arc + line segments) correctly', () => {
