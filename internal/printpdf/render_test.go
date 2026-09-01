@@ -843,3 +843,220 @@ func TestBendListCopyMarkerOnEveryContinuationPage(t *testing.T) {
 		t.Error("single-copy bend list carries a copy marker; it must stay silent")
 	}
 }
+
+
+// --- Bug #12: multi-tile mirrored prints put the halves on the wrong
+// sheets -----------------------------------------------------------------
+//
+// The shared fixture below is the one from the bug report: a 200 mm wide
+// design tiled into two 100 mm columns, 10 mm margin. makePageProjector
+// flips each tile inside its own page rectangle, which is the right
+// image for that sheet — but the sheets used to be emitted in world
+// order, so page 1 got the design's LEFT strip when a mirrored assembly
+// needs its RIGHT strip there.
+const (
+	b12Margin   = 10.0
+	b12ContentW = 100.0
+	b12ContentH = 100.0
+	b12StepW    = 100.0
+	b12StepH    = 100.0
+)
+
+// b12BBox is a 200 x 100 design: 2 columns, 1 row.
+var b12BBox = [4]float64{0, 0, 200, 100}
+
+// TestTilePlanMirroredPutsRightEdgeOnFirstSheet is the bug report's probe
+// turned into an assertion. The design's right edge (world x = 200) has to
+// project onto the FIRST sheet, because mirroring the whole design puts
+// its right edge on the left of the assembled pattern — and the first
+// sheet is the one the operator tapes down first.
+//
+// The sheet is identified by the label it prints, not by its index, so
+// this also pins that the footer's "Tile 1,1" and the geometry agree: a
+// fix that reordered the geometry but kept labelling sheets in world
+// order would still hand the operator a scrambled pattern.
+func TestTilePlanMirroredPutsRightEdgeOnFirstSheet(t *testing.T) {
+	plan := tilePlan(b12BBox, 2, 1, b12StepW, b12StepH, true, false)
+	if len(plan) != 2 {
+		t.Fatalf("plan has %d sheets, want 2", len(plan))
+	}
+
+	first := plan[0]
+	if first.Col != 0 || first.Row != 0 {
+		t.Errorf("first sheet is labelled Tile %d,%d — the first sheet off the printer must be the assembly's top-left", first.Col+1, first.Row+1)
+	}
+
+	// Project the design's right edge with the first sheet's projector.
+	cx, cy := 100.0, 50.0
+	toPage := makeTileProjector(cx, cy, first.OriginX, first.OriginY,
+		b12Margin, b12ContentW, b12ContentH, true, false)
+	gotX, _ := toPage(b12BBox[2], 0)
+	const wantX = b12Margin // flush against the content area's left edge
+	if gotX != wantX {
+		t.Errorf("design right edge (world x=%g) projects to page x=%g on sheet 1, want %g.\n"+
+			"Sheet 1 carries world tile [%g, %g]. Getting the right edge off-sheet means the "+
+			"sheets are still emitted in world order: page 1 has the design's LEFT strip, so "+
+			"taping the sheets left-to-right reconstructs the design with its halves swapped.",
+			b12BBox[2], gotX, wantX, first.OriginX, first.OriginX+b12ContentW)
+	}
+}
+
+// TestTilePlanMirroredAssemblyIsMonotonic is the assembly test: lay the
+// sheets out left to right in the order they print, and a walk across the
+// taped-up pattern must sweep the design's world X monotonically
+// DOWNWARD (that is what a mirror is). Any sheet in the wrong place shows
+// up as a break in the monotonicity.
+func TestTilePlanMirroredAssemblyIsMonotonic(t *testing.T) {
+	plan := tilePlan(b12BBox, 2, 1, b12StepW, b12StepH, true, false)
+	cx, cy := 100.0, 50.0
+
+	// assemblyX is the sheet's page-x offset by the sheets already taped
+	// down to its left: the coordinate of the point on the assembled
+	// pattern.
+	assemblyX := func(sheet int, pageX float64) float64 {
+		return float64(sheet)*b12ContentW + (pageX - b12Margin)
+	}
+
+	// World points from the design's right edge leftward. Each one is
+	// looked up on whichever sheet actually carries it.
+	worldXs := []float64{200, 175, 150, 125, 100, 75, 50, 25, 0}
+	prev := -1.0
+	for _, wx := range worldXs {
+		found := false
+		for i, tile := range plan {
+			if wx < tile.OriginX || wx > tile.OriginX+b12ContentW {
+				continue
+			}
+			toPage := makeTileProjector(cx, cy, tile.OriginX, tile.OriginY,
+				b12Margin, b12ContentW, b12ContentH, true, false)
+			px, _ := toPage(wx, 0)
+			ax := assemblyX(i, px)
+			if ax < prev {
+				t.Errorf("world x=%g lands at assembly x=%g on sheet %d, behind the previous point at %g — "+
+					"the assembled pattern doubles back, so the halves are on the wrong sheets",
+					wx, ax, i+1, prev)
+			}
+			prev = ax
+			found = true
+			break
+		}
+		if !found {
+			t.Errorf("world x=%g is not carried by any sheet in the plan", wx)
+		}
+	}
+}
+
+// TestTilePlanPreservesTileStep pins that reordering the sheets did not
+// disturb the tile pitch. Adjacent sheets must still be exactly one step
+// apart in world space, or the OverlapMM taping allowance silently
+// disappears and the sheets no longer join.
+func TestTilePlanPreservesTileStep(t *testing.T) {
+	const overlapStep = 90.0 // contentW 100 with 10 mm overlap
+	for _, mirrored := range []bool{false, true} {
+		plan := tilePlan(b12BBox, 3, 1, overlapStep, b12StepH, mirrored, false)
+		for i := 1; i < len(plan); i++ {
+			gap := plan[i].OriginX - plan[i-1].OriginX
+			if gap != overlapStep && gap != -overlapStep {
+				t.Errorf("mirrored=%v: sheets %d and %d are %g mm apart in world space, want ±%g",
+					mirrored, i, i+1, gap, overlapStep)
+			}
+		}
+	}
+}
+
+// TestTilePlanSingleTileMirroredUnchanged pins the case that already
+// worked: a design that fits one sheet has nothing to reorder, and the
+// fix must not perturb it. This is the overwhelming majority of real
+// jobs.
+func TestTilePlanSingleTileMirroredUnchanged(t *testing.T) {
+	for _, rotated := range []bool{false, true} {
+		plan := tilePlan(b12BBox, 1, 1, b12StepW, b12StepH, true, rotated)
+		if len(plan) != 1 {
+			t.Fatalf("rotated=%v: %d sheets, want 1", rotated, len(plan))
+		}
+		want := tilePlacement{Col: 0, Row: 0, OriginX: b12BBox[0], OriginY: b12BBox[1]}
+		if plan[0] != want {
+			t.Errorf("rotated=%v: single-tile mirrored plan = %+v, want %+v", rotated, plan[0], want)
+		}
+	}
+}
+
+// TestTilePlanUnmirroredIsWorldOrder is the byte-identity guard for the
+// un-mirrored path. Un-mirrored output is a plain row-major walk of the
+// world tiles and must stay exactly that — the reordering is allowed to
+// exist only when Mirror is on.
+func TestTilePlanUnmirroredIsWorldOrder(t *testing.T) {
+	const cols, rows = 3, 2
+	for _, rotated := range []bool{false, true} {
+		plan := tilePlan(b12BBox, cols, rows, b12StepW, b12StepH, false, rotated)
+		if len(plan) != cols*rows {
+			t.Fatalf("rotated=%v: %d sheets, want %d", rotated, len(plan), cols*rows)
+		}
+		i := 0
+		for r := 0; r < rows; r++ {
+			for c := 0; c < cols; c++ {
+				want := tilePlacement{
+					Col: c, Row: r,
+					OriginX: b12BBox[0] + float64(c)*b12StepW,
+					OriginY: b12BBox[1] + float64(r)*b12StepH,
+				}
+				if plan[i] != want {
+					t.Errorf("rotated=%v: un-mirrored sheet %d = %+v, want %+v (this changes existing PDFs byte-for-byte)",
+						rotated, i, plan[i], want)
+				}
+				i++
+			}
+		}
+	}
+}
+
+// TestTilePlanMirroredRotatedReversesRows is the rotated half of the fix.
+// makeTileProjector composes mirror-then-rotate as R·Mh = Mv·R, so a
+// rotated render is reflected VERTICALLY in page space — which means it is
+// the ROW order that has to reverse, not the column order. Reversing
+// columns here would be a no-op on the wrong axis and leave the bug in
+// place for every rotated multi-tile job.
+//
+// Fixture: a 200 x 100 design rotated 90° becomes 100 wide x 200 tall with
+// bbox [50, -50, 150, 150] — 1 column, 2 rows at a 100 mm step.
+//
+// Hand-computed landmark: the design's bottom-right corner, world
+// (200, 100). Rotation about (100, 50) sends it to rotated (50, 150).
+// The first sheet must carry it at the top-left of the content area:
+// page x = 50 - 50 + 10 = 10, page y = (10 + 100 + 50) - 150 = 10.
+func TestTilePlanMirroredRotatedReversesRows(t *testing.T) {
+	cx, cy := 100.0, 50.0
+	rb := rotatedBBox(b12BBox)
+	if rb != ([4]float64{50, -50, 150, 150}) {
+		t.Fatalf("fixture drifted: rotatedBBox = %v", rb)
+	}
+
+	plan := tilePlan(rb, 1, 2, b12StepW, b12StepH, true, true)
+	if len(plan) != 2 {
+		t.Fatalf("plan has %d sheets, want 2", len(plan))
+	}
+	first := plan[0]
+	if first.Col != 0 || first.Row != 0 {
+		t.Errorf("first rotated sheet is labelled Tile %d,%d, want Tile 1,1", first.Col+1, first.Row+1)
+	}
+
+	toPage := makeTileProjector(cx, cy, first.OriginX, first.OriginY,
+		b12Margin, b12ContentW, b12ContentH, true, true)
+	gotX, gotY := toPage(200, 100)
+	const wantX, wantY = 10.0, 10.0
+	if gotX != wantX || gotY != wantY {
+		t.Errorf("mirrored+rotated: design corner (200,100) projects to (%g,%g) on sheet 1, want (%g,%g).\n"+
+			"Sheet 1 carries rotated-world row starting at y=%g. A y far outside the content area means the "+
+			"ROW order was not reversed — the rotated mirror lands on the Y axis, so reversing columns "+
+			"fixes nothing here.",
+			gotX, gotY, wantX, wantY, first.OriginY)
+	}
+
+	// The second sheet carries the opposite corner, world (0, 0) →
+	// rotated (150, -50), at the bottom-right of its content area.
+	second := makeTileProjector(cx, cy, plan[1].OriginX, plan[1].OriginY,
+		b12Margin, b12ContentW, b12ContentH, true, true)
+	if x, y := second(0, 0); x != 110 || y != 110 {
+		t.Errorf("mirrored+rotated: design corner (0,0) projects to (%g,%g) on sheet 2, want (110,110)", x, y)
+	}
+}

@@ -168,6 +168,70 @@ func tileGrid(designW, designH, stepW, stepH float64) (cols, rows int) {
 	return cols, rows
 }
 
+// tilePlacement is one printed sheet of the main pattern.
+type tilePlacement struct {
+	// Col, Row are the sheet's position in the ASSEMBLY grid — the
+	// order the sheets get taped together in, and what the footer's
+	// "Tile c,r of C×R" prints. For an un-mirrored render this is also
+	// the world-space column/row of the strip below; for a mirrored one
+	// it deliberately is not.
+	Col, Row int
+	// OriginX, OriginY are the world-space (post-rotation) coordinates
+	// of the top-left corner of the strip this sheet carries.
+	OriginX, OriginY float64
+}
+
+// tilePlan returns the main pattern's sheets in PAGE ORDER, pairing each
+// sheet's assembly-grid position with the strip of world space it must
+// carry.
+//
+// For an un-mirrored render the two are the same thing and this is the
+// plain row-major walk the renderers have always done.
+//
+// For a MIRRORED render they are not, and that is Bug #12. makePageProjector
+// flips each tile within its own page rectangle, which is the correct
+// per-sheet image — but the sheets were still emitted in world order, so
+// page 1 carried the design's LEFT strip when a mirrored assembly needs
+// its RIGHT strip there. Every sheet was individually right and the
+// taped-up result was scrambled.
+//
+// The fix is to walk the mirrored axis backwards. Reversing the emission
+// order is exact rather than approximate: mirroring the whole tiled
+// region about its own centre maps the tile at index i onto index
+// n-1-i and leaves the per-tile projection algebraically unchanged
+// (page_x = margin + tileX + contentW - x either way), so the existing
+// projector keeps working untouched and the tile step — and with it the
+// OverlapMM taping allowance — is preserved exactly. Anchoring the flip
+// to the design bbox instead (the other candidate fix) would have had to
+// recompute every tile origin and the clipping rectangle with it.
+//
+// WHICH axis reverses depends on rotation, because rotation moves the
+// mirror: makeTileProjector composes mirror-then-rotate as R·Mh = Mv·R,
+// so a rotated render is reflected VERTICALLY in page space and it is the
+// ROW order that must reverse, not the column order.
+func tilePlan(bbox [4]float64, cols, rows int, stepW, stepH float64, mirrored, rotated bool) []tilePlacement {
+	plan := make([]tilePlacement, 0, cols*rows)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			worldCol, worldRow := c, r
+			if mirrored {
+				if rotated {
+					worldRow = rows - 1 - r
+				} else {
+					worldCol = cols - 1 - c
+				}
+			}
+			plan = append(plan, tilePlacement{
+				Col:     c,
+				Row:     r,
+				OriginX: bbox[0] + float64(worldCol)*stepW,
+				OriginY: bbox[1] + float64(worldRow)*stepH,
+			})
+		}
+	}
+	return plan
+}
+
 // resolveRotate turns an Options.Rotate mode into the concrete
 // "is this render rotated?" boolean for one design/paper pairing.
 //
@@ -305,54 +369,52 @@ func Render(svg []byte, opts Options) ([]byte, error) {
 	// stack off the printer is "copy 1 complete, copy 2 complete, ..."
 	// and can be split by hand without collating.
 	for copyNo := 1; copyNo <= copies; copyNo++ {
-		for r := 0; r < rows; r++ {
-			for c := 0; c < cols; c++ {
-				pdf.AddPage()
+		// Sheets come out of tilePlan in page order, each already paired
+		// with the strip of world space a mirrored assembly needs on it
+		// (Bug #12) and with its position in the assembly grid.
+		for _, tile := range tilePlan(bbox, cols, rows, stepW, stepH, mirrored, rotated) {
+			pdf.AddPage()
 
-				tileX := bbox[0] + float64(c)*stepW
-				tileY := bbox[1] + float64(r)*stepH
+			// Save graphics state, clip to content area.
+			pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
+			pdf.SetDrawColor(0, 0, 0)
+			pdf.SetLineWidth(opts.StrokeMM)
 
-				// Save graphics state, clip to content area.
-				pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
-				pdf.SetDrawColor(0, 0, 0)
-				pdf.SetLineWidth(opts.StrokeMM)
+			// World (mm) -> page (mm) projection. When mirroring is on
+			// (the trade default for back-side bending — Tier 2 #73)
+			// we additionally flip X around the tile's right edge so
+			// the printed pattern reads correctly through the back of
+			// the glass. The flip is applied per-coordinate rather
+			// than as a gofpdf TransformBegin/MirrorHorizontal pair
+			// so the polyline geometry mirrors without inverting any
+			// text glyphs we draw on top — the text labels remain
+			// readable left-to-right at their (now-mirrored) anchor.
+			// Tier 2 #93 folds the optional 90° rotation onto the
+			// front of the same projector — see makeTileProjector for
+			// the mirror-then-rotate order and why it is fixed.
+			toPage := makeTileProjector(cx, cy, tile.OriginX, tile.OriginY, opts.MarginMM, contentW, contentH, mirrored, rotated)
 
-				// World (mm) -> page (mm) projection. When mirroring is on
-				// (the trade default for back-side bending — Tier 2 #73)
-				// we additionally flip X around the tile's right edge so
-				// the printed pattern reads correctly through the back of
-				// the glass. The flip is applied per-coordinate rather
-				// than as a gofpdf TransformBegin/MirrorHorizontal pair
-				// so the polyline geometry mirrors without inverting any
-				// text glyphs we draw on top — the text labels remain
-				// readable left-to-right at their (now-mirrored) anchor.
-				// Tier 2 #93 folds the optional 90° rotation onto the
-				// front of the same projector — see makeTileProjector for
-				// the mirror-then-rotate order and why it is fixed.
-				toPage := makeTileProjector(cx, cy, tileX, tileY, opts.MarginMM, contentW, contentH, mirrored, rotated)
-
-				for _, pl := range polylines {
-					if len(pl.Points) < 2 {
-						continue
-					}
-					start := pl.Points[0]
-					sx, sy := toPage(start.X, start.Y)
-					pdf.MoveTo(sx, sy)
-					for i := 1; i < len(pl.Points); i++ {
-						p := pl.Points[i]
-						px, py := toPage(p.X, p.Y)
-						pdf.LineTo(px, py)
-					}
-					if pl.Closed {
-						pdf.LineTo(sx, sy)
-					}
-					pdf.DrawPath("D") // stroke only
+			for _, pl := range polylines {
+				if len(pl.Points) < 2 {
+					continue
 				}
-
-				pdf.ClipEnd()
-
-				drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows, rotated, copyNo, copies)
+				start := pl.Points[0]
+				sx, sy := toPage(start.X, start.Y)
+				pdf.MoveTo(sx, sy)
+				for i := 1; i < len(pl.Points); i++ {
+					p := pl.Points[i]
+					px, py := toPage(p.X, p.Y)
+					pdf.LineTo(px, py)
+				}
+				if pl.Closed {
+					pdf.LineTo(sx, sy)
+				}
+				pdf.DrawPath("D") // stroke only
 			}
+
+			pdf.ClipEnd()
+
+			drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, tile.Col, tile.Row, cols, rows, rotated, copyNo, copies)
 		}
 	}
 
@@ -482,172 +544,171 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	// out of it. copies == 1 emits exactly the pre-Tier-2-#93 page set.
 	for copyNo := 1; copyNo <= copies; copyNo++ {
 		if !opts.StripsOnly {
-			for r := 0; r < rows; r++ {
-				for c := 0; c < cols; c++ {
-					pdf.AddPage()
-					tileX := bbox[0] + float64(c)*stepW
-					tileY := bbox[1] + float64(r)*stepH
-					// World (mm) -> page (mm) projection. When mirroring
-					// is on (the trade default for back-side bending —
-					// Tier 2 #73) we additionally flip X around the
-					// tile's right edge so the printed pattern reads
-					// correctly through the back of the glass. The flip
-					// is applied per-coordinate rather than as a gofpdf
-					// TransformBegin/MirrorHorizontal pair so the polyline
-					// geometry mirrors without inverting any text glyphs
-					// we draw on top — bend-number labels, dimension
-					// notes, and free-text labels remain readable
-					// left-to-right at their (now-mirrored) anchor
-					// positions. See Options.Mirror for the trade-default
-					// rationale and front-facing opt-out, and
-					// makeTileProjector for the Tier 2 #93 rotation that
-					// composes onto the front of it (mirror, then rotate).
-					toPage := makeTileProjector(cx, cy, tileX, tileY, opts.MarginMM, contentW, contentH, mirrored, rotated)
+			// Sheets come out of tilePlan in page order, each already
+			// paired with the strip of world space a mirrored assembly
+			// needs on it (Bug #12) and with its assembly-grid position.
+			for _, tile := range tilePlan(bbox, cols, rows, stepW, stepH, mirrored, rotated) {
+				pdf.AddPage()
+				// World (mm) -> page (mm) projection. When mirroring
+				// is on (the trade default for back-side bending —
+				// Tier 2 #73) we additionally flip X around the
+				// tile's right edge so the printed pattern reads
+				// correctly through the back of the glass. The flip
+				// is applied per-coordinate rather than as a gofpdf
+				// TransformBegin/MirrorHorizontal pair so the polyline
+				// geometry mirrors without inverting any text glyphs
+				// we draw on top — bend-number labels, dimension
+				// notes, and free-text labels remain readable
+				// left-to-right at their (now-mirrored) anchor
+				// positions. See Options.Mirror for the trade-default
+				// rationale and front-facing opt-out, and
+				// makeTileProjector for the Tier 2 #93 rotation that
+				// composes onto the front of it (mirror, then rotate).
+				toPage := makeTileProjector(cx, cy, tile.OriginX, tile.OriginY, opts.MarginMM, contentW, contentH, mirrored, rotated)
 
-					pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
-					pdf.SetDrawColor(0, 0, 0)
-					pdf.SetLineWidth(opts.StrokeMM)
+				pdf.ClipRect(opts.MarginMM, opts.MarginMM, contentW, contentH, false)
+				pdf.SetDrawColor(0, 0, 0)
+				pdf.SetLineWidth(opts.StrokeMM)
 
-					// Draw the tube geometry: alive segments solid,
-					// blockouts dashed, jumpers dashed + labeled.
-					// Tier 3 #60 (NW #125) — jumpers are short splice
-					// tubes between two primary runs; rendering them
-					// dashed (≤2 mm dash, 1 mm gap per spec) keeps them
-					// visually distinct from primary runs on the print
-					// pattern, and a centered "JUMPER" label at the
-					// midpoint tells the bender what they are at a glance.
-					for _, run := range doc.Runs {
-						isJumper := run.Kind == "jumper"
-						for _, seg := range designdoc.RenderableSegments(run) {
-							if len(seg.Indices) < 2 {
-								continue
-							}
-							if seg.IsBlockout || isJumper {
-								pdf.SetDashPattern([]float64{2, 1}, 0)
-							}
-							start := run.Polyline.Points[seg.Indices[0]]
-							sx, sy := toPage(start[0], start[1])
-							pdf.MoveTo(sx, sy)
-							// Tier 3 #78 — an arc segment draws as the same two
-							// cubics the SVG writer emits, so the printed pattern
-							// and the on-screen curve are the same geometry. The
-							// walk can run backwards around a closed run, so which
-							// segment joins two positions is resolved, not assumed.
-							nPts := len(run.Polyline.Points)
-							for i := 1; i < len(seg.Indices); i++ {
-								prev := seg.Indices[i-1]
-								cur := seg.Indices[i]
-								p := run.Polyline.Points[cur]
-								px, py := toPage(p[0], p[1])
-								segIdx, reversed, ok := designdoc.SegmentIndexBetween(prev, cur, nPts, run.Polyline.Closed)
-								if ok && run.Polyline.SegmentType(segIdx) == designdoc.SegmentArc {
-									cubics := designdoc.ArcCubics(
-										run.Polyline.Points[segIdx],
-										run.Polyline.Points[(segIdx+1)%nPts],
-										reversed,
-									)
-									if len(cubics) > 0 {
-										for _, c := range cubics {
-											c1x, c1y := toPage(c.C1X, c.C1Y)
-											c2x, c2y := toPage(c.C2X, c.C2Y)
-											ex, ey := toPage(c.X, c.Y)
-											pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
-										}
-										continue
+				// Draw the tube geometry: alive segments solid,
+				// blockouts dashed, jumpers dashed + labeled.
+				// Tier 3 #60 (NW #125) — jumpers are short splice
+				// tubes between two primary runs; rendering them
+				// dashed (≤2 mm dash, 1 mm gap per spec) keeps them
+				// visually distinct from primary runs on the print
+				// pattern, and a centered "JUMPER" label at the
+				// midpoint tells the bender what they are at a glance.
+				for _, run := range doc.Runs {
+					isJumper := run.Kind == "jumper"
+					for _, seg := range designdoc.RenderableSegments(run) {
+						if len(seg.Indices) < 2 {
+							continue
+						}
+						if seg.IsBlockout || isJumper {
+							pdf.SetDashPattern([]float64{2, 1}, 0)
+						}
+						start := run.Polyline.Points[seg.Indices[0]]
+						sx, sy := toPage(start[0], start[1])
+						pdf.MoveTo(sx, sy)
+						// Tier 3 #78 — an arc segment draws as the same two
+						// cubics the SVG writer emits, so the printed pattern
+						// and the on-screen curve are the same geometry. The
+						// walk can run backwards around a closed run, so which
+						// segment joins two positions is resolved, not assumed.
+						nPts := len(run.Polyline.Points)
+						for i := 1; i < len(seg.Indices); i++ {
+							prev := seg.Indices[i-1]
+							cur := seg.Indices[i]
+							p := run.Polyline.Points[cur]
+							px, py := toPage(p[0], p[1])
+							segIdx, reversed, ok := designdoc.SegmentIndexBetween(prev, cur, nPts, run.Polyline.Closed)
+							if ok && run.Polyline.SegmentType(segIdx) == designdoc.SegmentArc {
+								cubics := designdoc.ArcCubics(
+									run.Polyline.Points[segIdx],
+									run.Polyline.Points[(segIdx+1)%nPts],
+									reversed,
+								)
+								if len(cubics) > 0 {
+									for _, c := range cubics {
+										c1x, c1y := toPage(c.C1X, c.C1Y)
+										c2x, c2y := toPage(c.C2X, c.C2Y)
+										ex, ey := toPage(c.X, c.Y)
+										pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
 									}
+									continue
 								}
-								pdf.LineTo(px, py)
 							}
-							if seg.Closed {
-								pdf.LineTo(sx, sy)
-							}
-							pdf.DrawPath("D")
-							if seg.IsBlockout || isJumper {
-								pdf.SetDashPattern([]float64{}, 0)
-							}
+							pdf.LineTo(px, py)
 						}
-						if isJumper && len(run.Polyline.Points) >= 2 {
-							// Midpoint label "JUMPER" — 6 pt Helvetica,
-							// stroke-free, world-mm midpoint of the
-							// 2-vertex polyline. Per spec we don't bother
-							// orienting along the jumper axis (jumpers are
-							// short — the axis-aligned label reads fine).
-							p1 := run.Polyline.Points[0]
-							p2 := run.Polyline.Points[len(run.Polyline.Points)-1]
-							mx, my := toPage((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)
-							pdf.SetFont("Helvetica", "", 6)
-							label := "JUMPER"
-							lw := pdf.GetStringWidth(label)
-							// 1 mm vertical offset from the midpoint so
-							// the label doesn't sit directly on the dashed
-							// line — readable at 1:1.
-							pdf.Text(mx-lw/2, my-1, label)
+						if seg.Closed {
+							pdf.LineTo(sx, sy)
+						}
+						pdf.DrawPath("D")
+						if seg.IsBlockout || isJumper {
+							pdf.SetDashPattern([]float64{}, 0)
 						}
 					}
-
-					// Electrodes: small open circle with a centered cross.
-					for _, run := range doc.Runs {
-						for _, e := range run.Electrodes {
-							if e.PointIndex < 0 || e.PointIndex >= len(run.Polyline.Points) {
-								continue
-							}
-							p := run.Polyline.Points[e.PointIndex]
-							ex, ey := toPage(p[0], p[1])
-							drawElectrodeMark(pdf, ex, ey)
-						}
+					if isJumper && len(run.Polyline.Points) >= 2 {
+						// Midpoint label "JUMPER" — 6 pt Helvetica,
+						// stroke-free, world-mm midpoint of the
+						// 2-vertex polyline. Per spec we don't bother
+						// orienting along the jumper axis (jumpers are
+						// short — the axis-aligned label reads fine).
+						p1 := run.Polyline.Points[0]
+						p2 := run.Polyline.Points[len(run.Polyline.Points)-1]
+						mx, my := toPage((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)
+						pdf.SetFont("Helvetica", "", 6)
+						label := "JUMPER"
+						lw := pdf.GetStringWidth(label)
+						// 1 mm vertical offset from the midpoint so
+						// the label doesn't sit directly on the dashed
+						// line — readable at 1:1.
+						pdf.Text(mx-lw/2, my-1, label)
 					}
-
-					// Numbered bend apex labels (and a small dot at the apex).
-					pdf.SetFont("Helvetica", "B", 7)
-					for _, run := range doc.Runs {
-						for i, b := range bendsByRun[run.ID] {
-							bx, by := toPage(b.X, b.Y)
-							pdf.SetLineWidth(0.2)
-							pdf.Circle(bx, by, 1.6, "D")
-							pdf.SetLineWidth(opts.StrokeMM)
-							label := fmt.Sprintf("%s.%d", shortRunID(run.ID), i+1)
-							pdf.Text(bx+2, by-1, label)
-						}
-					}
-
-					// Doc-level dimensions: line + perpendicular ticks + measured label.
-					pdf.SetLineWidth(0.3)
-					for _, d := range doc.Dimensions {
-						ax, ay := toPage(d.X1, d.Y1)
-						bx, by := toPage(d.X2, d.Y2)
-						pdf.Line(ax, ay, bx, by)
-						dx := bx - ax
-						dy := by - ay
-						length := math.Hypot(dx, dy)
-						if length > 0 {
-							px := -dy / length * 1.5
-							py := dx / length * 1.5
-							pdf.Line(ax-px, ay-py, ax+px, ay+py)
-							pdf.Line(bx-px, by-py, bx+px, by+py)
-						}
-						measured := math.Hypot(d.X2-d.X1, d.Y2-d.Y1)
-						note := fmt.Sprintf("%.1fmm", measured)
-						if d.Note != "" {
-							note += " · " + d.Note
-						}
-						pdf.SetFont("Helvetica", "", 8)
-						pdf.Text((ax+bx)/2+1, (ay+by)/2-1, note)
-					}
-					pdf.SetLineWidth(opts.StrokeMM)
-
-					// Doc-level text labels: small dot + text to the right.
-					pdf.SetFont("Helvetica", "", 9)
-					for _, l := range doc.Labels {
-						lx, ly := toPage(l.X, l.Y)
-						pdf.SetLineWidth(0.3)
-						pdf.Circle(lx, ly, 0.7, "F")
-						pdf.SetLineWidth(opts.StrokeMM)
-						pdf.Text(lx+2, ly-1, l.Text)
-					}
-
-					pdf.ClipEnd()
-					drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, c, r, cols, rows, rotated, copyNo, copies)
 				}
+
+				// Electrodes: small open circle with a centered cross.
+				for _, run := range doc.Runs {
+					for _, e := range run.Electrodes {
+						if e.PointIndex < 0 || e.PointIndex >= len(run.Polyline.Points) {
+							continue
+						}
+						p := run.Polyline.Points[e.PointIndex]
+						ex, ey := toPage(p[0], p[1])
+						drawElectrodeMark(pdf, ex, ey)
+					}
+				}
+
+				// Numbered bend apex labels (and a small dot at the apex).
+				pdf.SetFont("Helvetica", "B", 7)
+				for _, run := range doc.Runs {
+					for i, b := range bendsByRun[run.ID] {
+						bx, by := toPage(b.X, b.Y)
+						pdf.SetLineWidth(0.2)
+						pdf.Circle(bx, by, 1.6, "D")
+						pdf.SetLineWidth(opts.StrokeMM)
+						label := fmt.Sprintf("%s.%d", shortRunID(run.ID), i+1)
+						pdf.Text(bx+2, by-1, label)
+					}
+				}
+
+				// Doc-level dimensions: line + perpendicular ticks + measured label.
+				pdf.SetLineWidth(0.3)
+				for _, d := range doc.Dimensions {
+					ax, ay := toPage(d.X1, d.Y1)
+					bx, by := toPage(d.X2, d.Y2)
+					pdf.Line(ax, ay, bx, by)
+					dx := bx - ax
+					dy := by - ay
+					length := math.Hypot(dx, dy)
+					if length > 0 {
+						px := -dy / length * 1.5
+						py := dx / length * 1.5
+						pdf.Line(ax-px, ay-py, ax+px, ay+py)
+						pdf.Line(bx-px, by-py, bx+px, by+py)
+					}
+					measured := math.Hypot(d.X2-d.X1, d.Y2-d.Y1)
+					note := fmt.Sprintf("%.1fmm", measured)
+					if d.Note != "" {
+						note += " · " + d.Note
+					}
+					pdf.SetFont("Helvetica", "", 8)
+					pdf.Text((ax+bx)/2+1, (ay+by)/2-1, note)
+				}
+				pdf.SetLineWidth(opts.StrokeMM)
+
+				// Doc-level text labels: small dot + text to the right.
+				pdf.SetFont("Helvetica", "", 9)
+				for _, l := range doc.Labels {
+					lx, ly := toPage(l.X, l.Y)
+					pdf.SetLineWidth(0.3)
+					pdf.Circle(lx, ly, 0.7, "F")
+					pdf.SetLineWidth(opts.StrokeMM)
+					pdf.Text(lx+2, ly-1, l.Text)
+				}
+
+				pdf.ClipEnd()
+				drawTileOverlay(pdf, opts, pageW, pageH, contentW, contentH, tile.Col, tile.Row, cols, rows, rotated, copyNo, copies)
 			}
 		} // end if !opts.StripsOnly — main pattern + tile overlays skipped when stripping.
 
