@@ -302,7 +302,7 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 			continue
 		}
 		idx, closed := designdoc.LiveArcIndices(run)
-		liveMM := arcLengthMM(pts, idx, closed)
+		liveMM := arcLengthMM(&run.Polyline, idx, closed)
 
 		if run.Kind == "jumper" {
 			// Jumpers are short splice tubes bridging two primary runs.
@@ -333,9 +333,9 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 				t.Summary.JumpCount++
 			}
 		}
-		blockoutMM += blockoutLengthMM(pts, idx, run.Blockouts)
+		blockoutMM += blockoutLengthMM(&run.Polyline, idx, run.Blockouts)
 		if run.IsChannelLetterFace {
-			returnStripMM += polylinePerimeterMM(pts, run.Polyline.Closed)
+			returnStripMM += polylinePerimeterMM(run.Polyline.FlatPoints(), run.Polyline.Closed)
 		}
 
 		// Glass ordered for this run includes the electrode tails at each
@@ -523,13 +523,17 @@ func manualLines(s Summary, in Inputs) []Line {
 
 // arcLengthMM sums the polyline distance along idx, closing the loop when the
 // arc is a full closed polyline rather than an electrode-bounded span.
-func arcLengthMM(pts [][2]float64, idx []int, closed bool) float64 {
+// Takes the whole polyline rather than just its points because an arc segment
+// is ~15.9% longer than its chord (Tier 3 #78). This number becomes glass
+// footage and then the estimate, so measuring chords would under-order tube
+// and under-bill every curved run.
+func arcLengthMM(pl *designdoc.Polyline, idx []int, closed bool) float64 {
 	var total float64
 	for i := 1; i < len(idx); i++ {
-		total += dist(pts[idx[i-1]], pts[idx[i]])
+		total += pl.WalkSegmentLengthMM(idx[i-1], idx[i])
 	}
 	if closed && len(idx) > 2 {
-		total += dist(pts[idx[len(idx)-1]], pts[idx[0]])
+		total += pl.WalkSegmentLengthMM(idx[len(idx)-1], idx[0])
 	}
 	return total
 }
@@ -538,7 +542,7 @@ func arcLengthMM(pts [][2]float64, idx []int, closed bool) float64 {
 // Blockout indices are positions WITHIN the live arc, matching the convention
 // in designdoc.Blockout, so they are clamped against the arc and not the raw
 // polyline.
-func blockoutLengthMM(pts [][2]float64, idx []int, bos []designdoc.Blockout) float64 {
+func blockoutLengthMM(pl *designdoc.Polyline, idx []int, bos []designdoc.Blockout) float64 {
 	n := len(idx)
 	if n < 2 {
 		return 0
@@ -556,7 +560,7 @@ func blockoutLengthMM(pts [][2]float64, idx []int, bos []designdoc.Blockout) flo
 			e = n - 1
 		}
 		for i := s + 1; i <= e; i++ {
-			total += dist(pts[idx[i-1]], pts[idx[i]])
+			total += pl.WalkSegmentLengthMM(idx[i-1], idx[i])
 		}
 	}
 	return total

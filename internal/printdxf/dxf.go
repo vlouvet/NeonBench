@@ -205,9 +205,19 @@ func EmitDXFDialect(w io.Writer, doc *designdoc.Doc, dialect Dialect) error {
 		// that don't recognize it ignore it harmlessly, while modern CAM
 		// uses it to pre-allocate).
 		pairInt(&b, 90, len(pts))
-		for _, p := range pts {
+		for i, p := range pts {
 			pairFloat(&b, 10, p[0])
 			pairFloat(&b, 20, p[1])
+			// Tier 3 #78 — group code 42 is the LWPOLYLINE vertex bulge: the
+			// arc's sagitta over half its chord, which is precisely how this
+			// arc is defined. So the curve goes out EXACTLY, as a real arc the
+			// bender's CAM reads natively — no flattening, no separate ARC
+			// entity, and no approximation error to argue about at the bench.
+			// A bulge is emitted only on the vertex an arc leaves, and omitted
+			// entirely on all-line runs so existing DXF output is unchanged.
+			if run.Polyline.SegmentType(i) == designdoc.SegmentArc {
+				pairFloat(&b, 42, designdoc.ArcBulge)
+			}
 		}
 	}
 

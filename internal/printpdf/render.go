@@ -387,9 +387,34 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 						start := run.Polyline.Points[seg.Indices[0]]
 						sx, sy := toPage(start[0], start[1])
 						pdf.MoveTo(sx, sy)
+						// Tier 3 #78 — an arc segment draws as the same two
+						// cubics the SVG writer emits, so the printed pattern
+						// and the on-screen curve are the same geometry. The
+						// walk can run backwards around a closed run, so which
+						// segment joins two positions is resolved, not assumed.
+						nPts := len(run.Polyline.Points)
 						for i := 1; i < len(seg.Indices); i++ {
-							p := run.Polyline.Points[seg.Indices[i]]
+							prev := seg.Indices[i-1]
+							cur := seg.Indices[i]
+							p := run.Polyline.Points[cur]
 							px, py := toPage(p[0], p[1])
+							segIdx, reversed, ok := designdoc.SegmentIndexBetween(prev, cur, nPts, run.Polyline.Closed)
+							if ok && run.Polyline.SegmentType(segIdx) == designdoc.SegmentArc {
+								cubics := designdoc.ArcCubics(
+									run.Polyline.Points[segIdx],
+									run.Polyline.Points[(segIdx+1)%nPts],
+									reversed,
+								)
+								if len(cubics) > 0 {
+									for _, c := range cubics {
+										c1x, c1y := toPage(c.C1X, c.C1Y)
+										c2x, c2y := toPage(c.C2X, c.C2Y)
+										ex, ey := toPage(c.X, c.Y)
+										pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
+									}
+									continue
+								}
+							}
 							pdf.LineTo(px, py)
 						}
 						if seg.Closed {
@@ -604,7 +629,9 @@ func docBBox(doc *designdoc.Doc) [4]float64 {
 	}
 	bb := [4]float64{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
 	for _, run := range doc.Runs {
-		for _, p := range run.Polyline.Points {
+		// Flattened: an arc bulges outside the hull of its endpoints, so a
+		// bbox over the raw vertices would crop the curve off the page.
+		for _, p := range run.Polyline.FlatPoints() {
 			if p[0] < bb[0] {
 				bb[0] = p[0]
 			}
@@ -790,13 +817,11 @@ func specialBendsForRun(run designdoc.Run) []specialBend {
 	}
 	// arcAt[i] = cumulative arc length from live-arc point 0 to i.
 	arcAt := make([]float64, n)
-	pts := run.Polyline.Points
 	for i := 1; i < n; i++ {
-		a := pts[liveIdx[i-1]]
-		b := pts[liveIdx[i]]
-		dx := b[0] - a[0]
-		dy := b[1] - a[1]
-		arcAt[i] = arcAt[i-1] + math.Hypot(dx, dy)
+		// Tier 3 #78 — an arc is ~15.9% longer than its chord, and this is
+		// what positions every bend callout along the tube. Measuring the
+		// chord would slide every downstream mark up the glass.
+		arcAt[i] = arcAt[i-1] + run.Polyline.WalkSegmentLengthMM(liveIdx[i-1], liveIdx[i])
 	}
 	var out []specialBend
 	var jumpCount, dropCount int

@@ -76,7 +76,13 @@ func distMM(a, b [2]float64) float64 {
 // in the "natural" direction the operator traces it; a face polyline
 // wound the opposite direction will simply produce signs reversed
 // from what they'd see, which the operator can interpret either way.
-func returnStripBendMarks(points [][2]float64, closed bool) []returnStripBendMark {
+// Takes the polyline, not just its points, so an arc segment contributes its
+// true length and its endpoint TANGENTS (Tier 3 #78). Flattening instead would
+// have been simpler and wrong twice over: one arc would become ~22 vertices,
+// so the strip would print two dozen 5° bend marks where the bender makes one
+// smooth curve, and each mark would sit at the wrong distance.
+func returnStripBendMarks(pl *designdoc.Polyline, closed bool) []returnStripBendMark {
+	points := pl.Points
 	if len(points) < 2 {
 		return nil
 	}
@@ -86,7 +92,7 @@ func returnStripBendMarks(points [][2]float64, closed bool) []returnStripBendMar
 	// points[i] along the polyline.
 	cum := make([]float64, len(points))
 	for i := 1; i < len(points); i++ {
-		cum[i] = cum[i-1] + distMM(points[i-1], points[i])
+		cum[i] = cum[i-1] + pl.WalkSegmentLengthMM(i-1, i)
 	}
 
 	var marks []returnStripBendMark
@@ -97,7 +103,7 @@ func returnStripBendMarks(points [][2]float64, closed bool) []returnStripBendMar
 			marks = append(marks, returnStripBendMark{
 				VertexIndex: i,
 				ArcLengthMM: cum[i],
-				AngleDeg:    signedTurnDeg(points[prev], points[i], points[next]),
+				AngleDeg:    pl.VertexTurnDeg(prev, i, next),
 			})
 		}
 		return marks
@@ -107,49 +113,10 @@ func returnStripBendMarks(points [][2]float64, closed bool) []returnStripBendMar
 		marks = append(marks, returnStripBendMark{
 			VertexIndex: i,
 			ArcLengthMM: cum[i],
-			AngleDeg:    signedTurnDeg(points[i-1], points[i], points[i+1]),
+			AngleDeg:    pl.VertexTurnDeg(i-1, i, i+1),
 		})
 	}
 	return marks
-}
-
-// signedTurnDeg returns the signed turn angle (in degrees) you'd
-// rotate through to go from the incoming edge (a→b) onto the
-// outgoing edge (b→c). The sign comes from the 2D cross product
-// of the two edge vectors:
-//
-//	cross > 0 → left turn  → "inward" bend  → positive angle
-//	cross < 0 → right turn → "outward" bend → negative angle
-//
-// Magnitude is the absolute angle between the edges, in [0°, 180°].
-// A perfectly straight pass-through returns 0; a 90° corner returns
-// ±90°; a hairpin reverses to ±180°.
-//
-// Degenerate vertices (zero-length incoming or outgoing edge) return 0
-// rather than NaN, so consumers don't need to special-case them.
-func signedTurnDeg(a, b, c [2]float64) float64 {
-	ix := b[0] - a[0]
-	iy := b[1] - a[1]
-	ox := c[0] - b[0]
-	oy := c[1] - b[1]
-	li := math.Hypot(ix, iy)
-	lo := math.Hypot(ox, oy)
-	if li == 0 || lo == 0 {
-		return 0
-	}
-	dot := ix*ox + iy*oy
-	cos := dot / (li * lo)
-	if cos > 1 {
-		cos = 1
-	} else if cos < -1 {
-		cos = -1
-	}
-	mag := math.Acos(cos)
-	cross := ix*oy - iy*ox
-	if cross < 0 {
-		mag = -mag
-	}
-	return mag * 180 / math.Pi
 }
 
 // emitReturnStrip draws an unfolded return-strip page for one
@@ -179,14 +146,15 @@ func emitReturnStrip(pdf *gofpdf.Fpdf, opts Options, run designdoc.Run, depthMM 
 	contentW := pageW - 2*mx
 	contentH := pageH - 2*mx
 
-	points := run.Polyline.Points
 	closed := run.Polyline.Closed
-	perimeter := polylinePerimeterMM(points, closed)
-	marks := returnStripBendMarks(points, closed)
+	// Arc-aware: the perimeter is the glass length, and the bbox has to see
+	// the flattened curve because an arc bulges outside its endpoints' hull.
+	perimeter := run.Polyline.LengthMM()
+	marks := returnStripBendMarks(&run.Polyline, closed)
 
 	// Cap height = bbox height of the polyline. Useful sanity-check
 	// for the operator (matches the lettering size on the front face).
-	bb := pointsBBox(points)
+	bb := pointsBBox(run.Polyline.FlatPoints())
 	capHeight := bb[3] - bb[1]
 
 	// Header text.

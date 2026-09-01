@@ -56,7 +56,7 @@ func TestInteriorAngles(t *testing.T) {
 	// supplied basis — for the unit test we feed it points that are
 	// CCW in *math* space, so the sign is unambiguously positive.)
 	square := [][2]float64{{0, 0}, {1, 0}, {1, 1}, {0, 1}}
-	marks := returnStripBendMarks(square, true)
+	marks := returnStripBendMarks(&designdoc.Polyline{Points: square, Closed: true}, true)
 	if len(marks) != 4 {
 		t.Fatalf("square closed marks: got %d, want 4", len(marks))
 	}
@@ -70,7 +70,7 @@ func TestInteriorAngles(t *testing.T) {
 	// open again at vertex 2. Open polyline: only vertex 1 is interior,
 	// produces one angle entry.
 	check := [][2]float64{{0, 5}, {3, 0}, {6, 5}}
-	cm := returnStripBendMarks(check, false)
+	cm := returnStripBendMarks(&designdoc.Polyline{Points: check}, false)
 	if len(cm) != 1 {
 		t.Fatalf("check open marks: got %d, want 1", len(cm))
 	}
@@ -86,7 +86,7 @@ func TestInteriorAngles(t *testing.T) {
 	// opposite sign. This is the bug a unit test catches: if signedTurnDeg
 	// drops the cross-product sign, both checkmarks read the same.
 	mirrored := [][2]float64{{0, 0}, {3, 5}, {6, 0}}
-	mm := returnStripBendMarks(mirrored, false)
+	mm := returnStripBendMarks(&designdoc.Polyline{Points: mirrored}, false)
 	if len(mm) != 1 {
 		t.Fatalf("mirrored check marks: got %d, want 1", len(mm))
 	}
@@ -104,18 +104,18 @@ func TestInteriorAngles(t *testing.T) {
 // load-bearing detail when the operator scans the printed strip.
 func TestEmitReturnStripBendCount(t *testing.T) {
 	closedFive := [][2]float64{{0, 0}, {10, 0}, {10, 5}, {5, 8}, {0, 5}}
-	got := returnStripBendMarks(closedFive, true)
+	got := returnStripBendMarks(&designdoc.Polyline{Points: closedFive, Closed: true}, true)
 	if len(got) != 5 {
 		t.Errorf("closed 5-pt: got %d marks, want 5", len(got))
 	}
 	openFive := [][2]float64{{0, 0}, {10, 0}, {10, 5}, {5, 8}, {0, 5}}
-	got = returnStripBendMarks(openFive, false)
+	got = returnStripBendMarks(&designdoc.Polyline{Points: openFive}, false)
 	if len(got) != 3 {
 		t.Errorf("open 5-pt: got %d marks (interior only), want 3", len(got))
 	}
 
 	// Open 2-point polyline: no interior vertices, no marks.
-	if got := returnStripBendMarks([][2]float64{{0, 0}, {1, 0}}, false); len(got) != 0 {
+	if got := returnStripBendMarks(&designdoc.Polyline{Points: [][2]float64{{0, 0}, {1, 0}}}, false); len(got) != 0 {
 		t.Errorf("open 2-pt: got %d marks, want 0", len(got))
 	}
 }

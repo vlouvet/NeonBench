@@ -179,7 +179,9 @@ func EmitSVGWithOptions(w io.Writer, doc *designdoc.Doc, opts Options) error {
 	// run). data-run-id duplicates the ID as an attribute so JS
 	// consumers don't have to parse the class list.
 	for _, run := range doc.Runs {
-		pts := run.Polyline.Points
+		// Tier 3 #78 — flatten arc segments so the emitted shape follows the
+		// curve rather than the chord between its endpoints.
+		pts := run.Polyline.FlatPoints()
 		if len(pts) == 0 {
 			continue
 		}
@@ -249,7 +251,9 @@ func geometryBBox(doc *designdoc.Doc) (minX, minY, maxX, maxY float64, ok bool) 
 	minX, minY = math.Inf(1), math.Inf(1)
 	maxX, maxY = math.Inf(-1), math.Inf(-1)
 	for _, run := range doc.Runs {
-		for _, p := range run.Polyline.Points {
+		// Flattened: an arc bulges OUTSIDE the hull of its two endpoints, so a
+		// bbox over the raw vertices would clip the curve off the page.
+		for _, p := range run.Polyline.FlatPoints() {
 			if p[0] < minX {
 				minX = p[0]
 			}
