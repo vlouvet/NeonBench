@@ -1,6 +1,6 @@
 # Tier 2 #90 — Arrange: align, distribute, mirror, depth order
 
-> **Status:** done 2026-08-31 · branch `task/2-arrange-ops` · PR #TBD
+> **Status:** done 2026-08-31 · branch `task/2-arrange-ops` · PR #144
 
 ## Goal
 
