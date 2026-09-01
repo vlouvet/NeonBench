@@ -23,6 +23,14 @@ import {
   type GeometrySnap,
   type GuideSnap,
 } from '../lib/snap';
+import InlineTextEditor from './InlineTextEditor';
+import {
+  applyKey as applyTextKey,
+  consumesKey as textConsumesKey,
+  startSession,
+  type InlineTextDefaults,
+  type InlineTextSession,
+} from '../lib/inlineTextState';
 import CanvasRulers from './CanvasRulers';
 import {
   RULER_PX,
@@ -48,6 +56,12 @@ export type EditorTool =
   | 'insert-doubleback'
   | 'bend'
   | 'label'
+  // Tier 2 #101 — inline text. Click to drop a caret, then type: the
+  // glyphs appear in place at the current cap height and face. Nothing
+  // reaches the design doc until the session commits (Esc, a click
+  // elsewhere, or leaving the tool), which is what makes one undo
+  // revert the whole word instead of one character.
+  | 'text'
   | 'dimension'
   | 'node'
   | 'pen'
@@ -105,6 +119,10 @@ export default function EditorCanvas({
   onDeleteAnnotation,
   onPlaceBend,
   onPlaceLabel,
+  textSession,
+  textOptions,
+  onTextSessionChange,
+  onEndTextSession,
   onPlaceDimension,
   onDeleteLabel,
   onDeleteDimension,
@@ -237,6 +255,22 @@ export default function EditorCanvas({
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
   onPlaceBend: (runId: string, liveIndex: number) => void;
   onPlaceLabel: (x: number, y: number) => void;
+  // Tier 2 #101 — inline text, as a controlled value. EditorPage holds
+  // the session because ENDING one writes to the doc (see the comment
+  // at `textCaretActive` below); this component reports edits and asks
+  // for the end.
+  //
+  // `textOptions` is the cap height / face / line height the toolbar is
+  // showing when a caret opens. All optional: without them the text
+  // tool is inert rather than a caret that quietly discards work.
+  textSession?: InlineTextSession | null;
+  textOptions?: InlineTextDefaults;
+  /** A keystroke edited the session — same caret, new content. */
+  onTextSessionChange?: (session: InlineTextSession) => void;
+  /** Finish the live session (COMMIT — never cancel) and optionally
+   *  open a fresh caret in its place, which is what a click elsewhere
+   *  on the canvas does. */
+  onEndTextSession?: (next: InlineTextSession | null) => void;
   onPlaceDimension: (x1: number, y1: number, x2: number, y2: number) => void;
   onDeleteLabel: (index: number) => void;
   onDeleteDimension: (index: number) => void;
@@ -418,6 +452,81 @@ export default function EditorCanvas({
   // active tool, so a stale hover never paints under another tool.
   const [isShiftHeld, setIsShiftHeld] = useState(false);
   const [geometryHover, setGeometryHover] = useState<GeometrySnap | null>(null);
+  // Tier 2 #101 — inline text. The session (the string, the caret, the
+  // kerning array) is OWNED BY EditorPage, not by this component, for
+  // one reason: ending it writes to the doc, and the two moments that
+  // end it — leaving the tool, and the operator clicking a toolbar
+  // button — are things EditorPage knows about first. Keeping the state
+  // here would mean committing from an effect, which is both a lint
+  // error (`react-hooks/set-state-in-effect`) and a double-commit under
+  // StrictMode's double render. This file owns the DOM plumbing: where
+  // the click lands, which keys the caret swallows, what gets drawn.
+  //
+  // THE DOC IS NOT TOUCHED WHILE TYPING. Every keystroke re-lays out the
+  // preview from the session; the runs reach `editDoc` exactly once, at
+  // commit. That is what makes one Cmd+Z revert the whole word —
+  // leaning on EditorPage's 500 ms undo coalescing instead would split
+  // the word wherever the operator paused to think.
+  const textCaretActive = !!textSession;
+
+  // Key capture while the caret is live.
+  //
+  // CAPTURE PHASE ON PURPOSE: every other keyboard handler in the editor
+  // (this file's Esc/Enter handler, EditorPage's tool hotkeys, issue
+  // navigation, delete-selection, undo/redo) is a BUBBLE-phase listener
+  // on `window`. A capture listener on `window` runs before all of them,
+  // so `stopPropagation` here is what actually takes the key away —
+  // otherwise typing "open channel" toggles two tools and deletes the
+  // selected run mid-word. Keys the caret does not claim (Cmd+Z, Cmd+S,
+  // Tab, function keys) are left completely alone. EditorPage ALSO
+  // stands its own shortcuts down while a caret is live; one lock is
+  // enough only until someone adds a listener with different options.
+  useEffect(() => {
+    const session = textSession;
+    if (!session) return;
+    // Arrow function, not a hoisted `function` declaration: TypeScript
+    // only carries the `if (!session) return` narrowing into closures
+    // created after it, and a hoisted declaration counts as created at
+    // the top of its scope.
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+      if (!textConsumesKey(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const result = applyTextKey(session, e);
+      // Escape COMMITS — it does not cancel. Losing a typed word to a
+      // stray key is the failure operators actually hit; undo is the
+      // way back, and it is one step.
+      if (result.kind === 'commit') onEndTextSession?.(null);
+      else if (result.kind === 'update') onTextSessionChange?.(result.session);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [textSession, onTextSessionChange, onEndTextSession]);
+
+  // Click-away commits. Pointerdown anywhere OUTSIDE the canvas (a
+  // toolbar button, a sidebar field, Save) finishes the text first, so
+  // the operator's next action lands on a doc that already contains
+  // what they typed. Clicks INSIDE the canvas are handled by
+  // `onPointerUp`, which commits and re-opens a caret at the new point.
+  useEffect(() => {
+    if (!textSession) return;
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (target && containerRef.current?.contains(target)) return;
+      onEndTextSession?.(null);
+    };
+    window.addEventListener('pointerdown', onDown, true);
+    return () => window.removeEventListener('pointerdown', onDown, true);
+  }, [textSession, onEndTextSession]);
   // Tier 2 #91 — which guide(s) the composed snap is currently locked to,
   // so the render layer can thicken the line that is actually attracting
   // the cursor. Same churn profile as `geometryHover`; same local state.
@@ -742,6 +851,12 @@ export default function EditorCanvas({
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
+      // Tier 2 #101 — a live text caret owns every bare key. The
+      // capture-phase listener above already stops these before they
+      // get here; this is the second lock, because "Backspace deleted
+      // the selected guideline while I was typing" is not a bug anyone
+      // should have to find twice.
+      if (textCaretActive) return;
       // Tier 2 #74 — a selected raceway guideline claims Esc (deselect) and
       // Delete/Backspace (remove) before anything else looks at them. It is
       // the most recently clicked thing on the canvas, so it is what the
@@ -822,6 +937,7 @@ export default function EditorCanvas({
     selectedGuidelineId,
     onSelectGuideline,
     onDeleteGuideline,
+    textCaretActive,
   ]);
 
   // Tier 3 #34 — track Shift independently of any focused element so
@@ -1443,6 +1559,18 @@ export default function EditorCanvas({
     if (tool === 'label' && isBackground) {
       const world = clientToWorldSnapped(e.clientX, e.clientY);
       if (world) onPlaceLabel(world[0], world[1]);
+      return;
+    }
+    // Tier 2 #101 — drop a text caret. The click point is the START OF
+    // THE BASELINE (what a text cursor means everywhere else), which
+    // `startSession` converts to the JHF y=0 anchor the converter wants.
+    // Clicking while a caret is already live commits that one first and
+    // opens a fresh caret here — a click never discards typed text.
+    if (tool === 'text' && isBackground) {
+      if (!onEndTextSession || !textOptions) return;
+      const world = clientToWorldSnapped(e.clientX, e.clientY);
+      if (!world) return;
+      onEndTextSession(startSession(world[0], world[1], textOptions));
       return;
     }
     if (tool === 'dimension' && isBackground) {
@@ -3341,6 +3469,14 @@ export default function EditorCanvas({
               })()}
             </g>
           )}
+          {/* Tier 2 #101 — the live caret and its glyph preview. Last in
+              the world `<g>` so it draws over the design, and inside it
+              so pan and zoom carry it along for free. `pointerEvents` is
+              off on the whole layer: a preview that swallowed the click
+              that ends it is exactly the bug class CLAUDE.md lists. */}
+          {textSession && (
+            <InlineTextEditor session={textSession} scale={transform.k} />
+          )}
         </g>
       </svg>
       {/* Tier 2 #91 — ruler gutters. Mounted AFTER the design svg so they
@@ -3394,6 +3530,13 @@ export default function EditorCanvas({
         )}
         {tool === 'label' && (
           <span className="meta hint">Click on the canvas to drop a text label</span>
+        )}
+        {tool === 'text' && (
+          <span className="meta hint">
+            {textSession
+              ? 'Typing on the canvas · alt+←/→ kerns the pair at the caret (hold shift for a coarser step) · Esc or a click elsewhere commits · undo to take it back'
+              : 'Click where the text should start — the click point is the baseline of the first line'}
+          </span>
         )}
         {tool === 'dimension' && (
           <span className="meta hint">

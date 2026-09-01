@@ -1016,6 +1016,13 @@
   cursor: crosshair;
 }
 
+/* Tier 2 #101 — the inline-text tool. Its own rule rather than another
+   line in the crosshair list above: an I-beam is what tells the
+   operator that clicking here starts typing rather than drawing. */
+.editor-canvas.tool-text svg {
+  cursor: text;
+}
+
 .blockout-list {
   list-style: none;
   padding: 0;

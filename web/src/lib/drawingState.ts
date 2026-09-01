@@ -42,6 +42,11 @@ export type DrawingTool =
   | 'insert-doubleback'
   | 'bend'
   | 'label'
+  // Tier 2 #101 — inline canvas text. Click-to-place caret semantics;
+  // the caret and its in-progress string live in EditorCanvas state
+  // (see lib/inlineTextState.ts), not here, but the tool is listed so
+  // `switchTool` clears sibling anchors when the operator picks it.
+  | 'text'
   | 'dimension'
   | 'node'
   // Tier 3 #61 — click-tool that breaks closed loops open / moves the
@@ -85,6 +90,7 @@ export type DrawingState =
         | 'insert-doubleback'
         | 'bend'
         | 'label'
+        | 'text'
         | 'dimension'
         | 'node'
         | 'break-open'

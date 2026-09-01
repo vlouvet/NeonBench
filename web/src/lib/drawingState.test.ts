@@ -22,6 +22,7 @@ const tools: DrawingTool[] = [
   'insert-doubleback',
   'bend',
   'label',
+  'text',
   'dimension',
   'node',
   'pen',
@@ -54,7 +55,7 @@ describe('initialStateForTool', () => {
     });
   });
 
-  it.each(['select', 'electrode', 'blockout', 'jump', 'support', 'doubleback', 'insert-doubleback', 'bend', 'label', 'dimension', 'node'] as DrawingTool[])(
+  it.each(['select', 'electrode', 'blockout', 'jump', 'support', 'doubleback', 'insert-doubleback', 'bend', 'label', 'text', 'dimension', 'node'] as DrawingTool[])(
     'seeds non-shape tool %s with no anchor fields',
     (tool) => {
       expect(initialStateForTool(tool)).toEqual({ tool });
