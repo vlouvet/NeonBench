@@ -170,8 +170,14 @@ All of these passed CI and were broken the moment a human touched them:
 - validation markers render over node handles and intercept the click
 - a guide's 10px grab band called `stopPropagation`, swallowing the exact click
   the feature existed to serve
-- `<input type="number" min="1" step="10">` makes `min` a lattice base, so the
-  default value failed HTML validation and silently swallowed the form submit
+- `<input type="number" min="1" step="10">` makes `min` a lattice base, so a
+  default value that is not on that lattice fails HTML validation and
+  **silently swallows the form submit** — no error, no console warning, the
+  button just does nothing. **This has now shipped twice** (PR #146's arc
+  radius, PR #158's flatten tolerance), so treat it as a rule rather than a
+  war story: on any `type="number"` that is not a plain integer counter, use
+  `step="any"`. See `todo.md` row 105 for the shared component that will
+  enforce it
 - a `setDoc(prev => …)` updater runs during render, so a result captured in the
   event handler is stale — route doc mutations through `applyOp` in
   `EditorPage.tsx`, never a bare `editDoc` whose return value you read
@@ -207,6 +213,30 @@ had none, which is why it went unnoticed.
 JHF units, so all single-stroke text rendered 1.75× the requested height
 (Bug #13). When a constant claims to describe bundled data, assert it against
 that data in a test rather than trusting the declaration.
+
+### 7. Widening an enum can make a test go vacuous
+
+A test that silently stops testing is worse than a deleted one, because it
+still reports success.
+
+`arcChords` in `docOps.test.ts` filtered segments with
+`segmentTypeAt(run, i) !== 'arc'`. When Tier 3 #87 added `'arc_r'` for the
+flipped side, that helper started finding **zero** arcs on any reversed run —
+so the Bug #11 and Bug #14 invariants built on it compared `[]` to `[]` and
+passed trivially. The regression tests guarding two already-fixed bugs would
+have stopped guarding anything, with CI green throughout. Caught by review, not
+by the suite.
+
+Whenever you widen an enum or add a variant, grep the test suite for equality
+checks against the old value (`=== 'arc'`, `!== 'line'`, `switch` without a
+`default`) before you do anything else. Prefer a predicate (`isArcKind`) over a
+literal comparison so there is one place to update.
+
+**The general defence is a negative control.** A test that asserts X passes is
+only meaningful if you have also seen it fail. Where an invariant is
+load-bearing, construct the broken variant in the same test and assert it
+**fails** — PR #159 does this for the mirror double-flip, and it is what makes
+the passing case mean something.
 
 ## Required pre-merge checks
 
