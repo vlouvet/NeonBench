@@ -603,3 +603,137 @@ func TestGuidelineBackwardsCompat(t *testing.T) {
 		t.Errorf("omitempty failed — legacy doc grew a guidelines key: %s", raw)
 	}
 }
+
+// TestGuidelineConstructionRoundTrip pins the Tier 2 #91 additions: a
+// horizontal and a vertical construction guide survive the round trip
+// alongside a raceway guideline, and the axis decides which coordinate
+// carries the position.
+func TestGuidelineConstructionRoundTrip(t *testing.T) {
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs:      []Run{{ID: "r1", Polyline: Polyline{Points: [][2]float64{{0, 0}, {100, 0}}}}},
+		Guidelines: []Guideline{
+			{ID: "rw1", Kind: GuidelineKindRaceway, YMM: 42.5},
+			{ID: "rw2", Kind: GuidelineKindConstruction, YMM: 10, Axis: GuidelineAxisH},
+			{ID: "rw3", Kind: GuidelineKindConstruction, XMM: 75, Axis: GuidelineAxisV},
+		},
+	}
+
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// The vertical guide carries its position in x_mm; the horizontal ones
+	// must not grow an x_mm key at all.
+	if !strings.Contains(string(raw), `{"id":"rw3","kind":"construction","y_mm":0,"x_mm":75,"axis":"v"}`) {
+		t.Errorf("vertical construction guide did not marshal as expected: %s", raw)
+	}
+	if strings.Contains(string(raw), `"id":"rw2","kind":"construction","y_mm":10,"x_mm"`) {
+		t.Errorf("horizontal guide leaked an x_mm key: %s", raw)
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Guidelines) != 3 {
+		t.Fatalf("unexpected guideline count: %d", len(got.Guidelines))
+	}
+	for i, want := range original.Guidelines {
+		if got.Guidelines[i] != want {
+			t.Errorf("guideline %d did not survive round-trip: got %+v want %+v", i, got.Guidelines[i], want)
+		}
+	}
+	if got.Guidelines[2].PositionMM() != 75 || !got.Guidelines[2].IsVertical() {
+		t.Errorf("vertical guide position wrong: %+v", got.Guidelines[2])
+	}
+	if got.Guidelines[1].PositionMM() != 10 || got.Guidelines[1].IsVertical() {
+		t.Errorf("horizontal guide position wrong: %+v", got.Guidelines[1])
+	}
+}
+
+// TestGuidelineLegacyBytesIdentical is the back-compat invariant Tier 2 #91
+// leans on: a pre-#91 blob carrying only {id,kind,y_mm} has to come back out
+// byte-identical. omitempty on x_mm/axis is what makes that true, so this
+// test fails loudly if either tag is ever dropped.
+func TestGuidelineLegacyBytesIdentical(t *testing.T) {
+	const legacy = `{"version":1,"view_box_mm":[0,0,200,100],` +
+		`"runs":[{"id":"r1","polyline":{"points":[[0,0],[100,0]],"closed":false},"raceway_id":"rw1"}],` +
+		`"guidelines":[{"id":"rw1","kind":"raceway","y_mm":42.5}]}`
+
+	var doc Doc
+	if err := json.Unmarshal([]byte(legacy), &doc); err != nil {
+		t.Fatalf("unmarshal legacy doc: %v", err)
+	}
+	raw, err := json.Marshal(&doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(raw) != legacy {
+		t.Errorf("legacy guideline JSON changed shape:\n got %s\nwant %s", raw, legacy)
+	}
+}
+
+// TestGuidelineRejectsImpossibleCombos covers the decoder guards. A vertical
+// raceway is the one that actually costs money: splitTubesAtRaceway reads
+// y_mm, so letting it through would cut every tube at y=0 and emit a combined
+// strip page for a back-channel that cannot be built.
+func TestGuidelineRejectsImpossibleCombos(t *testing.T) {
+	cases := []struct {
+		name string
+		blob string
+		want string
+	}{
+		{
+			name: "vertical raceway",
+			blob: `{"id":"rw1","kind":"raceway","y_mm":0,"x_mm":10,"axis":"v"}`,
+			want: "must be horizontal",
+		},
+		{
+			name: "unknown kind",
+			blob: `{"id":"rw1","kind":"baseline","y_mm":5}`,
+			want: "kind =",
+		},
+		{
+			name: "empty kind",
+			blob: `{"id":"rw1","kind":"","y_mm":5}`,
+			want: "kind =",
+		},
+		{
+			name: "unknown axis",
+			blob: `{"id":"rw1","kind":"construction","y_mm":5,"axis":"diagonal"}`,
+			want: "axis =",
+		},
+		{
+			name: "unknown field",
+			blob: `{"id":"rw1","kind":"construction","y_mm":5,"colour":"red"}`,
+			want: "unknown field",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var g Guideline
+			err := json.Unmarshal([]byte(tc.blob), &g)
+			if err == nil {
+				t.Fatalf("expected an error, got %+v", g)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestGuidelineHorizontalConstructionAccepted makes sure the axis default
+// (absent "axis" key) still reads as horizontal for the new kind — the
+// editor writes exactly this shape for a guide dragged off the top ruler.
+func TestGuidelineHorizontalConstructionAccepted(t *testing.T) {
+	var g Guideline
+	if err := json.Unmarshal([]byte(`{"id":"rw4","kind":"construction","y_mm":33}`), &g); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if g.IsVertical() || g.PositionMM() != 33 {
+		t.Errorf("axis-less construction guide should be horizontal at 33: %+v", g)
+	}
+}

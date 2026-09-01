@@ -23,31 +23,115 @@ type Doc struct {
 	// renderer ignore membership; they exist purely so the editor
 	// can extend selection and apply ops to many runs at once.
 	Groups []Group `json:"groups,omitempty"`
-	// Guidelines are editor-drawn construction lines (Tier 2 #74). V1
-	// carries one kind, "raceway": the horizontal Y at which every tube
-	// crossing it gets split, so the pieces below the line terminate in a
-	// single back-channel strip. They are DESIGN INTENT, not geometry —
-	// the validator, renderer, PDF and DXF emitters all ignore them, and
-	// splitting is an explicit operator action rather than something that
-	// happens because a line exists. omitempty keeps pre-#74 doc JSON
-	// byte-identical.
+	// Guidelines are editor-drawn construction lines (Tier 2 #74, extended
+	// by Tier 2 #91). Two kinds share the slice and one id space:
+	// "raceway" — the horizontal Y at which every tube crossing it gets
+	// split, so the pieces below the line terminate in a single back-channel
+	// strip — and "construction", a pure layout aid dragged off the canvas
+	// rulers. Both are DESIGN INTENT, not geometry: the validator, renderer,
+	// PDF and DXF emitters all ignore them, and splitting is an explicit
+	// operator action rather than something that happens because a line
+	// exists. omitempty keeps pre-#74 doc JSON byte-identical.
 	Guidelines []Guideline `json:"guidelines,omitempty"`
 }
 
-// Guideline is a construction line in the 2D editor. Horizontal-only in V1
-// (a Y position, spanning the whole design width); Kind is an enum so
-// vertical guidelines for stacked-letter signs can be added later without a
-// breaking change.
+// Guideline is a construction line in the 2D editor.
 //
-// ID doubles as the RacewayID stamped on every run split at this line, which
-// is what ties the pieces together for the combined strip page the PDF
-// emitter already builds (PR #43 / Tier 3 #46). That coupling is deliberate:
-// it means "these tubes share a raceway" has exactly one source of truth
-// rather than a guideline and a separately-typed group that can drift.
+// Two kinds share this type and one id space:
+//
+//   - "raceway" — DESIGN INTENT with teeth. Its ID doubles as the RacewayID
+//     stamped on every run split at this line, which is what ties the pieces
+//     together for the combined strip page the PDF emitter already builds
+//     (PR #43 / Tier 3 #46). That coupling is deliberate: it means "these
+//     tubes share a raceway" has exactly one source of truth rather than a
+//     guideline and a separately-typed group that can drift. Horizontal only
+//     — a vertical back-channel strip is not a thing that can be fabricated,
+//     so we reject it at the door rather than emit a strip page that cannot
+//     exist.
+//   - "construction" — a layout aid (Tier 2 #91). Dragged off the canvas
+//     rulers, snapped to while drawing, and otherwise inert: it never reaches
+//     splitTubesAtRaceway, never stamps a RacewayID, and never appears in the
+//     PDF or DXF. It means nothing to the fabricator.
+//
+// Axis picks which coordinate carries the position:
+//
+//	axis "" or "h" → horizontal line at YMM (XMM unused, stays 0)
+//	axis "v"       → vertical line at XMM (YMM unused, stays 0)
+//
+// XMM and Axis are omitempty because a horizontal guideline has to keep
+// marshaling to exactly {"id","kind","y_mm"} — the same byte-identical
+// back-compat invariant Group.Visible and Doc.Guidelines itself rely on.
+// Every pre-#91 doc round-trips unchanged.
 type Guideline struct {
 	ID   string  `json:"id"`
-	Kind string  `json:"kind"` // "raceway" (only value in V1)
-	YMM  float64 `json:"y_mm"`
+	Kind string  `json:"kind"`           // "raceway" | "construction"
+	YMM  float64 `json:"y_mm"`           // horizontal position; 0 for vertical guides
+	XMM  float64 `json:"x_mm,omitempty"` // vertical position; omitted for horizontal
+	Axis string  `json:"axis,omitempty"` // "" | "h" (default) | "v"
+}
+
+// Guideline kinds. See the Guideline doc comment for what each one means to
+// the fabricator (short version: raceway cuts tubes, construction does not).
+const (
+	GuidelineKindRaceway      = "raceway"
+	GuidelineKindConstruction = "construction"
+)
+
+// Guideline axes. The empty string is a synonym for GuidelineAxisH so that
+// pre-#91 blobs — which have no "axis" key at all — keep deserializing.
+const (
+	GuidelineAxisH = "h"
+	GuidelineAxisV = "v"
+)
+
+// IsVertical reports whether the guideline's position is carried by XMM.
+func (g Guideline) IsVertical() bool { return g.Axis == GuidelineAxisV }
+
+// PositionMM returns the coordinate the guideline actually lives at, on
+// whichever axis it is drawn.
+func (g Guideline) PositionMM() float64 {
+	if g.IsVertical() {
+		return g.XMM
+	}
+	return g.YMM
+}
+
+// UnmarshalJSON rejects the combinations that have no meaning rather than
+// letting them through to be reinterpreted downstream. In particular a
+// vertical raceway is refused outright: splitTubesAtRaceway reads YMM, so a
+// vertical raceway guideline would silently cut every tube at y=0 and group
+// the debris into a strip page that no shop can build.
+//
+// The nested decoder keeps DisallowUnknownFields, which the server's decoder
+// sets on the outer document — a custom UnmarshalJSON would otherwise quietly
+// re-open this one object to typo'd keys.
+func (g *Guideline) UnmarshalJSON(data []byte) error {
+	type guidelineAlias Guideline
+	var alias guidelineAlias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&alias); err != nil {
+		return err
+	}
+	out := Guideline(alias)
+	switch out.Kind {
+	case GuidelineKindRaceway, GuidelineKindConstruction:
+	default:
+		return fmt.Errorf("guideline %q: kind = %q, want %q or %q",
+			out.ID, out.Kind, GuidelineKindRaceway, GuidelineKindConstruction)
+	}
+	switch out.Axis {
+	case "", GuidelineAxisH, GuidelineAxisV:
+	default:
+		return fmt.Errorf("guideline %q: axis = %q, want %q, %q or empty",
+			out.ID, out.Axis, GuidelineAxisH, GuidelineAxisV)
+	}
+	if out.Kind == GuidelineKindRaceway && out.Axis == GuidelineAxisV {
+		return fmt.Errorf("guideline %q: kind %q must be horizontal — a vertical raceway strip cannot be fabricated",
+			out.ID, GuidelineKindRaceway)
+	}
+	*g = out
+	return nil
 }
 
 // Group is a named binding of two-or-more runs. Membership is recorded

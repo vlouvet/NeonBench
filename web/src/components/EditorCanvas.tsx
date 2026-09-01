@@ -19,7 +19,15 @@ import {
 import {
   composeSnap,
   type GeometrySnap,
+  type GuideSnap,
 } from '../lib/snap';
+import CanvasRulers from './CanvasRulers';
+import {
+  RULER_PX,
+  guidePositionMM,
+  isVerticalGuide,
+  snapGuidesForDoc,
+} from '../lib/guides';
 
 type Transform = { tx: number; ty: number; k: number };
 
@@ -86,6 +94,8 @@ export default function EditorCanvas({
   onSelectGuideline,
   onMoveGuideline,
   onDeleteGuideline,
+  onAddGuide,
+  showRulers = true,
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
@@ -186,14 +196,25 @@ export default function EditorCanvas({
   // without it the two menu items are withheld rather than offered as dead
   // rows.
   onSetSegmentType?: (runId: string, segmentIndex: number, type: 'line' | 'arc') => void;
-  // Tier 2 #74 — raceway guidelines. Selection lives in EditorPage because
-  // the sidebar's "Split tubes at raceway" action is gated on it; the canvas
-  // owns only the drag. All optional so a caller that does not want
-  // guidelines simply gets none rendered.
+  // Tier 2 #74 / #91 — guidelines, both raceway and construction.
+  // Selection lives in EditorPage because the sidebar's "Split tubes at
+  // raceway" action is gated on it; the canvas owns only the drag. All
+  // optional so a caller that does not want guidelines simply gets none
+  // rendered.
   selectedGuidelineId?: string | null;
   onSelectGuideline?: (id: string | null) => void;
-  onMoveGuideline?: (id: string, yMM: number) => void;
+  // Position along the guide's OWN axis — y for horizontal guides, x for
+  // vertical ones. The canvas never decides which; it reads the axis off
+  // the guide and hands back one number.
+  onMoveGuideline?: (id: string, posMM: number) => void;
   onDeleteGuideline?: (id: string) => void;
+  // Tier 2 #91 — drag-off-the-ruler created a construction guide. `axis`
+  // is 'h' for one pulled from the top ruler, 'v' from the left ruler.
+  // Without this callback the rulers still render but stay inert.
+  onAddGuide?: (axis: 'h' | 'v', posMM: number) => void;
+  // Tier 2 #91 — ruler gutter visibility. Defaults on; EditorPage's
+  // "Rulers" toggle drives it.
+  showRulers?: boolean;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
@@ -380,6 +401,34 @@ export default function EditorCanvas({
   // active tool, so a stale hover never paints under another tool.
   const [isShiftHeld, setIsShiftHeld] = useState(false);
   const [geometryHover, setGeometryHover] = useState<GeometrySnap | null>(null);
+  // Tier 2 #91 — which guide(s) the composed snap is currently locked to,
+  // so the render layer can thicken the line that is actually attracting
+  // the cursor. Same churn profile as `geometryHover`; same local state.
+  const [guideHover, setGuideHover] = useState<GuideSnap>({ h: null, v: null });
+  // Cursor position in CONTAINER px (not world mm) for the ruler position
+  // indicators. Kept in px because that is what the rulers draw in, and
+  // converting back through the transform on every frame would just be a
+  // second place for a sign error to hide.
+  const [rulerCursor, setRulerCursor] = useState<{ x: number; y: number } | null>(null);
+  // An in-flight drag off a ruler gutter. `axis` is the guide's axis, not
+  // the ruler's: the top ruler ('h') births horizontal guides. `posMM` is
+  // the live drop position; `inGutter` means the pointer is back over a
+  // ruler, where releasing cancels instead of committing.
+  const [pendingGuide, setPendingGuide] = useState<{
+    axis: 'h' | 'v';
+    posMM: number;
+    inGutter: boolean;
+  } | null>(null);
+  // Snap targets derived from the doc's guidelines. Memoized so the
+  // identity compare in `drawSnap` stays meaningful across pointermoves.
+  // Raceway guidelines are included: snapping a vertex onto the cut line
+  // is exactly what laying out a raceway sign looks like. Only the SPLIT
+  // action discriminates by kind.
+  const snapGuides = useMemo(() => snapGuidesForDoc(doc), [doc]);
+  // The four tools that place points by clicking empty canvas. Guides make
+  // themselves click-through for these — see the guide render block.
+  const shapeToolActive =
+    tool === 'pen' || tool === 'rect' || tool === 'circle' || tool === 'arc';
   // Insert-doubleback tool: hover-tracked nearest segment + parametric
   // position so the canvas can render a ghost preview of the hairpin
   // before the user commits.
@@ -615,6 +664,9 @@ export default function EditorCanvas({
       if (rubberBand !== null) setRubberBand(null);
     }
     if (geometryHover !== null) setGeometryHover(null);
+    // Tier 2 #91 — same for the guide-snap highlight: only the drawing
+    // tools feed it, so a tool switch must not leave a line lit up.
+    if (guideHover.h !== null || guideHover.v !== null) setGuideHover({ h: null, v: null });
     // Tier 3 #60 — leaving the connect tool drops any staged source
     // and the live-preview hover so they don't ambush the operator
     // when they come back.
@@ -902,10 +954,13 @@ export default function EditorCanvas({
   //
   //   1. Geometry snap (vertex/midpoint of any existing run within the
   //      snap radius) — wins outright; the working point IS that geom.
-  //   2. Angle snap (Shift held + an anchor available) — locks the
+  //   2. Guide snap (Tier 2 #91) — a ruler-dragged construction line, or
+  //      the raceway guideline, within the snap radius locks ITS axis;
+  //      the other coordinate falls through to grid.
+  //   3. Angle snap (Shift held + an anchor available) — locks the
   //      direction from the anchor to the cursor onto the nearest 15°
   //      increment; cursor distance preserved.
-  //   3. Grid snap (existing snapMM quantize) — the fallback used by
+  //   4. Grid snap (existing snapMM quantize) — the fallback used by
   //      `clientToWorldSnapped` for non-drawing sites.
   //
   // The function also updates `geometryHover` as a side effect so the
@@ -929,7 +984,14 @@ export default function EditorCanvas({
       scale: transform.k,
       snapEnabled,
       snapMM,
+      guides: snapGuides,
     });
+    // Same "only set when it changed" discipline as the geometry ring
+    // below: identity compare on the two captured guides is enough, they
+    // come straight out of the memoized `snapGuides` array.
+    if (guideHover.h !== result.guides.h || guideHover.v !== result.guides.v) {
+      setGuideHover(result.guides);
+    }
     // Update the hover-ring state only when it actually changes —
     // otherwise React rerenders every pointermove for nothing. Cheap
     // structural compare since the snap kind + point uniquely
@@ -1044,6 +1106,13 @@ export default function EditorCanvas({
   }
 
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    // Tier 2 #91 — feed the ruler position indicators. Container px, and
+    // only while the rulers are actually visible so a hidden gutter costs
+    // nothing per pointermove.
+    if (showRulers) {
+      const rect = containerRef.current?.getBoundingClientRect();
+      if (rect) setRulerCursor({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+    }
     // Live preview updates for the in-progress drawing tools. These all
     // want the cursor's world-space position regardless of whether a drag
     // is in flight.
@@ -1969,11 +2038,16 @@ export default function EditorCanvas({
     setNodeMenu(null);
   }
 
-  // Tier 2 #74 — drag a raceway guideline vertically. Pointer capture on the
-  // hit line means the drag survives the cursor leaving the 10px band, which
-  // it will immediately at any real zoom. X is ignored: the guideline is
-  // horizontal, and letting it drift sideways would only ever be a mistake.
-  function beginGuidelineDrag(e: React.PointerEvent<SVGLineElement>, id: string) {
+  // Tier 2 #74 / #91 — drag a guideline along its own axis. Pointer capture
+  // on the hit line means the drag survives the cursor leaving the 10px
+  // band, which it will immediately at any real zoom. The off-axis
+  // coordinate is ignored: a horizontal guide that drifted sideways would
+  // only ever be a mistake, and a vertical one that drifted down likewise.
+  function beginGuidelineDrag(
+    e: React.PointerEvent<SVGLineElement>,
+    id: string,
+    vertical: boolean,
+  ) {
     e.stopPropagation();
     if (e.button !== 0) return;
     onSelectGuideline?.(id);
@@ -1982,7 +2056,7 @@ export default function EditorCanvas({
     el.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
       const w = clientToWorldSnapped(ev.clientX, ev.clientY);
-      if (w) onMoveGuideline(id, w[1]);
+      if (w) onMoveGuideline(id, vertical ? w[0] : w[1]);
     };
     const up = (ev: PointerEvent) => {
       try {
@@ -1993,6 +2067,65 @@ export default function EditorCanvas({
       el.removeEventListener('pointermove', move);
       el.removeEventListener('pointerup', up);
       el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  }
+
+  // Tier 2 #91 — press on a ruler gutter and drag into the canvas to pull
+  // out a construction guide. The top ruler ('h') births a horizontal
+  // guide, the left ruler ('v') a vertical one, matching every drafting
+  // tool the trade uses.
+  //
+  // Releasing back over EITHER gutter cancels. That is the standard escape
+  // hatch for "I grabbed the ruler by accident", and making both gutters
+  // cancel (rather than only the one you started on) means the L-shaped
+  // corner is not a dead zone where a mis-aimed cancel commits a guide.
+  //
+  // Pointer capture goes on the ruler <svg> itself so the drag keeps
+  // reporting once the cursor is over the canvas — the canvas's own
+  // pointer handlers never see this gesture.
+  function beginGuideFromRuler(axis: 'h' | 'v', e: React.PointerEvent<SVGSVGElement>) {
+    if (e.button !== 0) return;
+    if (!onAddGuide) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const el = e.currentTarget;
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    el.setPointerCapture(e.pointerId);
+
+    const posFor = (clientX: number, clientY: number) => {
+      const w = clientToWorldSnapped(clientX, clientY);
+      if (!w) return null;
+      const inGutter =
+        clientX - rect.left < RULER_PX || clientY - rect.top < RULER_PX;
+      return { posMM: axis === 'v' ? w[0] : w[1], inGutter };
+    };
+
+    const seed = posFor(e.clientX, e.clientY);
+    setPendingGuide(seed ? { axis, ...seed } : { axis, posMM: 0, inGutter: true });
+
+    const move = (ev: PointerEvent) => {
+      const next = posFor(ev.clientX, ev.clientY);
+      if (next) setPendingGuide({ axis, ...next });
+      if (showRulers) {
+        setRulerCursor({ x: ev.clientX - rect.left, y: ev.clientY - rect.top });
+      }
+    };
+    const up = (ev: PointerEvent) => {
+      try {
+        el.releasePointerCapture(ev.pointerId);
+      } catch {
+        // pointer already released — ignore
+      }
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      const final = posFor(ev.clientX, ev.clientY);
+      setPendingGuide(null);
+      if (final && !final.inGutter) onAddGuide(axis, final.posMM);
     };
     el.addEventListener('pointermove', move);
     el.addEventListener('pointerup', up);
@@ -2018,6 +2151,7 @@ export default function EditorCanvas({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerLeave={() => setRulerCursor(null)}
         onDoubleClick={onDoubleClick}
         onContextMenu={(e) => {
           // Tier 3 #60 — right-click anywhere cancels a staged
@@ -2034,53 +2168,120 @@ export default function EditorCanvas({
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
-          {/* Tier 2 #74 — raceway guidelines. Drawn first so they sit UNDER
+          {/* Tier 2 #74 / #91 — guidelines. Drawn first so they sit UNDER
               the glass: a construction line that hides a tube is worse than
-              one that is hard to see. The line spans well past the design
-              bbox on both sides so it still reads as "the whole width" when
-              the operator has panned or a run sits outside the box. */}
+              one that is hard to see. Each line spans well past the design
+              bbox on both ends so it still reads as "the whole width" when
+              the operator has panned or a run sits outside the box.
+
+              Two visual vocabularies, because they mean different things to
+              the shop. A RACEWAY guideline (blue, long dash, labelled
+              "raceway") is a cut line — tubes crossing it get split and
+              share a back-channel strip. A CONSTRUCTION guide (teal, fine
+              dash, labelled "guide") means nothing to the fabricator; it is
+              layout scaffolding and never reaches any emitted artifact.
+              Selection recolours either to orange. */}
           {(doc.guidelines ?? []).map((g) => {
-            const [bx, , bw] = doc.view_box_mm;
-            const overhang = Math.max(bw * 0.25, 50);
-            const x1 = bx - overhang;
-            const x2 = bx + bw + overhang;
+            const [bx, by, bw, bh] = doc.view_box_mm;
+            const vertical = isVerticalGuide(g);
+            const pos = guidePositionMM(g);
+            const overhang = Math.max((vertical ? bh : bw) * 0.25, 50);
+            const a = (vertical ? by : bx) - overhang;
+            const b = (vertical ? by + bh : bx + bw) + overhang;
             const selected = g.id === selectedGuidelineId;
+            const construction = g.kind === 'construction';
+            // Whichever guide the snap engine is currently locked to gets a
+            // heavier stroke, so "the cursor is riding this line" is legible
+            // without reading the toolbar.
+            const snapping =
+              (vertical ? guideHover.v?.id : guideHover.h?.id) === g.id;
+            const color = selected ? '#ff8a00' : construction ? '#00a389' : '#5b8cff';
+            const dash = construction
+              ? `${4 / transform.k} ${4 / transform.k}`
+              : `${8 / transform.k} ${6 / transform.k}`;
+            const width = (selected ? 1.75 : snapping ? 1.5 : 1) / transform.k;
+            // Endpoints, expressed once so the horizontal / vertical cases
+            // do not each carry their own copy of the coordinate algebra.
+            const p = vertical
+              ? { x1: pos, y1: a, x2: pos, y2: b }
+              : { x1: a, y1: pos, x2: b, y2: pos };
             return (
               <g key={g.id}>
                 {/* Fat transparent line: the visible stroke is 1px at any
-                    zoom, which is not a click target. */}
+                    zoom, which is not a click target.
+
+                    It stands down entirely while a shape tool is active
+                    (Tier 2 #91). The whole point of a guide is to draw ON
+                    it, and this band is 10px wide — leaving it live would
+                    mean every click aimed at the guide grabbed the guide
+                    instead of placing a vertex, i.e. the one gesture the
+                    feature exists for would be the one it swallowed. Guides
+                    are still selectable and draggable under every
+                    non-drawing tool. */}
                 <line
-                  x1={x1}
-                  y1={g.y_mm}
-                  x2={x2}
-                  y2={g.y_mm}
+                  {...p}
                   stroke="transparent"
                   strokeWidth={10 / transform.k}
-                  style={{ cursor: 'ns-resize' }}
-                  onPointerDown={(e) => beginGuidelineDrag(e, g.id)}
+                  pointerEvents={shapeToolActive ? 'none' : undefined}
+                  style={{ cursor: vertical ? 'ew-resize' : 'ns-resize' }}
+                  onPointerDown={(e) => beginGuidelineDrag(e, g.id, vertical)}
                 />
                 <line
-                  x1={x1}
-                  y1={g.y_mm}
-                  x2={x2}
-                  y2={g.y_mm}
-                  stroke={selected ? '#ff8a00' : '#5b8cff'}
-                  strokeWidth={(selected ? 1.75 : 1) / transform.k}
-                  strokeDasharray={`${8 / transform.k} ${6 / transform.k}`}
+                  {...p}
+                  stroke={color}
+                  strokeWidth={width}
+                  strokeDasharray={dash}
                   pointerEvents="none"
                 />
+                {/* Label hugs the guide's leading end: to the right of a
+                    vertical line, above a horizontal one. Offsets divide by
+                    the zoom so the gap stays a constant few screen px. */}
                 <text
-                  x={x1 + 4 / transform.k}
-                  y={g.y_mm - 4 / transform.k}
+                  x={vertical ? pos + 4 / transform.k : a + 4 / transform.k}
+                  y={vertical ? a + 14 / transform.k : pos - 4 / transform.k}
                   fontSize={11 / transform.k}
-                  fill={selected ? '#ff8a00' : '#5b8cff'}
+                  fill={color}
                   pointerEvents="none"
                 >
-                  {g.id} · raceway y={g.y_mm.toFixed(1)}mm
+                  {g.id} · {construction ? 'guide' : 'raceway'}{' '}
+                  {vertical ? 'x' : 'y'}={pos.toFixed(1)}mm
                 </text>
               </g>
             );
           })}
+          {/* Tier 2 #91 — the guide currently being dragged off a ruler.
+              Rendered as a ghost so the operator can see where it will land
+              before committing; it is not on the doc yet, and releasing back
+              over a gutter discards it. */}
+          {pendingGuide && (
+            <line
+              x1={
+                pendingGuide.axis === 'v'
+                  ? pendingGuide.posMM
+                  : doc.view_box_mm[0] - Math.max(doc.view_box_mm[2] * 0.25, 50)
+              }
+              x2={
+                pendingGuide.axis === 'v'
+                  ? pendingGuide.posMM
+                  : doc.view_box_mm[0] + doc.view_box_mm[2] + Math.max(doc.view_box_mm[2] * 0.25, 50)
+              }
+              y1={
+                pendingGuide.axis === 'h'
+                  ? pendingGuide.posMM
+                  : doc.view_box_mm[1] - Math.max(doc.view_box_mm[3] * 0.25, 50)
+              }
+              y2={
+                pendingGuide.axis === 'h'
+                  ? pendingGuide.posMM
+                  : doc.view_box_mm[1] + doc.view_box_mm[3] + Math.max(doc.view_box_mm[3] * 0.25, 50)
+              }
+              stroke="#00a389"
+              strokeOpacity={pendingGuide.inGutter ? 0.25 : 0.8}
+              strokeWidth={1 / transform.k}
+              strokeDasharray={`${4 / transform.k} ${4 / transform.k}`}
+              pointerEvents="none"
+            />
+          )}
           {/* Tier 3 #33b — pale dashed bbox outline around each group's
               members. Painted UNDER the run strokes so a glowing tube
               still reads as the dominant line. Padding is in
@@ -3000,6 +3201,22 @@ export default function EditorCanvas({
           )}
         </g>
       </svg>
+      {/* Tier 2 #91 — ruler gutters. Mounted AFTER the design svg so they
+          overlay it, and handed the very same transform triple the design
+          `<g>` uses, which is what guarantees a tick at 100 mm sits on the
+          geometry at 100 mm at every zoom and pan. */}
+      {showRulers && (
+        <CanvasRulers
+          width={size.w}
+          height={size.h}
+          scale={transform.k}
+          tx={transform.tx}
+          ty={transform.ty}
+          cursor={rulerCursor}
+          guidelines={doc.guidelines ?? []}
+          onRulerPointerDown={beginGuideFromRuler}
+        />
+      )}
       <div className="canvas-toolbar">
         <button type="button" onClick={fitToView}>Fit</button>
         <span className="meta">

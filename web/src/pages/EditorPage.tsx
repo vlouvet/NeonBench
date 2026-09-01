@@ -29,6 +29,7 @@ import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as arrange from '../lib/arrange';
 import * as ops from '../lib/docOps';
+import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 
@@ -156,6 +157,9 @@ export default function EditorPage() {
   } | null>(null);
   const [snapEnabled, setSnapEnabled] = useState(false);
   const [snapMM, setSnapMM] = useState(1);
+  // Tier 2 #91 — mm ruler gutters on the canvas. Default on: an operator
+  // laying out a sign wants to know where 100 mm is without measuring.
+  const [showRulers, setShowRulers] = useState(true);
   // Right-panel width (resizable via the left-edge drag handle), persisted
   // to localStorage and clamped to a sane range.
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -1087,21 +1091,52 @@ export default function EditorPage() {
     setStatusMessage('Raceway guideline added — drag it into position.');
   }
 
-  function moveRacewayGuideline(id: string, yMM: number) {
-    editDoc((prev) => ops.moveGuideline(prev, id, yMM));
+  // Tier 2 #91 — one mover for both kinds. `guides.moveGuide` reads the
+  // axis off the guide itself, so `posMM` is y for a horizontal guide and x
+  // for a vertical one and no caller has to know which.
+  function moveGuideline(id: string, posMM: number) {
+    editDoc((prev) => guides.moveGuide(prev, id, posMM));
+  }
+
+  // Tier 2 #91 — a construction guide dragged off a canvas ruler. Selected
+  // on creation so Delete removes the one just placed.
+  function addConstructionGuide(axis: 'h' | 'v', posMM: number) {
+    if (!doc) return;
+    const newId = ops.nextGuidelineId(doc);
+    editDoc((prev) => guides.addConstructionGuide(prev, axis, posMM));
+    setSelectedGuidelineId(newId);
+    setStatusMessage(
+      `Construction guide ${newId} added at ${axis === 'v' ? 'x' : 'y'}=${posMM.toFixed(1)}mm — layout only, never printed.`,
+    );
   }
 
   function deleteRacewayGuideline(id: string) {
+    const wasRaceway = !!doc && guides.isRacewayGuideline(guides.findGuide(doc, id));
     editDoc((prev) => ops.removeGuideline(prev, id));
     setSelectedGuidelineId((cur) => (cur === id ? null : cur));
     // Say what deleting does NOT do. Runs already cut keep their geometry and
     // their raceway tag, and an operator who expected the line to "undo"
-    // itself should find that out from the toast, not from the PDF.
-    setStatusMessage('Guideline removed. Tubes already split stay split and keep their raceway.');
+    // itself should find that out from the toast, not from the PDF. A
+    // construction guide never cut anything, so that warning would only be
+    // noise there.
+    setStatusMessage(
+      wasRaceway
+        ? 'Guideline removed. Tubes already split stay split and keep their raceway.'
+        : 'Construction guide removed.',
+    );
   }
 
+  // Tier 2 #91 — the selected guideline, but only if it is a raceway. The
+  // button below is disabled off this, and `splitTubesAtRaceway` re-checks:
+  // a construction guide reaching the split path would cut real glass on a
+  // line the operator drew as scaffolding.
+  const racewaySelected =
+    !!selectedGuidelineId &&
+    !!doc &&
+    guides.isRacewayGuideline(guides.findGuide(doc, selectedGuidelineId));
+
   function splitTubesAtRaceway() {
-    if (!doc || !selectedGuidelineId) return;
+    if (!doc || !selectedGuidelineId || !racewaySelected) return;
     const result = applyOp((prev) => ops.splitTubesAtRaceway(prev, selectedGuidelineId));
     if (!result) return;
     const r: ops.SplitAtRacewayResult = result;
@@ -1758,6 +1793,14 @@ export default function EditorPage() {
               className="snap-input"
               title="Snap grid spacing in mm"
             />
+            {/* Tier 2 #91 — rulers & guides. Sits next to Snap because guide
+                snapping rides the same snap-enabled toggle. */}
+            <button
+              type="button"
+              className={showRulers ? 'tool-btn active' : 'tool-btn'}
+              onClick={() => setShowRulers((v) => !v)}
+              title="Show mm rulers along the canvas top and left edge. Drag off a ruler to pull out a construction guide; guides are layout-only and never printed. Tier 2 #91."
+            >Rulers {showRulers ? 'on' : 'off'}</button>
             <span className="toolbar-divider" aria-hidden />
             <div className="print-toolbar-group" ref={printGroupRef}>
               <button
@@ -1889,8 +1932,10 @@ export default function EditorPage() {
           onSetSegmentType={setSegmentType}
           selectedGuidelineId={selectedGuidelineId}
           onSelectGuideline={setSelectedGuidelineId}
-          onMoveGuideline={moveRacewayGuideline}
+          onMoveGuideline={moveGuideline}
           onDeleteGuideline={deleteRacewayGuideline}
+          onAddGuide={addConstructionGuide}
+          showRulers={showRulers}
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
@@ -2095,15 +2140,19 @@ export default function EditorPage() {
             >
               Add raceway guideline
             </button>
+            {/* Tier 2 #91 — gated on the selected guideline actually being a
+                RACEWAY. A construction guide is inert layout scaffolding; if
+                one reached splitTubesAtRaceway it would cut every tube at the
+                line and stamp them into a strip page that means nothing. */}
             <button
               type="button"
               className="btn-secondary"
-              disabled={!selectedGuidelineId}
+              disabled={!racewaySelected}
               onClick={splitTubesAtRaceway}
               title={
-                selectedGuidelineId
+                racewaySelected
                   ? `Cut every tube crossing ${selectedGuidelineId} at the crossing and tag the pieces with it, so they share one back-channel strip. Re-running is a no-op. Tier 2 #74.`
-                  : 'Select a raceway guideline on the canvas first.'
+                  : 'Select a raceway guideline on the canvas first. Construction guides are layout-only and cannot split tubes.'
               }
             >
               Split tubes at raceway

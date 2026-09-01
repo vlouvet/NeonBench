@@ -3,9 +3,11 @@ import {
   ANGLE_SNAP_STEP_DEG,
   composeSnap,
   findGeometrySnap,
+  findGuideSnap,
   snapRadiusMM,
   snapToAngle,
   snapToGrid,
+  type SnapGuideLike,
   type SnapRunLike,
 } from './snap';
 
@@ -233,5 +235,169 @@ describe('composeSnap', () => {
 
   it('exports the default 15° step', () => {
     expect(ANGLE_SNAP_STEP_DEG).toBe(15);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2 #91 — guide snapping
+// ---------------------------------------------------------------------------
+
+describe('findGuideSnap', () => {
+  const gs: SnapGuideLike[] = [
+    { id: 'rw1', axis: 'h', posMM: 50 },
+    { id: 'rw2', axis: 'v', posMM: 20 },
+    { id: 'rw3', axis: 'h', posMM: 200 },
+  ];
+
+  it('probes each axis independently', () => {
+    // Cursor near the h-guide only.
+    const out = findGuideSnap(gs, [80, 51], 3);
+    expect(out.h?.id).toBe('rw1');
+    expect(out.v).toBeNull();
+  });
+
+  it('reports both axes when the cursor sits near their crossing', () => {
+    const out = findGuideSnap(gs, [21, 49], 3);
+    expect(out.h?.id).toBe('rw1');
+    expect(out.v?.id).toBe('rw2');
+  });
+
+  it('returns nothing outside the radius', () => {
+    const out = findGuideSnap(gs, [80, 60], 3);
+    expect(out.h).toBeNull();
+    expect(out.v).toBeNull();
+  });
+
+  it('picks the nearer of two same-axis guides', () => {
+    const out = findGuideSnap(gs, [0, 190], 20);
+    expect(out.h?.id).toBe('rw3');
+  });
+
+  it('ignores a guide with a non-finite position', () => {
+    const out = findGuideSnap([{ id: 'bad', axis: 'h', posMM: NaN }], [0, 0], 10);
+    expect(out.h).toBeNull();
+  });
+});
+
+describe('composeSnap with guides', () => {
+  const baseRuns = runs([
+    [0, 0],
+    [100, 0],
+  ]);
+  const guides: SnapGuideLike[] = [
+    { id: 'rw1', axis: 'h', posMM: 47 },
+    { id: 'rw2', axis: 'v', posMM: 23 },
+  ];
+
+  it('loses to geometry', () => {
+    // A vertex at (100, 0) is within the snap radius AND an h-guide sits
+    // 0.4mm away. Geometry keeps the top slot.
+    const out = composeSnap({
+      cursor: [99.7, 0.4],
+      anchor: null,
+      shiftHeld: false,
+      runs: baseRuns,
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 5,
+      guides: [{ id: 'rw1', axis: 'h', posMM: 0.8 }],
+    });
+    expect(out.geometry).not.toBeNull();
+    expect(out.point).toEqual([100, 0]);
+    expect(out.guides.h).toBeNull();
+  });
+
+  it('beats angle snap even with shift held', () => {
+    const out = composeSnap({
+      cursor: [200, 47.4],
+      anchor: [0, 0],
+      shiftHeld: true,
+      runs: [],
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 5,
+      guides,
+    });
+    expect(out.angleLocked).toBe(false);
+    expect(out.guides.h?.id).toBe('rw1');
+    expect(out.point[1]).toBe(47);
+  });
+
+  it('beats grid snap on its own axis and leaves the other axis gridded', () => {
+    // y=47.4 is within 2.5mm of the h-guide at 47; x=3.4 has no v-guide
+    // in range, so it still rounds to the 5mm grid.
+    const out = composeSnap({
+      cursor: [3.4, 47.4],
+      anchor: null,
+      shiftHeld: false,
+      runs: [],
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 5,
+      guides,
+    });
+    expect(out.point).toEqual([5, 47]);
+    expect(out.guides.h?.id).toBe('rw1');
+    expect(out.guides.v).toBeNull();
+  });
+
+  it('leaves the free axis genuinely free when the grid is off', () => {
+    const out = composeSnap({
+      cursor: [3.4, 47.4],
+      anchor: null,
+      shiftHeld: false,
+      runs: [],
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 0, // snap toggle on, but no grid spacing
+      guides,
+    });
+    expect(out.point).toEqual([3.4, 47]);
+  });
+
+  it('yields the intersection when an h- and a v-guide both fire', () => {
+    const out = composeSnap({
+      cursor: [23.4, 47.4],
+      anchor: null,
+      shiftHeld: false,
+      runs: [],
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 5,
+      guides,
+    });
+    expect(out.point).toEqual([23, 47]);
+    expect(out.guides.h?.id).toBe('rw1');
+    expect(out.guides.v?.id).toBe('rw2');
+  });
+
+  it('is disabled with the snap toggle off', () => {
+    const out = composeSnap({
+      cursor: [23.4, 47.4],
+      anchor: null,
+      shiftHeld: false,
+      runs: [],
+      scale: 1,
+      snapEnabled: false,
+      snapMM: 5,
+      guides,
+    });
+    expect(out.point).toEqual([23.4, 47.4]);
+    expect(out.guides.h).toBeNull();
+    expect(out.guides.v).toBeNull();
+  });
+
+  it('is a no-op when no guides are passed at all', () => {
+    const out = composeSnap({
+      cursor: [3.4, 7.8],
+      anchor: null,
+      shiftHeld: false,
+      runs: [],
+      scale: 1,
+      snapEnabled: true,
+      snapMM: 5,
+    });
+    expect(out.point).toEqual([5, 10]);
+    expect(out.guides).toEqual({ h: null, v: null });
   });
 });
