@@ -526,3 +526,80 @@ func TestGroupBackwardsCompat(t *testing.T) {
 		t.Errorf("groupless doc leaked a group_id key after re-marshal: %s", raw)
 	}
 }
+
+// TestGuidelineRoundTrip pins the Tier 2 #74 Doc.Guidelines addition: the
+// slice survives a JSON round-trip, and its ID is what the split action
+// stamps onto every run it cuts (Run.RacewayID), so the two must agree
+// after a save/load cycle or the combined strip page silently regroups.
+func TestGuidelineRoundTrip(t *testing.T) {
+	original := Doc{
+		Version:   1,
+		ViewBoxMM: [4]float64{0, 0, 200, 100},
+		Runs: []Run{
+			{
+				ID:        "r1",
+				RacewayID: "rw1",
+				Polyline:  Polyline{Points: [][2]float64{{0, 0}, {100, 0}}},
+			},
+			{
+				ID:        "r2",
+				RacewayID: "rw1",
+				Polyline:  Polyline{Points: [][2]float64{{0, 50}, {100, 50}}},
+			},
+		},
+		Guidelines: []Guideline{
+			{ID: "rw1", Kind: "raceway", YMM: 42.5},
+		},
+	}
+
+	raw, err := json.Marshal(&original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"guidelines":[{"id":"rw1","kind":"raceway","y_mm":42.5}]`) {
+		t.Errorf("expected Doc.Guidelines entry in marshaled JSON: %s", raw)
+	}
+
+	var got Doc
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Guidelines) != 1 {
+		t.Fatalf("unexpected guideline count: %d", len(got.Guidelines))
+	}
+	g := got.Guidelines[0]
+	if g.ID != "rw1" || g.Kind != "raceway" || g.YMM != 42.5 {
+		t.Errorf("guideline did not survive round-trip: %+v", g)
+	}
+	// The tie between the guideline and the runs it cut has to survive too.
+	for _, r := range got.Runs {
+		if r.RacewayID != g.ID {
+			t.Errorf("run %s lost the raceway tie: %q != %q", r.ID, r.RacewayID, g.ID)
+		}
+	}
+}
+
+// TestGuidelineBackwardsCompat verifies a pre-#74 design blob — which has no
+// "guidelines" key at all — deserializes to an empty slice rather than
+// failing, and that re-marshaling it does not introduce the key. Old docs
+// must stay byte-identical through an editor round-trip.
+func TestGuidelineBackwardsCompat(t *testing.T) {
+	const legacy = `{"version":1,"view_box_mm":[0,0,200,100],` +
+		`"runs":[{"id":"r1","polyline":{"points":[[0,0],[100,0]],"closed":false}}]}`
+
+	var doc Doc
+	if err := json.Unmarshal([]byte(legacy), &doc); err != nil {
+		t.Fatalf("unmarshal legacy doc: %v", err)
+	}
+	if doc.Guidelines != nil {
+		t.Errorf("legacy doc gained guidelines out of nowhere: %+v", doc.Guidelines)
+	}
+
+	raw, err := json.Marshal(&doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "guidelines") {
+		t.Errorf("omitempty failed — legacy doc grew a guidelines key: %s", raw)
+	}
+}

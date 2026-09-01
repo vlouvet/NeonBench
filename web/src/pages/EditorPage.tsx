@@ -195,6 +195,10 @@ export default function EditorPage() {
   // type (15/19/custom) to apply across every electrode. Reuses the
   // per-electrode HousingPickerModal so the picker UX is consistent.
   const [autoHousingOpen, setAutoHousingOpen] = useState(false);
+  // Tier 2 #74 — which raceway guideline is selected, if any. Lives here
+  // rather than in the canvas because the sidebar's split action is gated on
+  // it; the canvas owns only the drag.
+  const [selectedGuidelineId, setSelectedGuidelineId] = useState<string | null>(null);
   // Tier 2 #72 — transient status banner ("Added 24 doublebacks across
   // 12 runs"). Cleared by the next status set or by the auto-clear
   // timer below. Lives at the editor's `<p className="meta">` strip
@@ -292,6 +296,33 @@ export default function EditorPage() {
       return next;
     });
     setDirty(true);
+  }
+
+  // applyOp runs a doc op, hands editDoc the finished result, and returns that
+  // result synchronously so the caller can build a toast from it.
+  //
+  // The subtlety it exists to remove: editDoc updates through
+  // `setDoc(prev => …)`, and React runs that updater during the re-render, not
+  // inside the click handler. So the long-standing idiom here —
+  //
+  //     let result = null;
+  //     editDoc(prev => { const r = op(prev); result = r; return r.doc; });
+  //     if (!result) return;              // <- usually taken
+  //
+  // reads `result` while it is still null and bails before ever showing the
+  // message. It LOOKS like it works because React eagerly evaluates the first
+  // updater queued on an otherwise-idle hook, so the toast appears on a fresh
+  // page and silently stops once anything else is pending. Computing against
+  // the doc React last rendered removes the timing question entirely; the
+  // `prev === rendered` guard keeps the update correct if state did move.
+  function applyOp<R extends { doc: DesignDoc }>(
+    compute: (d: DesignDoc) => R,
+  ): R | null {
+    if (!doc) return null;
+    const rendered = doc;
+    const result = compute(rendered);
+    editDoc((prev) => (prev === rendered ? result.doc : compute(prev).doc));
+    return result;
   }
 
   function undo() {
@@ -969,12 +1000,7 @@ export default function EditorPage() {
   // of the endpoint (re-running on a fully-doublebacked doc is a no-op).
   function autoDoublebackAll() {
     if (!doc) return;
-    let result: ops.AutoDoublebackResult | null = null;
-    editDoc((prev) => {
-      const r = ops.autoDoublebackAllTerminations(prev);
-      result = r;
-      return r.doc;
-    });
+    const result = applyOp((prev) => ops.autoDoublebackAllTerminations(prev));
     if (!result) return;
     // Toast: report added vs skipped so re-running on an already-
     // doublebacked doc is clearly a no-op (added=0, skipped=N).
@@ -1014,12 +1040,7 @@ export default function EditorPage() {
   function autoSplitOverlong() {
     if (!doc) return;
     if (!(maxSegmentLengthMM > 0)) return;
-    let result: ops.AutoSplitResult | null = null;
-    editDoc((prev) => {
-      const r = ops.autoSplitOverlongTubes(prev, maxSegmentLengthMM);
-      result = r;
-      return r.doc;
-    });
+    const result = applyOp((prev) => ops.autoSplitOverlongTubes(prev, maxSegmentLengthMM));
     if (!result) return;
     const r: ops.AutoSplitResult = result;
     const parts: string[] = [];
@@ -1040,6 +1061,54 @@ export default function EditorPage() {
     );
   }
 
+  // Tier 2 #74 — raceway guideline handlers. Adding drops the line at the
+  // vertical centre of the design bbox, which is where a raceway usually
+  // wants to be on a single-row sign and is in any case one drag from
+  // anywhere else.
+  function addRacewayGuideline() {
+    if (!doc) return;
+    const [, y, , h] = doc.view_box_mm;
+    const yMM = y + h / 2;
+    const newId = ops.nextGuidelineId(doc);
+    editDoc((prev) => ops.addRacewayGuideline(prev, yMM));
+    setSelectedGuidelineId(newId);
+    setStatusMessage('Raceway guideline added — drag it into position.');
+  }
+
+  function moveRacewayGuideline(id: string, yMM: number) {
+    editDoc((prev) => ops.moveGuideline(prev, id, yMM));
+  }
+
+  function deleteRacewayGuideline(id: string) {
+    editDoc((prev) => ops.removeGuideline(prev, id));
+    setSelectedGuidelineId((cur) => (cur === id ? null : cur));
+    // Say what deleting does NOT do. Runs already cut keep their geometry and
+    // their raceway tag, and an operator who expected the line to "undo"
+    // itself should find that out from the toast, not from the PDF.
+    setStatusMessage('Guideline removed. Tubes already split stay split and keep their raceway.');
+  }
+
+  function splitTubesAtRaceway() {
+    if (!doc || !selectedGuidelineId) return;
+    const result = applyOp((prev) => ops.splitTubesAtRaceway(prev, selectedGuidelineId));
+    if (!result) return;
+    const r: ops.SplitAtRacewayResult = result;
+    const parts: string[] = [];
+    if (r.runsSplit > 0) {
+      parts.push(
+        `Split ${r.runsSplit} ${r.runsSplit === 1 ? 'tube' : 'tubes'} into ${r.piecesCreated} pieces on ${selectedGuidelineId}`,
+      );
+    }
+    if (r.skippedClosedWithElectrodes > 0) {
+      parts.push(
+        `${r.skippedClosedWithElectrodes} closed ${r.skippedClosedWithElectrodes === 1 ? 'run' : 'runs'} skipped (clear their electrodes first)`,
+      );
+    }
+    setStatusMessage(
+      parts.length > 0 ? `${parts.join(' · ')}.` : 'No tubes cross this guideline.',
+    );
+  }
+
   // Tier 2 #72 — bulk-set a housing on every electrode that doesn't
   // already have one. Opens the housing picker modal; on Save the
   // picked type is applied across the doc in one editDoc, collapsing
@@ -1053,12 +1122,7 @@ export default function EditorPage() {
   function applyAutoHousing(housing: ops.HousingInput) {
     if (!doc) return;
     try {
-      let result: ops.AutoHousingResult | null = null;
-      editDoc((prev) => {
-        const r = ops.autoHousingAllElectrodes(prev, housing);
-        result = r;
-        return r.doc;
-      });
+      const result = applyOp((prev) => ops.autoHousingAllElectrodes(prev, housing));
       setAutoHousingOpen(false);
       if (!result) return;
       const r: ops.AutoHousingResult = result;
@@ -1762,6 +1826,10 @@ export default function EditorPage() {
           onDeleteElectrode={deleteElectrode}
           onElectrodeContextMenu={openHousingPicker}
           onSetTool={setTool}
+          selectedGuidelineId={selectedGuidelineId}
+          onSelectGuideline={setSelectedGuidelineId}
+          onMoveGuideline={moveRacewayGuideline}
+          onDeleteGuideline={deleteRacewayGuideline}
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
@@ -1954,6 +2022,31 @@ export default function EditorPage() {
             {/* Tier 2 #75 — one-click remedy for the max_segment_length
                 validator error. Disabled when the spec carries no limit, or
                 when nothing on the doc exceeds it. */}
+            {/* Tier 2 #74 — raceway guideline. Add drops a horizontal line at
+                the design's vertical centre; splitting is a separate,
+                explicit click, because a construction line existing is not
+                the same as consenting to cut every tube that touches it. */}
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={addRacewayGuideline}
+              title="Drop a horizontal raceway guideline at the design's vertical centre. Drag it into position, then use Split tubes at raceway. Tier 2 #74."
+            >
+              Add raceway guideline
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={!selectedGuidelineId}
+              onClick={splitTubesAtRaceway}
+              title={
+                selectedGuidelineId
+                  ? `Cut every tube crossing ${selectedGuidelineId} at the crossing and tag the pieces with it, so they share one back-channel strip. Re-running is a no-op. Tier 2 #74.`
+                  : 'Select a raceway guideline on the canvas first.'
+              }
+            >
+              Split tubes at raceway
+            </button>
             <button
               type="button"
               className="btn-secondary"

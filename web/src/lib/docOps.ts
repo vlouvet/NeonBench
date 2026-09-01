@@ -10,6 +10,7 @@ import type {
   Annotation,
   Bend,
   Blockout,
+  Guideline,
   DesignDoc,
   DesignRun,
   Dimension,
@@ -1385,6 +1386,28 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
     if (run!.tube_diameter_mm != null) next.tube_diameter_mm = run!.tube_diameter_mm;
     if (run!.color != null) next.color = run!.color;
     if (run!.notes != null) next.notes = run!.notes;
+    // Classification carries onto BOTH pieces. Cutting a tube changes where
+    // the glass ends, not what it is: a channel-letter face split at the
+    // raceway is still face glass, a jumper is still a jumper, and both
+    // halves stay in the layer and on the raceway they were already on.
+    //
+    // Dropping these was silent and expensive. groupByRaceway (internal/
+    // printpdf/raceway.go) buckets only runs with IsChannelLetterFace AND a
+    // RacewayID, so a face run that lost its flag on the way through a split
+    // simply stopped appearing on the combined strip page — no error, just a
+    // missing page. Same shape of loss for kind ("jumper" pieces re-entering
+    // the bend list and rendering solid) and group_id (pieces falling out of
+    // their layer).
+    //
+    // `direction` is deliberately NOT carried: it only means anything on a
+    // closed run, and both pieces are open.
+    if (run!.is_channel_letter_face) next.is_channel_letter_face = run!.is_channel_letter_face;
+    if (run!.channel_letter_depth_mm != null) {
+      next.channel_letter_depth_mm = run!.channel_letter_depth_mm;
+    }
+    if (run!.raceway_id != null) next.raceway_id = run!.raceway_id;
+    if (run!.kind != null) next.kind = run!.kind;
+    if (run!.group_id != null) next.group_id = run!.group_id;
     if (electrodes.length > 0) next.electrodes = electrodes;
     if (blockouts.length > 0) next.blockouts = blockouts;
     if (annotations.length > 0) next.annotations = annotations;
@@ -2488,6 +2511,31 @@ function splitRunAtArcLength(
   }
   if (k < 0) return null; // target past the end of the run
 
+  return splitRunAtSegmentT(doc, runId, k, t);
+}
+
+// splitRunAtSegmentT cuts an open run at parameter `t` along segment `k`,
+// inserting the vertex first when the cut lands mid-segment, and returns the
+// two new run ids (head = the piece containing vertex 0). Shared by the
+// arc-length splitter (Tier 2 #75) and the raceway splitter (Tier 2 #74) —
+// the insert-then-split dance and its off-by-one are worth having in exactly
+// one place.
+//
+// When the cut coincides with an existing vertex we split there rather than
+// inserting a duplicate on top of it: a zero-length segment would survive
+// into the bend list as a phantom 0mm run.
+function splitRunAtSegmentT(
+  doc: DesignDoc,
+  runId: string,
+  k: number,
+  t: number,
+): { doc: DesignDoc; headId: string; tailId: string } | null {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return null;
+  const n = run.polyline.points.length;
+  if (k < 0 || k >= n - 1) return null;
+  const EPS = 1e-9;
+
   // splitRun needs 0 < pointIndex < n-1 so each piece keeps >= 2 points.
   const canSplitAt = (idx: number) => idx > 0 && idx < n - 1;
 
@@ -2499,8 +2547,11 @@ function splitRunAtArcLength(
   } else if (t >= 1 - EPS && canSplitAt(k + 1)) {
     nextDoc = doc;
     splitIndex = k + 1;
+  } else if (t <= EPS || t >= 1 - EPS) {
+    // The cut is on an endpoint, where there is nothing to split off.
+    return null;
   } else {
-    nextDoc = insertVertex(doc, runId, k, Math.min(1, Math.max(0, t)));
+    nextDoc = insertVertex(doc, runId, k, t);
     splitIndex = k + 1; // the vertex insertVertex just placed
   }
 
@@ -2680,4 +2731,288 @@ function cutIntoEqualPieces(
   }
   pieceIds.push(tailId);
   return { doc: out, pieceIds };
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 #74 — raceway guideline as a geometric break point
+// ---------------------------------------------------------------------------
+
+// How close a vertex has to sit to the guideline to count as ON it. A
+// nanometre: far below any real sign geometry, but comfortably above the
+// float noise in an interpolated crossing coordinate (~1e-13 mm at
+// millimetre scale). This is what makes re-splitting idempotent — the
+// vertices a split creates land exactly on the line, and land inside this
+// tolerance on the way back in.
+export const RACEWAY_ON_LINE_TOL_MM = 1e-6;
+
+export type RacewayCrossing = {
+  // Index of the segment the crossing sits on. For a closed polyline the
+  // last segment (n-1 -> 0) is included.
+  segmentIndex: number;
+  // Parameter along that segment, in [0, 1). Exactly 0 means the crossing
+  // IS the segment's first vertex.
+  t: number;
+};
+
+// racewayCrossings finds every point where a polyline meets the horizontal
+// line y = yMM, in order along the polyline.
+//
+// A vertex sitting exactly on the line is emitted once, as `t: 0` on the
+// segment leaving it — never also as `t: 1` on the segment arriving, which
+// would split the same place twice. A vertex that merely touches the line and
+// turns back still counts: the operator put the raceway there, and "tangent,
+// so not really a crossing" is not a distinction the shop floor makes.
+//
+// For an OPEN polyline the two endpoints are excluded. That is not a special
+// case bolted on — it is what makes the whole operation idempotent. Splitting
+// leaves every new piece with an endpoint exactly on the line, so a second
+// pass finds nothing left to do.
+export function racewayCrossings(
+  points: [number, number][],
+  closed: boolean,
+  yMM: number,
+  tolMM: number = RACEWAY_ON_LINE_TOL_MM,
+): RacewayCrossing[] {
+  const n = points.length;
+  if (n < 2) return [];
+  const out: RacewayCrossing[] = [];
+  const lastSegment = closed ? n - 1 : n - 2;
+  for (let i = 0; i <= lastSegment; i++) {
+    const p1 = points[i];
+    const p2 = points[(i + 1) % n];
+    const a = p1[1] - yMM;
+    const b = p2[1] - yMM;
+    if (Math.abs(a) <= tolMM) {
+      // Vertex i is on the line. Skip vertex 0 of an open run — it is an
+      // endpoint, and there is nothing on the far side of it to split off.
+      if (closed || i > 0) out.push({ segmentIndex: i, t: 0 });
+      continue;
+    }
+    // Vertex i+1 on the line is emitted by the NEXT iteration as its own
+    // `a`. For the final segment of an open run that iteration never comes,
+    // which is exactly right: that vertex is the other endpoint.
+    if (Math.abs(b) <= tolMM) continue;
+    if ((a < 0 && b > 0) || (a > 0 && b < 0)) {
+      out.push({ segmentIndex: i, t: a / (a - b) });
+    }
+  }
+  return out;
+}
+
+// nextGuidelineId returns the lowest unused `rw<n>` id on the doc. The `rw`
+// prefix keeps guideline ids distinguishable from run ids (`r1`) and group
+// ids (`g1`) at a glance in the runs list, where the guideline's id shows up
+// again as every split piece's raceway tag.
+export function nextGuidelineId(doc: DesignDoc): string {
+  const taken = new Set<number>();
+  for (const g of doc.guidelines ?? []) {
+    const m = /^rw(\d+)$/.exec(g.id);
+    if (m) taken.add(parseInt(m[1], 10));
+  }
+  let n = 1;
+  while (taken.has(n)) n++;
+  return `rw${n}`;
+}
+
+export function addRacewayGuideline(doc: DesignDoc, yMM: number): DesignDoc {
+  if (!Number.isFinite(yMM)) return doc;
+  const g: Guideline = { id: nextGuidelineId(doc), kind: 'raceway', y_mm: yMM };
+  return { ...doc, guidelines: [...(doc.guidelines ?? []), g] };
+}
+
+export function moveGuideline(doc: DesignDoc, id: string, yMM: number): DesignDoc {
+  if (!Number.isFinite(yMM)) return doc;
+  const list = doc.guidelines ?? [];
+  const idx = list.findIndex((g) => g.id === id);
+  if (idx < 0 || list[idx].y_mm === yMM) return doc;
+  const next = list.slice();
+  next[idx] = { ...next[idx], y_mm: yMM };
+  return { ...doc, guidelines: next };
+}
+
+// removeGuideline drops the line. Runs already split at it keep their
+// geometry AND their raceway tag: the cut glass does not un-cut itself
+// because the construction line went away, and the pieces still share a
+// strip. Clearing the tag here would silently regroup the PDF.
+export function removeGuideline(doc: DesignDoc, id: string): DesignDoc {
+  const list = doc.guidelines ?? [];
+  if (!list.some((g) => g.id === id)) return doc;
+  const next = list.filter((g) => g.id !== id);
+  const out: DesignDoc = { ...doc, guidelines: next };
+  if (next.length === 0) delete out.guidelines;
+  return out;
+}
+
+export type SplitAtRacewayResult = {
+  doc: DesignDoc;
+  // Runs that crossed the line and were cut.
+  runsSplit: number;
+  // Total pieces those runs became.
+  piecesCreated: number;
+  // Closed runs carrying electrodes, which we decline to touch — see below.
+  skippedClosedWithElectrodes: number;
+};
+
+// splitTubesAtRaceway cuts every run crossing the guideline at the crossing
+// point and stamps each resulting piece with the guideline's id as its
+// RacewayID (Tier 2 #74). This is the canonical channel-letter-with-raceway
+// construction: all tubes terminate at one horizontal back-channel.
+//
+// Idempotent by construction, not by bookkeeping. Splitting leaves every
+// piece with an endpoint exactly on the line, and racewayCrossings excludes
+// the endpoints of an open run, so a second pass finds no crossings and
+// returns the input doc unchanged. Nothing has to remember what was already
+// cut.
+//
+// MOVING the guideline and splitting again does NOT undo the previous cut —
+// it adds a second one, because the old split is now indistinguishable from
+// glass the operator drew that way. Undo is the way back, and it is one step
+// (the whole sweep is a single editDoc).
+//
+// Closed runs (a letter's face outline is one) are opened at their first
+// crossing rather than skipped, since a raceway through an "O" is ordinary
+// work. A closed run carrying electrodes is skipped and counted: its live arc
+// is defined by the walk between them, and opening the loop destroys that
+// with no non-arbitrary answer for which piece inherits which electrode. Same
+// call as autoSplitOverlongTubes, for the same reason.
+export function splitTubesAtRaceway(
+  doc: DesignDoc,
+  guidelineId: string,
+): SplitAtRacewayResult {
+  const none: SplitAtRacewayResult = {
+    doc,
+    runsSplit: 0,
+    piecesCreated: 0,
+    skippedClosedWithElectrodes: 0,
+  };
+  const guideline = (doc.guidelines ?? []).find((g) => g.id === guidelineId);
+  if (!guideline) return none;
+  const yMM = guideline.y_mm;
+
+  let out = doc;
+  let runsSplit = 0;
+  let piecesCreated = 0;
+  let skippedClosedWithElectrodes = 0;
+
+  // Snapshot up front: splitting mints new runs, and the pieces are already
+  // cut at the line — re-examining them would find nothing but would let a
+  // future change loop.
+  const sourceIds = doc.runs.map((r) => r.id);
+
+  for (const sourceId of sourceIds) {
+    const run = out.runs.find((r) => r.id === sourceId);
+    if (!run) continue;
+    const closed = !!run.polyline.closed;
+    const crossings = racewayCrossings(run.polyline.points, closed, yMM);
+    if (crossings.length === 0) continue;
+
+    // Opening a closed loop is a visible edit that happens before we know the
+    // splits will land; snapshot so an abandoned run leaves the doc as found.
+    const outAtRunStart = out;
+
+    if (closed) {
+      if ((run.electrodes?.length ?? 0) > 0) {
+        skippedClosedWithElectrodes++;
+        continue;
+      }
+      const opened = openClosedRunAtCrossing(out, sourceId, crossings[0]);
+      if (!opened) continue;
+      out = opened;
+    }
+
+    // Re-derive crossings against whatever shape we are now holding, and cut
+    // the head off one at a time. Walking the remaining tail means never
+    // having to track how earlier inserts shifted the vertex indices.
+    const pieceIds: string[] = [];
+    let tailId = sourceId;
+    let guard = 0;
+    for (;;) {
+      const tail = out.runs.find((r) => r.id === tailId);
+      if (!tail) break;
+      const rest = racewayCrossings(tail.polyline.points, false, yMM);
+      if (rest.length === 0) break;
+      const cut = splitRunAtSegmentT(out, tailId, rest[0].segmentIndex, rest[0].t);
+      if (!cut) break;
+      out = cut.doc;
+      pieceIds.push(cut.headId);
+      tailId = cut.tailId;
+      // A crossing count can only shrink; the bound is paranoia about a
+      // pathological polyline, not a known case.
+      if (++guard > run.polyline.points.length + 4) break;
+    }
+
+    if (pieceIds.length === 0) {
+      // Nothing was cut. For an open run that means the crossings were not
+      // splittable after all; for a closed one it means we opened the loop
+      // for nothing. Either way, put the doc back.
+      out = outAtRunStart;
+      continue;
+    }
+    pieceIds.push(tailId);
+
+    // Stamp every piece with the guideline id so the PDF's combined strip
+    // page (PR #43) groups them.
+    const ids = new Set(pieceIds);
+    out = {
+      ...out,
+      runs: out.runs.map((r) => (ids.has(r.id) ? { ...r, raceway_id: guidelineId } : r)),
+    };
+    runsSplit++;
+    piecesCreated += pieceIds.length;
+  }
+
+  if (runsSplit === 0 && skippedClosedWithElectrodes === 0) return none;
+  return { doc: out, runsSplit, piecesCreated, skippedClosedWithElectrodes };
+}
+
+// openClosedRunAtCrossing rewrites a closed run as an open polyline that
+// starts and ends at the given crossing, tracing the same physical loop.
+// Unlike breakOpen it places no electrodes — a raceway split is a geometry
+// operation, and the spec leaves electrode placement to the operator (or to
+// the auto-batch in Tier 2 #72).
+//
+// Returns null when the loop is too small to open.
+function openClosedRunAtCrossing(
+  doc: DesignDoc,
+  runId: string,
+  at: RacewayCrossing,
+): DesignDoc | null {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run || !run.polyline.closed) return null;
+  const pts = run.polyline.points;
+  const n = pts.length;
+  if (n < 3) return null;
+
+  // Rotate the loop so it begins at the crossing. When the crossing is mid
+  // segment the cut point becomes a new vertex at both ends; when it is
+  // already a vertex we rotate to it and duplicate it, exactly as breakOpen
+  // does.
+  const k = at.segmentIndex;
+  let rotated: [number, number][];
+  if (at.t <= RACEWAY_ON_LINE_TOL_MM) {
+    rotated = [...pts.slice(k), ...pts.slice(0, k), pts[k]];
+  } else {
+    const p1 = pts[k];
+    const p2 = pts[(k + 1) % n];
+    const cut: [number, number] = [
+      p1[0] + at.t * (p2[0] - p1[0]),
+      p1[1] + at.t * (p2[1] - p1[1]),
+    ];
+    // The cut sits between vertex k and k+1, so the opened walk runs
+    // cut -> k+1 -> … -> k -> cut.
+    const after = pts.slice(k + 1);
+    const before = pts.slice(0, k + 1);
+    rotated = [cut, ...after, ...before, cut];
+  }
+
+  return mapRun(doc, runId, (r) => {
+    const next: DesignRun = {
+      ...r,
+      polyline: { ...r.polyline, points: rotated, closed: false },
+    };
+    // Direction is meaningless on an open run (runArcs walks the whole
+    // polyline); a stale value would misdirect the live-arc walk later.
+    delete next.direction;
+    return next;
+  });
 }

@@ -174,6 +174,21 @@ export type DesignDoc = {
   // pre-33b docs — consumers should treat `undefined` and `[]` as
   // equivalent ("no groups defined").
   groups?: Group[];
+  // Tier 2 #74 — editor construction lines. V1 is horizontal-only
+  // (`kind: 'raceway'`). Mirrors `designdoc.Doc.Guidelines`; the Go
+  // decoder runs with DisallowUnknownFields, so this type and the Go
+  // struct have to move together or every save 400s.
+  guidelines?: Guideline[];
+};
+
+// Tier 2 #74 — a horizontal construction line. `id` doubles as the
+// `raceway_id` stamped on every run split at this line, so "these tubes
+// share a raceway" has one source of truth instead of two that can drift.
+// Mirrors `internal/designdoc.Guideline` byte-for-byte.
+export type Guideline = {
+  id: string;
+  kind: 'raceway';
+  y_mm: number;
 };
 
 // Tier 3 #33b — display-name + identity for one group of runs.

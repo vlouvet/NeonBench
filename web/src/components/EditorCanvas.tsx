@@ -81,6 +81,10 @@ export default function EditorCanvas({
   onDeleteElectrode,
   onElectrodeContextMenu,
   onSetTool,
+  selectedGuidelineId,
+  onSelectGuideline,
+  onMoveGuideline,
+  onDeleteGuideline,
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
@@ -177,6 +181,14 @@ export default function EditorCanvas({
   // lands the far end. Optional: without it that one item is withheld
   // rather than offered as a dead row.
   onSetTool?: (tool: EditorTool) => void;
+  // Tier 2 #74 — raceway guidelines. Selection lives in EditorPage because
+  // the sidebar's "Split tubes at raceway" action is gated on it; the canvas
+  // owns only the drag. All optional so a caller that does not want
+  // guidelines simply gets none rendered.
+  selectedGuidelineId?: string | null;
+  onSelectGuideline?: (id: string | null) => void;
+  onMoveGuideline?: (id: string, yMM: number) => void;
+  onDeleteGuideline?: (id: string) => void;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
@@ -656,6 +668,21 @@ export default function EditorCanvas({
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
         return;
       }
+      // Tier 2 #74 — a selected raceway guideline claims Esc (deselect) and
+      // Delete/Backspace (remove) before anything else looks at them. It is
+      // the most recently clicked thing on the canvas, so it is what the
+      // operator means.
+      if (selectedGuidelineId && (e.key === 'Delete' || e.key === 'Backspace')) {
+        e.preventDefault();
+        onDeleteGuideline?.(selectedGuidelineId);
+        onSelectGuideline?.(null);
+        return;
+      }
+      if (e.key === 'Escape' && selectedGuidelineId) {
+        e.preventDefault();
+        onSelectGuideline?.(null);
+        return;
+      }
       if (e.key === 'Escape') {
         // Tier 3 #60 — Esc cancels a staged Connect-Tubes source.
         // Listed first so it wins when the operator pressed Esc while
@@ -712,7 +739,16 @@ export default function EditorCanvas({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [drawing, onCommitShape, tool, connectStaged, selectedVertices]);
+  }, [
+    drawing,
+    onCommitShape,
+    tool,
+    connectStaged,
+    selectedVertices,
+    selectedGuidelineId,
+    onSelectGuideline,
+    onDeleteGuideline,
+  ]);
 
   // Tier 3 #34 — track Shift independently of any focused element so
   // the angle-snap engages whenever the user holds Shift over the
@@ -1922,6 +1958,36 @@ export default function EditorCanvas({
     setNodeMenu(null);
   }
 
+  // Tier 2 #74 — drag a raceway guideline vertically. Pointer capture on the
+  // hit line means the drag survives the cursor leaving the 10px band, which
+  // it will immediately at any real zoom. X is ignored: the guideline is
+  // horizontal, and letting it drift sideways would only ever be a mistake.
+  function beginGuidelineDrag(e: React.PointerEvent<SVGLineElement>, id: string) {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    onSelectGuideline?.(id);
+    if (!onMoveGuideline) return;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const w = clientToWorldSnapped(ev.clientX, ev.clientY);
+      if (w) onMoveGuideline(id, w[1]);
+    };
+    const up = (ev: PointerEvent) => {
+      try {
+        el.releasePointerCapture(ev.pointerId);
+      } catch {
+        // pointer already released — ignore
+      }
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  }
+
   function endMove(e: React.PointerEvent<SVGGElement>) {
     if (!moveDragRef.current) return;
     moveDragRef.current = null;
@@ -1957,6 +2023,53 @@ export default function EditorCanvas({
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
+          {/* Tier 2 #74 — raceway guidelines. Drawn first so they sit UNDER
+              the glass: a construction line that hides a tube is worse than
+              one that is hard to see. The line spans well past the design
+              bbox on both sides so it still reads as "the whole width" when
+              the operator has panned or a run sits outside the box. */}
+          {(doc.guidelines ?? []).map((g) => {
+            const [bx, , bw] = doc.view_box_mm;
+            const overhang = Math.max(bw * 0.25, 50);
+            const x1 = bx - overhang;
+            const x2 = bx + bw + overhang;
+            const selected = g.id === selectedGuidelineId;
+            return (
+              <g key={g.id}>
+                {/* Fat transparent line: the visible stroke is 1px at any
+                    zoom, which is not a click target. */}
+                <line
+                  x1={x1}
+                  y1={g.y_mm}
+                  x2={x2}
+                  y2={g.y_mm}
+                  stroke="transparent"
+                  strokeWidth={10 / transform.k}
+                  style={{ cursor: 'ns-resize' }}
+                  onPointerDown={(e) => beginGuidelineDrag(e, g.id)}
+                />
+                <line
+                  x1={x1}
+                  y1={g.y_mm}
+                  x2={x2}
+                  y2={g.y_mm}
+                  stroke={selected ? '#ff8a00' : '#5b8cff'}
+                  strokeWidth={(selected ? 1.75 : 1) / transform.k}
+                  strokeDasharray={`${8 / transform.k} ${6 / transform.k}`}
+                  pointerEvents="none"
+                />
+                <text
+                  x={x1 + 4 / transform.k}
+                  y={g.y_mm - 4 / transform.k}
+                  fontSize={11 / transform.k}
+                  fill={selected ? '#ff8a00' : '#5b8cff'}
+                  pointerEvents="none"
+                >
+                  {g.id} · raceway y={g.y_mm.toFixed(1)}mm
+                </text>
+              </g>
+            );
+          })}
           {/* Tier 3 #33b — pale dashed bbox outline around each group's
               members. Painted UNDER the run strokes so a glowing tube
               still reads as the dominant line. Padding is in

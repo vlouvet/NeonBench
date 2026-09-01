@@ -17,6 +17,31 @@ type Doc struct {
 	// renderer ignore membership; they exist purely so the editor
 	// can extend selection and apply ops to many runs at once.
 	Groups []Group `json:"groups,omitempty"`
+	// Guidelines are editor-drawn construction lines (Tier 2 #74). V1
+	// carries one kind, "raceway": the horizontal Y at which every tube
+	// crossing it gets split, so the pieces below the line terminate in a
+	// single back-channel strip. They are DESIGN INTENT, not geometry —
+	// the validator, renderer, PDF and DXF emitters all ignore them, and
+	// splitting is an explicit operator action rather than something that
+	// happens because a line exists. omitempty keeps pre-#74 doc JSON
+	// byte-identical.
+	Guidelines []Guideline `json:"guidelines,omitempty"`
+}
+
+// Guideline is a construction line in the 2D editor. Horizontal-only in V1
+// (a Y position, spanning the whole design width); Kind is an enum so
+// vertical guidelines for stacked-letter signs can be added later without a
+// breaking change.
+//
+// ID doubles as the RacewayID stamped on every run split at this line, which
+// is what ties the pieces together for the combined strip page the PDF
+// emitter already builds (PR #43 / Tier 3 #46). That coupling is deliberate:
+// it means "these tubes share a raceway" has exactly one source of truth
+// rather than a guideline and a separately-typed group that can drift.
+type Guideline struct {
+	ID   string  `json:"id"`
+	Kind string  `json:"kind"` // "raceway" (only value in V1)
+	YMM  float64 `json:"y_mm"`
 }
 
 // Group is a named binding of two-or-more runs. Membership is recorded
