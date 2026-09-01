@@ -1,10 +1,16 @@
 // Tier 2 #90 — the sidebar Arrange section: align, distribute, mirror and
 // depth order over the current multi-selection.
 //
+// Tier 3 #103 adds step & repeat to the same section, because arraying is the
+// same family of thought as aligning — "put copies of this over there" — and
+// the operator is already here with a selection made.
+//
 // The component owns no doc state. It renders buttons, reports which op the
 // operator picked, and asks `arrange.ts` (the same module the ops live in)
 // why a family is unavailable so the disabled tooltip says something better
-// than nothing.
+// than nothing. Step & repeat owns the array FORM state (counts, pitch,
+// mode) — those are UI settings, not document data — and asks
+// `stepRepeat.ts` for the preview and for the reason it is unavailable.
 //
 // Styling stays inline rather than adding classes to App.css: this section
 // shipped in a parallel round alongside other editor work, and a shared
@@ -12,6 +18,7 @@
 // existing `btn-secondary` / `meta` classes so they inherit the panel's type
 // and hover treatment.
 
+import { useState } from 'react';
 import type { DesignDoc } from '../api';
 import {
   disabledReason,
@@ -20,6 +27,12 @@ import {
   type Axis,
   type DepthMove,
 } from '../lib/arrange';
+import {
+  DEFAULT_STEP_REPEAT,
+  stepRepeatPlan,
+  type PitchMode,
+  type StepRepeatOptions,
+} from '../lib/stepRepeat';
 
 export type ArrangePanelProps = {
   doc: DesignDoc | null;
@@ -28,6 +41,7 @@ export type ArrangePanelProps = {
   onDistribute: (axis: Axis) => void;
   onMirror: (axis: Axis) => void;
   onReorder: (move: DepthMove) => void;
+  onStepRepeat: (opts: StepRepeatOptions) => void;
 };
 
 const gridStyle: React.CSSProperties = {
@@ -54,6 +68,29 @@ const btnStyle: React.CSSProperties = {
   fontSize: 10,
   lineHeight: 1.1,
   minWidth: 0,
+};
+
+// Step & repeat form. Two-up fields so the X / Y pair reads as a pair.
+const fieldRowStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+  gap: 4,
+  marginBottom: 4,
+};
+
+const fieldStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+  fontSize: 10,
+  minWidth: 0,
+};
+
+const fieldInputStyle: React.CSSProperties = {
+  width: '100%',
+  minWidth: 0,
+  fontSize: 11,
+  padding: '2px 4px',
 };
 
 const subheadStyle: React.CSSProperties = {
@@ -159,6 +196,12 @@ const DEPTH_BUTTONS: { move: DepthMove; label: string; title: string }[] = [
   },
 ];
 
+// One decimal is the resolution an operator can act on at the bench; more
+// digits just make the preview line wrap.
+function mm(n: number): string {
+  return (Math.round(n * 10) / 10).toString();
+}
+
 export default function ArrangePanel({
   doc,
   selectedRunIds,
@@ -166,12 +209,32 @@ export default function ArrangePanel({
   onDistribute,
   onMirror,
   onReorder,
+  onStepRepeat,
 }: ArrangePanelProps) {
   const usable = doc ? arrangeableRunIds(doc, selectedRunIds).length : 0;
   const alignWhy = disabledReason(doc, selectedRunIds, 'align');
   const distributeWhy = disabledReason(doc, selectedRunIds, 'distribute');
   const mirrorWhy = disabledReason(doc, selectedRunIds, 'mirror');
   const reorderWhy = disabledReason(doc, selectedRunIds, 'reorder');
+
+  // Held as STRINGS, not numbers: a number-typed field the operator clears to
+  // retype ends up as NaN or snaps back to a value they did not choose. The
+  // plan does the validating and says what is wrong in words.
+  const [countX, setCountX] = useState(String(DEFAULT_STEP_REPEAT.countX));
+  const [countY, setCountY] = useState(String(DEFAULT_STEP_REPEAT.countY));
+  const [pitchX, setPitchX] = useState(String(DEFAULT_STEP_REPEAT.pitchXMM));
+  const [pitchY, setPitchY] = useState(String(DEFAULT_STEP_REPEAT.pitchYMM));
+  const [pitchMode, setPitchMode] = useState<PitchMode>(DEFAULT_STEP_REPEAT.pitchMode);
+
+  const arrayOpts: StepRepeatOptions = {
+    countX: Number(countX),
+    countY: Number(countY),
+    pitchXMM: Number(pitchX),
+    pitchYMM: Number(pitchY),
+    pitchMode,
+  };
+  const plan = stepRepeatPlan(doc, selectedRunIds, arrayOpts);
+  const pitchLabel = pitchMode === 'gap' ? 'Gap' : 'Pitch';
 
   return (
     <div className="arrange-panel" data-testid="arrange-panel">
@@ -293,9 +356,109 @@ export default function ArrangePanel({
         ))}
       </div>
 
+      {/* Tier 3 #103 — step & repeat. The preview line is the whole point of
+          the section: an array is the one arrange op whose result is hard to
+          picture, and the guard against a runaway count only helps if the
+          operator can see the number before committing. */}
+      <p style={subheadStyle}>Step &amp; repeat</p>
+      <div style={fieldRowStyle}>
+        <label style={fieldStyle}>
+          Across
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={countX}
+            data-testid="step-repeat-count-x"
+            style={fieldInputStyle}
+            onChange={(e) => setCountX(e.target.value)}
+          />
+        </label>
+        <label style={fieldStyle}>
+          Down
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={countY}
+            data-testid="step-repeat-count-y"
+            style={fieldInputStyle}
+            onChange={(e) => setCountY(e.target.value)}
+          />
+        </label>
+      </div>
+      <div style={fieldRowStyle}>
+        <label style={fieldStyle}>
+          {pitchLabel} X (mm)
+          <input
+            type="number"
+            step="any"
+            value={pitchX}
+            data-testid="step-repeat-pitch-x"
+            style={fieldInputStyle}
+            onChange={(e) => setPitchX(e.target.value)}
+          />
+        </label>
+        <label style={fieldStyle}>
+          {pitchLabel} Y (mm)
+          <input
+            type="number"
+            step="any"
+            value={pitchY}
+            data-testid="step-repeat-pitch-y"
+            style={fieldInputStyle}
+            onChange={(e) => setPitchY(e.target.value)}
+          />
+        </label>
+      </div>
+      <label style={{ ...fieldStyle, marginBottom: 4 }}>
+        Measured
+        <select
+          value={pitchMode}
+          data-testid="step-repeat-mode"
+          style={fieldInputStyle}
+          onChange={(e) => setPitchMode(e.target.value as PitchMode)}
+        >
+          <option value="gap">Gap — edge to edge</option>
+          <option value="centre">Pitch — centre to centre</option>
+        </select>
+      </label>
+      {plan.extent && plan.copies > 0 && (
+        <p className="meta" data-testid="step-repeat-preview" style={{ margin: '0 0 4px' }}>
+          {plan.copies} cop{plan.copies === 1 ? 'y' : 'ies'} · +{plan.newRuns} run
+          {plan.newRuns === 1 ? '' : 's'} · {mm(plan.widthMM)} × {mm(plan.heightMM)} mm
+          overall · step {mm(plan.stepXMM)} × {mm(plan.stepYMM)} mm
+        </p>
+      )}
+      {(plan.error || plan.warning) && (
+        <p
+          className="meta"
+          data-testid="step-repeat-message"
+          style={{ margin: '0 0 4px', opacity: 0.85 }}
+        >
+          {plan.error ?? plan.warning}
+        </p>
+      )}
+      <button
+        type="button"
+        className="btn-secondary"
+        data-testid="step-repeat-apply"
+        style={{ width: '100%', marginBottom: 8 }}
+        disabled={plan.error !== null}
+        title={
+          plan.error ??
+          `Duplicate the selection into a ${plan.countX} × ${plan.countY} grid, ` +
+            `${pitchMode === 'gap' ? 'edge to edge' : 'centre to centre'}. One undo step.`
+        }
+        onClick={() => onStepRepeat(arrayOpts)}
+      >
+        Array selection
+      </button>
+
       <p className="meta hint-line" style={{ margin: 0 }}>
-        Align and distribute use each run&rsquo;s true outline, so a curved tube
-        lands by its bow rather than by its end points.
+        Align, distribute and array use each run&rsquo;s true outline, so a
+        curved tube lands by its bow rather than by its end points. Copies do
+        not inherit the original&rsquo;s raceway.
       </p>
     </div>
   );

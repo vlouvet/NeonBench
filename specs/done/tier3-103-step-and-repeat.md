@@ -1,6 +1,6 @@
 # Tier 3 #103 — Step and repeat (array duplication)
 
-> **Status:** active · drafted 2026-08-31 · branch `task/3-step-and-repeat`
+> **Status:** done · shipped 2026-08-31 · branch `task/3-step-and-repeat`
 
 ## Goal
 
