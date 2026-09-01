@@ -860,3 +860,151 @@ func checkCapHeight(bbox [4]float64) []Issue {
 		YMM:      (bbox[1] + bbox[3]) / 2,
 	}}
 }
+
+// ---------------------------------------------------------------------------
+// Tier 2 #104 / NW #133 — raceway rules
+// ---------------------------------------------------------------------------
+
+// RacewayInput is one modelled raceway box, reduced to the numbers the two
+// rules below need. The caller assembles it — see designdoc.RacewayInputs —
+// because internal/validate cannot import internal/designdoc (designdoc
+// imports validate, and the dependency only runs one way).
+//
+// MemberMinXMM / MemberMaxXMM are the ARC-AWARE X extent of the runs carrying
+// this raceway's id: an extent taken from raw vertices clips the bow of an
+// arc, and a rule built on it would clear a box that is actually short.
+type RacewayInput struct {
+	ID       string
+	XMM      float64 // left edge, world mm
+	LengthMM float64
+	YMM      float64 // the guideline's Y — used to place the marker
+	// Extent of the member runs. Meaningless unless HasMembers.
+	MemberMinXMM float64
+	MemberMaxXMM float64
+	HasMembers   bool
+	// TransformerCount is derived from electrode pairs on the member runs.
+	TransformerCount int
+	// TransformerLengthMM is the case length of one transformer. Zero falls
+	// back to RacewayTransformerLengthMM.
+	TransformerLengthMM float64
+}
+
+// Raceway rule limits. Both numbers come from docs/neon-rules/raceway.md,
+// whose source class is supplier pages and a trade forum rather than the
+// trade textbooks every other rule in this file cites — which is exactly why
+// BOTH raceway rules are warnings. A shop running a different box or a
+// different transformer must not be blocked by our defaults.
+const (
+	// RacewayTransformerLengthMM is the measured case length of a 10 kV /
+	// 30 mA electronic neon transformer (6¼ in). This is the twin of
+	// designdoc.TransformerLengthMM; TestTransformerLengthTwinsAgree in
+	// internal/designdoc pins the two together.
+	RacewayTransformerLengthMM = 159.0
+
+	// RacewayTransformerClearanceMM is the gap allowed beside each
+	// transformer for GTO routing and for a hand to reach in.
+	//
+	// PROVENANCE: this one is a NeonBench engineering judgement, not a
+	// citation. No source gives a spacing figure; what the sources DO say is
+	// that hand access is the reason the box is as big as it is (SignMonkey
+	// via Graphics Pro: "enough room to get his hands inside to make
+	// connections"). 1 in per unit is the smallest allowance consistent with
+	// that, and it only ever produces a warning.
+	RacewayTransformerClearanceMM = 25.4
+
+	// racewaySpanToleranceMM absorbs float noise from the arc flattener so a
+	// box fitted to its own runs does not immediately warn that it fails to
+	// span them. Well below any dimension a fabricator can hold.
+	racewaySpanToleranceMM = 0.05
+)
+
+// CheckRaceways runs the two raceway rules over every modelled box.
+//
+// Both are WARNINGS. See the const block above: these are current commercial
+// practice from a weaker source class than the rest of docs/neon-rules/, so
+// they inform the operator rather than blocking the job.
+func CheckRaceways(inputs []RacewayInput) []Issue {
+	if len(inputs) == 0 {
+		return nil
+	}
+	var issues []Issue
+	for _, rw := range inputs {
+		issues = append(issues, checkRacewaySpan(rw)...)
+		issues = append(issues, checkRacewayTransformerFit(rw)...)
+	}
+	return issues
+}
+
+// checkRacewaySpan flags a raceway that does not reach its own runs.
+//
+// This is the rule that catches an auto-fit that was never re-run after the
+// letters moved: the tubes are tagged for a box that no longer spans them, so
+// the outermost letter has nothing to bolt to.
+func checkRacewaySpan(rw RacewayInput) []Issue {
+	if !rw.HasMembers || rw.LengthMM <= 0 {
+		return nil
+	}
+	left := rw.XMM
+	right := rw.XMM + rw.LengthMM
+	overLeft := left - rw.MemberMinXMM   // > 0 → runs stick out to the left
+	overRight := rw.MemberMaxXMM - right // > 0 → runs stick out to the right
+	if overLeft <= racewaySpanToleranceMM && overRight <= racewaySpanToleranceMM {
+		return nil
+	}
+	var where string
+	var markerX float64
+	switch {
+	case overLeft > racewaySpanToleranceMM && overRight > racewaySpanToleranceMM:
+		where = fmt.Sprintf("%.0fmm past the left end and %.0fmm past the right", overLeft, overRight)
+		markerX = (rw.MemberMinXMM + rw.MemberMaxXMM) / 2
+	case overLeft > racewaySpanToleranceMM:
+		where = fmt.Sprintf("%.0fmm past the left end", overLeft)
+		markerX = rw.MemberMinXMM
+	default:
+		where = fmt.Sprintf("%.0fmm past the right end", overRight)
+		markerX = rw.MemberMaxXMM
+	}
+	return []Issue{{
+		Rule:     RuleRacewaySpan,
+		Severity: SeverityWarning,
+		Message: fmt.Sprintf(
+			"raceway %s does not span its runs — glass reaches %s (box %.0fmm from x=%.0f, runs %.0f…%.0f). Re-run auto-fit if the letters moved.",
+			rw.ID, where, rw.LengthMM, rw.XMM, rw.MemberMinXMM, rw.MemberMaxXMM),
+		XMM: markerX,
+		YMM: rw.YMM,
+	}}
+}
+
+// checkRacewayTransformerFit flags a raceway too short to hold the
+// transformers the design implies.
+//
+// A transformer is 159mm long and lies ALONG the run — it does not fit across
+// the box (docs/neon-rules/raceway.md, "Cross-section"), so the constraint is
+// on length, not on depth. Four letters wanting four transformers in a 900mm
+// raceway do not go together, and today that is discovered on a lift.
+func checkRacewayTransformerFit(rw RacewayInput) []Issue {
+	if rw.TransformerCount <= 0 || rw.LengthMM <= 0 {
+		return nil
+	}
+	unit := rw.TransformerLengthMM
+	if unit <= 0 {
+		unit = RacewayTransformerLengthMM
+	}
+	needed := float64(rw.TransformerCount) * (unit + RacewayTransformerClearanceMM)
+	if needed <= rw.LengthMM+racewaySpanToleranceMM {
+		return nil
+	}
+	suffix := "s"
+	if rw.TransformerCount == 1 {
+		suffix = ""
+	}
+	return []Issue{{
+		Rule:     RuleRacewayTransformerFit,
+		Severity: SeverityWarning,
+		Message: fmt.Sprintf(
+			"raceway %s is %.0fmm long but %d transformer%s need %.0fmm laid along it (%.0fmm each + %.1fmm clearance)",
+			rw.ID, rw.LengthMM, rw.TransformerCount, suffix, needed, unit, RacewayTransformerClearanceMM),
+		XMM: rw.XMM + rw.LengthMM/2,
+		YMM: rw.YMM,
+	}}
+}

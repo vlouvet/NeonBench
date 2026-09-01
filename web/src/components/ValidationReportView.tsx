@@ -10,6 +10,8 @@ const RULE_LABELS: Record<ValidationIssue['rule'], string> = {
   min_lead_in: 'Electrode lead-in',
   sharp_bend_angle: 'Sharp bend angle',
   face_perimeter_exceeds_blank: 'Face perimeter exceeds blank',
+  raceway_span: 'Raceway does not span its runs',
+  raceway_transformer_fit: 'Transformers do not fit the raceway',
   unsupported_path: 'Unsupported',
 };
 
@@ -81,6 +83,12 @@ export default function ValidationReportView({
     'min_lead_in',
     'sharp_bend_angle',
     'face_perimeter_exceeds_blank',
+    // Tier 2 #104. This array is a WHITELIST, not a sort order: the render
+    // below maps over it, so a rule that is missing here never reaches the
+    // sidebar however loudly the backend reports it. Any new
+    // ValidationIssue['rule'] member has to be added in both places.
+    'raceway_span',
+    'raceway_transformer_fit',
     'unsupported_path',
   ];
 

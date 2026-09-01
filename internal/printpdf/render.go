@@ -80,10 +80,12 @@ type Options struct {
 	// Scope: mirroring applies to the main tile pages and the bend-
 	// list summary page (the front-face pattern surfaces the bender
 	// reads against the back of the glass). Channel-letter return-
-	// strip pages and raceway-strip pages are unfolded perimeter
+	// strip pages and nested-return-strip pages are unfolded perimeter
 	// patterns rendered in their own 1D coordinate space — mirroring
 	// them would invert arc-length direction without operator
-	// benefit, so those pages render the same regardless of the flag.
+	// benefit — and the raceway page is a plan view of a box, which
+	// has no front or back side to read through. All three render the
+	// same regardless of the flag.
 	Mirror *bool
 	// Rotate turns the pattern 90° clockwise about its bounding-box
 	// centre before the paper-tiling math runs (Tier 2 #93). Values:
@@ -724,11 +726,17 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 		//   - Per-run ChannelLetterDepthMM overrides the project default
 		//     for that run (lets one project mix tall and shallow returns).
 		//   - Runs sharing a non-empty RacewayID are emitted as ONE
-		//     combined raceway strip in declaration order (Strattman
+		//     combined NESTED RETURN strip in declaration order (Strattman
 		//     raceway construction); ungrouped face runs continue to get
-		//     one strip page each. Raceway pages render *after* the
+		//     one strip page each. Nested pages render *after* the
 		//     per-run pages so the operator's stack is "individual letters
 		//     first, then any shared raceway".
+		//
+		// Tier 2 #104: the modelled raceway BOX gets its own page after
+		// all of those — a plan view of the aluminium enclosure itself,
+		// which is a different object from the return strips (see
+		// emitNestedReturnStrip's doc comment for why the old name was
+		// wrong).
 		projectDepth := opts.ChannelLetterDepthMM
 		if projectDepth <= 0 {
 			projectDepth = 100
@@ -756,7 +764,20 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 			if len(runs) == 0 {
 				continue
 			}
-			emitRacewayStrip(pdf, opts, gid, runs, projectDepth)
+			emitNestedReturnStrip(pdf, opts, gid, runs, projectDepth)
+			stampCopyMarker(pdf, opts, pageH, copyNo, copies)
+		}
+
+		// Tier 2 #104 — one dimensioned plan view per modelled raceway
+		// box. Gated on the design actually carrying a Raceway record:
+		// a design that only has a raceway GUIDELINE has told us where
+		// the tubes are cut, not what box they mount to, and inventing
+		// one would put a fabrication drawing of an object nobody
+		// specified into the operator's stack. Honours StripsOnly the
+		// same way the strip pages do (it is bench hardware output, not
+		// pattern output).
+		for _, rw := range doc.Raceways {
+			emitRacewayPage(pdf, opts, rw, doc)
 			stampCopyMarker(pdf, opts, pageH, copyNo, copies)
 		}
 

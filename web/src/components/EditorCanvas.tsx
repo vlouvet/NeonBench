@@ -3,6 +3,7 @@ import type { DesignDoc, DesignRun, SegmentKind, ValidationIssue } from '../api'
 import { isGroupVisible } from '../api';
 import { runArcs, indicesToD, nearestLiveArcIndex, blockoutSegments } from '../lib/runArcs';
 import { runPathDistanceMM } from '../lib/arcGeom';
+import { racewayEffectiveHeightMM } from '../lib/docOps';
 import { colorHex } from '../lib/neonColors';
 import NodeContextMenu from './NodeContextMenu';
 import {
@@ -96,6 +97,7 @@ export default function EditorCanvas({
   onSelectGuideline,
   onMoveGuideline,
   onDeleteGuideline,
+  onDragRacewayEnd,
   onAddGuide,
   showRulers = true,
   onPlaceBlockout,
@@ -218,6 +220,11 @@ export default function EditorCanvas({
   // the guide and hands back one number.
   onMoveGuideline?: (id: string, posMM: number) => void;
   onDeleteGuideline?: (id: string) => void;
+  // Tier 2 #104 — drag one end of a modelled raceway box. The box shares
+  // its guideline's id and its Y, so this only ever moves an X. Without
+  // this callback the box still renders; it just cannot be resized by
+  // dragging (numeric entry in the sidebar still works).
+  onDragRacewayEnd?: (id: string, end: 'left' | 'right', xMM: number) => void;
   // Tier 2 #91 — drag-off-the-ruler created a construction guide. `axis`
   // is 'h' for one pulled from the top ruler, 'v' from the left ruler.
   // Without this callback the rulers still render but stay inert.
@@ -2088,6 +2095,45 @@ export default function EditorCanvas({
     el.addEventListener('pointercancel', up);
   }
 
+  // Tier 2 #104 — drag one END of a modelled raceway box. Same pointer-
+  // capture shape as beginGuidelineDrag (the handle is a few screen px wide,
+  // so the cursor leaves it on the first move), and the same
+  // `e.button !== 0` guard: a right-click starting a drag is on the
+  // recurring-bugs list in CLAUDE.md.
+  //
+  // Only X moves. The box's Y is its guideline's, which is the point of
+  // sharing an id — there is no gesture that can drag the two out of
+  // agreement.
+  function beginRacewayEndDrag(
+    e: React.PointerEvent<SVGRectElement>,
+    id: string,
+    end: 'left' | 'right',
+  ) {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    onSelectGuideline?.(id);
+    if (!onDragRacewayEnd) return;
+    const el = e.currentTarget;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const w = clientToWorldSnapped(ev.clientX, ev.clientY);
+      if (w) onDragRacewayEnd(id, end, w[0]);
+    };
+    const up = (ev: PointerEvent) => {
+      try {
+        el.releasePointerCapture(ev.pointerId);
+      } catch {
+        // pointer already released — ignore
+      }
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  }
+
   // Tier 2 #91 — press on a ruler gutter and drag into the canvas to pull
   // out a construction guide. The top ruler ('h') births a horizontal
   // guide, the left ruler ('v') a vertical one, matching every drafting
@@ -2183,6 +2229,87 @@ export default function EditorCanvas({
       >
         <rect x={0} y={0} width={size.w} height={size.h} fill="transparent" />
         <g transform={`translate(${transform.tx},${transform.ty}) scale(${transform.k})`}>
+          {/* Tier 2 #104 / NW #133 — modelled raceway boxes. Drawn FIRST,
+              so the aluminium sits behind the glass and behind its own
+              guideline: the box is what everything else is mounted to, and
+              a filled rectangle over the tubes would hide the design.
+
+              The box hangs off its guideline — same id, and the guideline
+              supplies the top edge — so selecting either selects both, and
+              there is no gesture that can drag them out of agreement. Its
+              vocabulary is deliberately unlike a guideline's (solid warm
+              grey outline + wash, not a dashed line) because a raceway is
+              hardware the installer bolts up, not a construction line. */}
+          {(doc.raceways ?? []).map((rw) => {
+            const guide = (doc.guidelines ?? []).find(
+              (g) => g.id === rw.id && g.kind === 'raceway',
+            );
+            if (!guide || rw.length_mm <= 0) return null;
+            const top = guide.y_mm;
+            const h = racewayEffectiveHeightMM(rw);
+            const selected = rw.id === selectedGuidelineId;
+            const stroke = selected ? '#ff8a00' : '#9a8f7a';
+            const handleW = 6 / transform.k;
+            const right = rw.x_mm + rw.length_mm;
+            return (
+              <g key={`raceway-${rw.id}`}>
+                <rect
+                  x={rw.x_mm}
+                  y={top}
+                  width={rw.length_mm}
+                  height={h}
+                  fill="#9a8f7a"
+                  fillOpacity={selected ? 0.16 : 0.09}
+                  stroke={stroke}
+                  strokeWidth={(selected ? 1.5 : 1) / transform.k}
+                  style={{ cursor: 'pointer' }}
+                  onPointerDown={(e) => {
+                    if (e.button !== 0) return;
+                    e.stopPropagation();
+                    onSelectGuideline?.(rw.id);
+                  }}
+                />
+                {/* Length dimension along the bottom edge, so the operator
+                    reads the box's size off the canvas the same way they
+                    read it off the printed raceway page. */}
+                <line
+                  x1={rw.x_mm}
+                  y1={top + h}
+                  x2={right}
+                  y2={top + h}
+                  stroke={stroke}
+                  strokeWidth={0.8 / transform.k}
+                  pointerEvents="none"
+                />
+                <text
+                  x={(rw.x_mm + right) / 2}
+                  y={top + h + 12 / transform.k}
+                  fontSize={11 / transform.k}
+                  fill={stroke}
+                  textAnchor="middle"
+                  pointerEvents="none"
+                >
+                  raceway {rw.id} · {rw.length_mm.toFixed(1)}mm ×{' '}
+                  {h.toFixed(1)}mm
+                </text>
+                {/* End handles. Wider than they look, because a 1px edge is
+                    not a click target at any zoom. */}
+                {(['left', 'right'] as const).map((end) => (
+                  <rect
+                    key={end}
+                    x={(end === 'left' ? rw.x_mm : right) - handleW / 2}
+                    y={top}
+                    width={handleW}
+                    height={h}
+                    fill={stroke}
+                    fillOpacity={selected ? 0.55 : 0.25}
+                    style={{ cursor: 'ew-resize' }}
+                    onPointerDown={(e) => beginRacewayEndDrag(e, rw.id, end)}
+                  />
+                ))}
+              </g>
+            );
+          })}
           {/* Tier 2 #74 / #91 — guidelines. Drawn first so they sit UNDER
               the glass: a construction line that hides a tube is worse than
               one that is hard to see. Each line spans well past the design

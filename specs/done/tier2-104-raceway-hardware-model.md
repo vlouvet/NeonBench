@@ -1,6 +1,15 @@
 # Tier 2 #104 — Raceway as a modelled hardware object (NW #133)
 
-> **Status:** active · drafted 2026-08-31 · branch `task/2-raceway-model`
+> **Status:** done · PR #165 · drafted 2026-08-31 · branch `task/2-raceway-model`
+>
+> Two deliberate deviations, both argued in the PR body: the end margin is
+> **not** surfaced as a project setting (its named constant, single
+> application site and comment are all in place, but the settings inputs live
+> in a file another agent owned this round), and the spec's "four transformers
+> in a 900 mm raceway" illustration **does not fire** — four units need
+> 737.6 mm at the clearance the rule uses, so 900 mm clears. The threshold was
+> pinned at the length that genuinely fails rather than tuned to make the
+> illustration true.
 
 ## Goal
 

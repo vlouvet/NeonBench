@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 )
 
 // Doc is the structured editable representation of a neon design. It carries
@@ -33,6 +34,62 @@ type Doc struct {
 	// operator action rather than something that happens because a line
 	// exists. omitempty keeps pre-#74 doc JSON byte-identical.
 	Guidelines []Guideline `json:"guidelines,omitempty"`
+	// Raceways model the physical aluminium box the letters mount to
+	// (Tier 2 #104 / NW #133). A Raceway's ID is the ID of the "raceway"
+	// Guideline that supplies its top edge — NOT a new id space. That is
+	// the same identity Run.RacewayID already carries, so "these tubes
+	// share a raceway" still has exactly one source of truth and the box
+	// is simply extra hardware detail hung off it. A Raceway whose ID
+	// matches no raceway guideline is rejected at unmarshal.
+	//
+	// omitempty keeps every pre-#104 doc's JSON byte-identical, the same
+	// back-compat invariant Groups, Guidelines and SegmentTypes rely on.
+	Raceways []Raceway `json:"raceways,omitempty"`
+}
+
+// UnmarshalJSON enforces the one cross-field invariant the schema has:
+// every Raceway hangs off a "raceway" Guideline with the same ID. A
+// Raceway is the box for a guideline, not an object in its own right, so
+// a dangling one has no top edge, no member runs, and no place on the
+// canvas — it can only be the residue of a client that deleted the
+// guideline and forgot the box. Rejecting here means the editor finds out
+// on save instead of the fabricator finding out in the PDF.
+//
+// The nested decoder keeps DisallowUnknownFields, which the server's
+// decoder sets on the outer request object — a custom UnmarshalJSON on
+// Doc would otherwise quietly re-open the WHOLE document to typo'd keys,
+// which is the loudest possible version of recurring bug class 2.
+func (d *Doc) UnmarshalJSON(data []byte) error {
+	type docAlias Doc
+	var alias docAlias
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&alias); err != nil {
+		return err
+	}
+	out := Doc(alias)
+	if len(out.Raceways) > 0 {
+		racewayGuides := make(map[string]bool, len(out.Guidelines))
+		for _, g := range out.Guidelines {
+			if g.Kind == GuidelineKindRaceway {
+				racewayGuides[g.ID] = true
+			}
+		}
+		seen := make(map[string]bool, len(out.Raceways))
+		for _, rw := range out.Raceways {
+			if !racewayGuides[rw.ID] {
+				return fmt.Errorf(
+					"raceway %q: no guideline with that id and kind %q — a raceway box is the hardware for a raceway guideline, it has no identity of its own",
+					rw.ID, GuidelineKindRaceway)
+			}
+			if seen[rw.ID] {
+				return fmt.Errorf("raceway %q: duplicated — one guideline carries at most one box", rw.ID)
+			}
+			seen[rw.ID] = true
+		}
+	}
+	*d = out
+	return nil
 }
 
 // Guideline is a construction line in the 2D editor.
@@ -132,6 +189,119 @@ func (g *Guideline) UnmarshalJSON(data []byte) error {
 	}
 	*g = out
 	return nil
+}
+
+// Raceway is the physical enclosure the channel letters mount to and that
+// houses the transformers, the wiring and the disconnect (Tier 2 #104 /
+// NW #133). It is a rectangular aluminium box that spans the letter set and
+// bolts to the building — the one component the installer actually anchors,
+// and until now the only part of the assembly NeonBench did not model.
+//
+// IDENTITY: ID is the ID of the "raceway" Guideline that supplies the box's
+// TOP EDGE, which is the same value Run.RacewayID already carries on every
+// tube split at that line. There is no third id space and no new foreign
+// key: the guideline gives Y, this record gives X, length, height and depth,
+// and every member run is already pointing at it. Doc.UnmarshalJSON rejects
+// a Raceway whose ID matches no raceway guideline.
+//
+// Every dimension is operator-overridable, and deliberately so: the numbers
+// in docs/neon-rules/raceway.md come from supplier pages and a trade forum,
+// not from the trade textbooks the rest of docs/neon-rules/ cites. Zero on
+// HeightMM / DepthMM means "use the shop default" (RacewayDefaultHeightMM /
+// RacewayDefaultDepthMM) rather than "a box with no height".
+type Raceway struct {
+	ID       string  `json:"id"`
+	XMM      float64 `json:"x_mm"` // left edge, world mm
+	LengthMM float64 `json:"length_mm"`
+	HeightMM float64 `json:"height_mm,omitempty"` // 0 = shop default
+	DepthMM  float64 `json:"depth_mm,omitempty"`  // 0 = shop default
+}
+
+// Raceway shop defaults, all in millimetres. See docs/neon-rules/raceway.md
+// for the citations — and for the warning that this file's source class is
+// weaker than the rest of docs/neon-rules/, which is why every one of these
+// is overridable per raceway rather than baked in.
+const (
+	// RacewayDefaultDepthMM and RacewayDefaultHeightMM are 8 in (203.2 mm),
+	// NOT the 4–5 in figures most of the modern web quotes.
+	//
+	// Those smaller boxes are LED-era: an LED driver is small, so the box
+	// shrank around it. A neon transformer did not shrink. A typical modern
+	// 10 kV / 30 mA electronic transformer measures 159 mm long
+	// (TransformerLengthMM below) — it physically cannot sit ACROSS a 127 mm
+	// (5 in) raceway, it has to lie along the run, and there is then no room
+	// left for GTO routing or for a hand to reach in and make the connection.
+	// 8 in × 8 in is the only figure any source ties specifically to NEON
+	// letters (Signs101: "an 8x8 raceway was the defacto standard").
+	//
+	// This comment exists so nobody "corrects" these back down to the LED
+	// numbers on the strength of a supplier page. If you are about to, read
+	// docs/neon-rules/raceway.md section "Cross-section" first.
+	RacewayDefaultDepthMM  = 203.2
+	RacewayDefaultHeightMM = 203.2
+
+	// RacewaySpliceMM is the longest section that ships as one piece
+	// (10 ft). Longer raceways are butt-spliced, so the PDF marks a splice
+	// line at every multiple — a fabrication and shipping fact, the same way
+	// the tube-length limit already is.
+	RacewaySpliceMM = 3048.0
+
+	// TransformerLengthMM is the measured length of a 10 kV / 30 mA
+	// electronic neon transformer (6.25 in). Used by the validator to check
+	// that the implied transformer count fits ALONG the raceway.
+	TransformerLengthMM = 159.0
+
+	// RacewayEndMarginMM is how far the box extends PAST the outermost
+	// letters at each end.
+	//
+	// THIS IS AN OPEN QUESTION, NOT A MEASURED RULE. Every source says the
+	// raceway "spans the entire length of the letters"; not one states
+	// whether it stops flush with the first and last letter or overhangs by
+	// some margin. See docs/neon-rules/raceway.md section "Open questions"
+	// item 1, which says to ask a shop before encoding a formula.
+	//
+	// V1 is therefore FLUSH — zero is the only number here that was not
+	// invented. It lives in this one named constant, applied at exactly one
+	// place in each of the two auto-fit implementations (fitRacewayToRuns in
+	// web/src/lib/docOps.ts and FitRacewayToRuns in raceway.go), so that
+	// answering the open question is a one-line edit rather than an
+	// archaeology exercise. Do not distribute it through the arithmetic.
+	RacewayEndMarginMM = 0.0
+)
+
+// EffectiveHeightMM resolves the box height: the per-raceway override when
+// set, else the shop default. Zero is "unset", not "flat".
+func (r Raceway) EffectiveHeightMM() float64 {
+	if r.HeightMM > 0 {
+		return r.HeightMM
+	}
+	return RacewayDefaultHeightMM
+}
+
+// EffectiveDepthMM resolves the box depth the same way. Note this is a
+// different quantity from Run.ChannelLetterDepthMM (how far the LETTER
+// projects, default 100 mm): the raceway is ~203 mm deep for the unrelated
+// reason that a transformer has to fit inside it. Two objects, two depths —
+// see docs/neon-rules/raceway.md, "Terminology collision".
+func (r Raceway) EffectiveDepthMM() float64 {
+	if r.DepthMM > 0 {
+		return r.DepthMM
+	}
+	return RacewayDefaultDepthMM
+}
+
+// SpliceCount is the number of butt splices a raceway of this length needs:
+// sections ship at RacewaySpliceMM or shorter, so a 25 ft box arrives in
+// three pieces with two seams. Exactly 10 ft needs none.
+func (r Raceway) SpliceCount() int {
+	if r.LengthMM <= RacewaySpliceMM {
+		return 0
+	}
+	n := int(math.Ceil(r.LengthMM/RacewaySpliceMM)) - 1
+	if n < 0 {
+		return 0
+	}
+	return n
 }
 
 // Group is a named binding of two-or-more runs. Membership is recorded

@@ -179,7 +179,9 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 	// has something to load. Failure here is non-fatal — the SVG is still
 	// usable for validation, preview, and print.
 	docJSON := s.generateDesignDoc(r, pid, svg)
-	reportJSON := s.runValidation(r, pid, svg)
+	// nil doc: a freshly vectorized SVG models no raceways, so there is
+	// nothing for the doc-level rules to look at.
+	reportJSON := s.runValidation(r, pid, svg, nil)
 
 	dv, err := storage.CreateDesignVersion(r.Context(), s.db, storage.CreateDesignVersionParams{
 		ProjectID:            pid,
@@ -249,7 +251,10 @@ func (s *apiServer) generateDesignDoc(r *http.Request, projectID int64, svg []by
 // FacePerimeterStrict comes from the project (Tier 3 #46), not the
 // tube spec — strict mode is a per-project policy, not a tube-spec
 // dimensional input.
-func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte) string {
+// The doc parameter (Tier 2 #104) is optional: pass the design doc when the
+// caller has one so the doc-level raceway rules run too, or nil when only an
+// SVG exists (the vectorize path). See validateDocGeometry.
+func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte, doc *designdoc.Doc) string {
 	project, err := storage.GetProject(r.Context(), s.db, projectID)
 	if err != nil {
 		slog.Warn("validate: load project", "err", err)
@@ -279,7 +284,7 @@ func (s *apiServer) runValidation(r *http.Request, projectID int64, svg []byte) 
 	if spec.BendTechnique != nil {
 		limits.BendTechnique = *spec.BendTechnique
 	}
-	report, err := validate.ValidateSVG(svg, limits)
+	report, err := validateDocGeometry(svg, doc, limits)
 	if err != nil {
 		slog.Warn("validate: run", "err", err)
 		return ""
@@ -339,7 +344,20 @@ func (s *apiServer) revalidateOne(r *http.Request, vid int64) (storage.DesignVer
 	if err != nil {
 		return storage.DesignVersion{}, err
 	}
-	reportJSON := s.runValidation(r, v.ProjectID, []byte(v.SVGData))
+	// Revalidating a stored version: decode its design doc when it has one,
+	// so a re-run picks up the raceway rules the same way the live editor
+	// does. A version saved before the doc format existed (SVG-only import)
+	// has no doc and validates exactly as it always did.
+	var doc *designdoc.Doc
+	if v.DesignDocJSON != nil && *v.DesignDocJSON != "" {
+		var parsed designdoc.Doc
+		if err := json.Unmarshal([]byte(*v.DesignDocJSON), &parsed); err != nil {
+			slog.Warn("revalidate: parse design doc", "vid", vid, "err", err)
+		} else {
+			doc = &parsed
+		}
+	}
+	reportJSON := s.runValidation(r, v.ProjectID, []byte(v.SVGData), doc)
 	if reportJSON == "" {
 		return storage.DesignVersion{}, errValidationFailed
 	}

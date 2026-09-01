@@ -63,10 +63,27 @@ func runDepthMM(run designdoc.Run, projectDepthMM float64) float64 {
 	return 100
 }
 
-// emitRacewayStrip draws ONE combined unfolded strip page for a group
-// of face runs sharing a RacewayID. Layout:
+// emitNestedReturnStrip draws ONE combined unfolded RETURN strip page for a
+// group of face runs sharing a RacewayID.
 //
-//   - Header: "Raceway strip — {gid}" + per-run breakdown
+// THE NAME IS THE POINT (Tier 2 #104). This was called emitRacewayStrip and
+// it never emitted a raceway: it concatenates the unfolded LETTER PERIMETER
+// bands of several faces onto one piece of coil stock — width = the sum of
+// those perimeters, height = the deepest letter. That is return-strip
+// nesting. A raceway is one rectangular box sized to the sign's overall
+// extent, following no letter's perimeter; it is emitted by emitRacewayPage
+// in racewaypage.go, and it is ~203 mm deep because a transformer has to fit
+// inside, where these strips are ~100 mm deep because that is how far the
+// letter projects. Two objects, two depths, one name — see
+// docs/neon-rules/raceway.md, "Terminology collision".
+//
+// The GROUPING is correct and stays: nesting the returns of letters that
+// share a raceway is exactly what a shop does with a coil. Only the name
+// moved, and Run.RacewayID keeps its name because it means what it says.
+//
+// Layout:
+//
+//   - Header: "Nested return strip — raceway {gid}" + per-run breakdown
 //   - The strip itself: width = sum of contributing perimeters,
 //     height = max(per-run depth) across the group (so the strip is one
 //     rectangle big enough for every contribution).
@@ -83,7 +100,7 @@ func runDepthMM(run designdoc.Run, projectDepthMM float64) float64 {
 // The page scale matches emitReturnStrip's logic — 1:1 if it fits,
 // otherwise uniformly scaled with a "scale 1:N" callout. Labels show
 // actual mm values regardless of scale.
-func emitRacewayStrip(pdf *gofpdf.Fpdf, opts Options, racewayID string, runs []designdoc.Run, projectDepthMM float64) {
+func emitNestedReturnStrip(pdf *gofpdf.Fpdf, opts Options, racewayID string, runs []designdoc.Run, projectDepthMM float64) {
 	if len(runs) == 0 {
 		return
 	}
@@ -142,7 +159,7 @@ func emitRacewayStrip(pdf *gofpdf.Fpdf, opts Options, racewayID string, runs []d
 
 	// Header.
 	pdf.SetFont("Helvetica", "B", 14)
-	pdf.Text(mx, mx+8, fmt.Sprintf("Raceway strip — %s", racewayID))
+	pdf.Text(mx, mx+8, fmt.Sprintf("Nested return strip — raceway %s", racewayID))
 	pdf.SetFont("Helvetica", "", 10)
 	subhdr := fmt.Sprintf("%s — %s", opts.ProjectName, opts.DesignVersionLabel)
 	if subhdr != " — " {
