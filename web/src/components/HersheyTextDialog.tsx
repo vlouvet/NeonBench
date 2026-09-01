@@ -952,10 +952,18 @@ function computeHandlePositions(
   let cursorX = 0;
   let baselineY = 0;
   let pairIdx = 0;
-  // Track per-line cap top — at this baseline, JHF y=-12 maps to
-  // baselineY + (-12 * scale) = baselineY - capHeightMM. We use that for
-  // the handle row.
-  let lineCapTop = baselineY - capHeightMM;
+  // Track the per-line cap line, which is where the handle row hangs
+  // above. `baselineY` here anchors JHF y=0, so the cap line is at
+  // `baselineY + (baselineUnits - capHeightUnits) * scale`.
+  //
+  // Bug #13: this used to read `baselineY - capHeightMM`. That identity
+  // held ONLY while `capHeightUnits` was wrongly declared as 12 (making
+  // capHeightUnits * scale === capHeightMM by coincidence). With the
+  // corrected metric the shortcut puts the handle row ~0.43 cap heights
+  // above the real cap line — far enough that it falls outside the
+  // preview's viewBox and the kerning handles vanish entirely.
+  const capLineOffset = (font.baselineUnits - font.capHeightUnits) * scale;
+  let lineCapTop = baselineY + capLineOffset;
   // We also need to know the right-edge X of the previous glyph and the
   // left-edge X of the next glyph to position the handle at their midpoint.
   let prevGlyphRightX: number | null = null;
@@ -966,7 +974,7 @@ function computeHandlePositions(
     if (ch === '\n') {
       baselineY += capHeightMM * lineHeight;
       cursorX = 0;
-      lineCapTop = baselineY - capHeightMM;
+      lineCapTop = baselineY + capLineOffset;
       // Newline ends the previous "pending" pair without emitting a handle
       // — slot i conceptually spans the line break and has no visible
       // home in the preview. Keep pairIdx as-is so it lines up with the
