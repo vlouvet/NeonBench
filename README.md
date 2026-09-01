@@ -387,6 +387,19 @@ under **Git Bash**, which ships with Git for Windows.
    over) cuts each into the fewest equal-arc-length pieces that fit
    under the limit, in one undo step. Re-running it is a no-op.
 
+   **Arrange** — with two or more runs selected, the sidebar's Arrange
+   section aligns them (left / centre / right / top / middle /
+   bottom), distributes them evenly left-to-right or top-to-bottom,
+   mirrors the selection about its own bounding box, and moves runs
+   through the draw order (to front / forward / backward / to back).
+   Three runs are needed to distribute; mirror and depth order work on
+   a single run. Each click is one undo step. Alignment measures each
+   run's *true outline*, so a tube with an arc segment lands by the
+   curve's bow rather than by its end points — and mirroring reverses
+   the run's direction internally to keep every arc bowing the way it
+   should, so the canvas, the printed pattern and the DXF all agree.
+   Runs in a locked layer are left out and the buttons say so.
+
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.
 

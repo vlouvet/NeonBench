@@ -12,6 +12,7 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import ArrangePanel from '../components/ArrangePanel';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
@@ -26,6 +27,7 @@ import { Eye } from '../components/icons/Eye';
 import { Padlock } from '../components/icons/Padlock';
 import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
+import * as arrange from '../lib/arrange';
 import * as ops from '../lib/docOps';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
@@ -1282,6 +1284,31 @@ export default function EditorPage() {
     });
   }
 
+  // Tier 2 #90 — arrange ops. Each is one applyOp call, so the whole
+  // arrangement lands as a single doc swap and a single undo entry rather
+  // than one per run. The ops themselves return the SAME doc object when
+  // there is nothing to do, which editDoc's `next === prev` guard turns into
+  // "no history entry, no dirty flag" for free — that's why a disabled-looking
+  // click on an already-aligned selection doesn't burn an undo step.
+  //
+  // The selection is deliberately left alone by all four: the operator's next
+  // move after aligning is usually to align on the other axis.
+  function alignSelected(edge: arrange.AlignEdge) {
+    applyOp((prev) => ({ doc: arrange.alignRuns(prev, selectedRunIds, edge) }));
+  }
+
+  function distributeSelected(axis: arrange.Axis) {
+    applyOp((prev) => ({ doc: arrange.distributeRuns(prev, selectedRunIds, axis) }));
+  }
+
+  function mirrorSelected(axis: arrange.Axis) {
+    applyOp((prev) => ({ doc: arrange.mirrorRuns(prev, selectedRunIds, axis) }));
+  }
+
+  function reorderSelected(move: arrange.DepthMove) {
+    applyOp((prev) => ({ doc: arrange.reorderRuns(prev, selectedRunIds, move) }));
+  }
+
   // Neonize replaces the selected run with parallel offset run(s) — the
   // "double-stroke" channel-letter primitive (NW #123/131/141). Default
   // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
@@ -2119,6 +2146,26 @@ export default function EditorPage() {
               </button>
             )}
           </div>
+          {/* Tier 2 #90 — Arrange. Renders only with a live selection: with
+              nothing picked every control would be disabled, which is just
+              noise in an already-dense sidebar. Depth order works on one run
+              (it permutes doc.runs, the draw order), so the gate is 1 rather
+              than the 2 that align needs. */}
+          {selectedRunIds.length > 0 && (
+            <div className="arrange-section">
+              <div className="groups-header">
+                <h3>Arrange</h3>
+              </div>
+              <ArrangePanel
+                doc={doc}
+                selectedRunIds={selectedRunIds}
+                onAlign={alignSelected}
+                onDistribute={distributeSelected}
+                onMirror={mirrorSelected}
+                onReorder={reorderSelected}
+              />
+            </div>
+          )}
           <ul className="run-list">
             {doc.runs.map((run) => {
               const ne = run.electrodes?.length ?? 0;
