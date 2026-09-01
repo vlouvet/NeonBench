@@ -34,9 +34,38 @@ If two tasks share a primary file, they can't go in the same round. If they shar
 
 The current high-coupling files (per `CLAUDE.md`):
 
-- `web/src/components/EditorCanvas.tsx` (~1150 lines, every editor tool touches it)
-- `web/src/pages/EditorPage.tsx` (~755 lines, toolbar + state owner)
+- `web/src/components/EditorCanvas.tsx` (every editor tool touches it)
+- `web/src/pages/EditorPage.tsx` (toolbar + state owner)
 - `internal/server/integration_test.go` (parallel agents both appending test functions = the most common merge conflict we hit)
+
+## Verify spec premises before dispatch
+
+Across the last two parallel rounds, **6 of 8 specs contained a materially wrong
+premise**. An agent working from one either builds the wrong thing or spends
+half its budget discovering the truth. Premise-checking is the highest-leverage
+thing the parent agent does; it costs a few greps.
+
+Check every claim in your spec against the code before you dispatch:
+
+- **"X is missing"** — grep for it. `todo.md` status rows drift badly. The
+  August 2026 round's ❌ list still showed *layers* and *redo* as missing (both
+  had shipped), and *"Mirror/Scale/Rotate at plot"* as missing when mirror
+  shipped in PR #73. An agent taking that row at face value would have
+  reimplemented mirroring.
+- **"Function Y already handles Z"** — read Y. The #90 spec asserted
+  `reverseRun` already remapped indices for arc runs. It didn't, and that gap
+  turned out to be Bug #11.
+- **"This is safely gated on W"** — read the gate. The #91 spec assumed the
+  raceway-split button couldn't see construction guides; it was gated only on
+  "some guideline is selected", so a construction guide would have split the
+  design at `y_mm = 0`.
+- **Internal consistency.** The #92 spec's title-case bullet gave an example
+  that contradicted the rule stated in the same sentence. An agent has to pick
+  one, and it may not pick the one you meant.
+
+Then say this explicitly in the dispatch prompt: **a wrong premise is a
+finding — report it, don't silently work around it.** The best results in both
+rounds came from agents that pushed back on the spec.
 
 ## Dispatching a sub-agent
 
@@ -70,6 +99,35 @@ After parallel agents return:
    # imports, the test suite passes
    git push origin HEAD:task/<branch>
    ```
+
+## Verify agent *claims*, not just agent PRs
+
+Confirming the PR exists and CI is green (above) is necessary but not
+sufficient. Agents also report **findings about already-merged code**, and those
+land in the roadmap and drive follow-up work, so they need the same scepticism.
+
+In the August 2026 round three agents each reported a latent bug in shipped
+code. All three were real — but one arrived with wrong reasoning about its blast
+radius ("changing `capHeightUnits` resizes every saved design"; it doesn't,
+because text is baked to geometry at insert time and nothing persists the
+parameter). Acting on that reasoning would have deferred a one-line fix
+indefinitely. **The finding and the reasoning about it fail independently.**
+
+Independent checks are usually one command, and beat re-reading the report:
+
+- **Measure the data.** `node -e` over the bundled font JSON settled the
+  cap-height claim: declared 12 units, actual 21, across all four faces.
+- **Probe the function.** A throwaway `internal/printpdf/zz_probe_test.go`
+  calling `makePageProjector` directly settled the multi-tile mirror claim by
+  printing the projections. Delete the probe afterwards and confirm
+  `git status` is clean — a leftover probe file has been committed by accident
+  before.
+- **Grep for persistence** before believing any "this changes saved data"
+  claim.
+
+Write the finding up as a `specs/active/bug-NN-*.md` with the evidence inline
+(the probe output, the measurements), not as prose in a PR comment. Evidence
+that isn't written down gets re-litigated next round.
 
 ## Closing a round — cleanup PR pattern
 

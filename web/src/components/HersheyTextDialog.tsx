@@ -24,11 +24,37 @@
 //    Users wanting a whole-word shift drag the first slot of the word
 //    once and (if needed) drag the next slot back. The shift is in mm,
 //    capped at ±1.5×capHeight to stop runaway drags.
+//
+// Tier 2 #92 (this PR): a Transform section — change case, slant,
+// vertical stacking, and text on an arc. The geometry lives in
+// lib/hershey/layout.ts as pure post-passes over the runs this dialog
+// already builds; the case transforms live in lib/hershey/changeCase.ts
+// and rewrite the textarea. THE ONE RULE HERE: `previewRuns` is what the
+// SVG draws AND what `onInsert` hands to the parent. There is no second
+// code path that could let the preview disagree with what lands on the
+// canvas — that is the failure mode this feature is most likely to ship
+// with, so it is designed out rather than tested for.
 
 import { useMemo, useRef, useState } from 'react';
 import { hersheyRunsBBox, hersheyTextToRuns, type HersheyRun } from '../lib/hershey/text';
 import { FONTS, type FontKey, type FontEntry } from '../lib/hershey/fonts';
 import { computeOpticalKernMM } from '../lib/hershey/opticalKern';
+import {
+  changeCase,
+  CASE_MODES,
+  CASE_MODE_LABELS,
+  type CaseMode,
+} from '../lib/hershey/changeCase';
+import {
+  applyTextTransforms,
+  arcSweepDeg,
+  clampSlant,
+  DEFAULT_STACK_GAP_FACTOR,
+  MAX_SLANT_DEG,
+  type ArcDirection,
+  type StackAlign,
+  type TextLayoutMode,
+} from '../lib/hershey/layout';
 
 type Props = {
   onCancel: () => void;
@@ -64,6 +90,21 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
   // be — that's the rule. (See module-level comment.)
   const [baselineShiftsMM, setBaselineShiftsMM] = useState<number[]>([]);
 
+  // -- Transform state (Tier 2 #92) ---------------------------------------
+  // Slant is the shear in degrees, ±45. 0 = upright.
+  const [slantDeg, setSlantDeg] = useState(0);
+  // Stacking and arcing are ONE field, not two booleans: they are both
+  // answers to "where does the baseline go", and the impossible state
+  // (both on) simply cannot be represented. The two checkboxes below
+  // each disable the other, which is the same rule stated in the UI.
+  const [layoutMode, setLayoutMode] = useState<TextLayoutMode>('none');
+  // Gap is stored as a MULTIPLE of cap height so it survives a cap-height
+  // change without the user re-tuning it. Default 0.25 × cap.
+  const [stackGapFactor, setStackGapFactor] = useState(DEFAULT_STACK_GAP_FACTOR);
+  const [stackAlign, setStackAlign] = useState<StackAlign>('center');
+  const [arcRadiusMM, setArcRadiusMM] = useState(500);
+  const [arcDirection, setArcDirection] = useState<ArcDirection>('up');
+
   const svgRef = useRef<SVGSVGElement | null>(null);
   // Active drag state. We track BOTH X and Y deltas: X edits per-pair
   // kerning, Y edits the baseline-shift of glyph[slot+1].
@@ -86,7 +127,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
   // Note: applyPresetKerning is FALSE here because the dialog already
   // seeds presets into perPairKerningMM at type-time (so the user can
   // see/drag them). Turning it on here would double-apply.
-  const previewRuns = useMemo<HersheyRun[]>(() => {
+  const baseRuns = useMemo<HersheyRun[]>(() => {
     if (!text) return [];
     return hersheyTextToRuns({
       text,
@@ -100,7 +141,46 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
     });
   }, [text, capHeightMM, fontKey, lineHeight, perPairKerningMM, baselineShiftsMM]);
 
+  // The transformed runs. Composition order is fixed inside
+  // applyTextTransforms: case (already applied to `text`) → layout
+  // (stack XOR arc) → slant. This single value feeds both the SVG below
+  // and onInsert, so the preview cannot drift from the insert.
+  const previewRuns = useMemo<HersheyRun[]>(
+    () =>
+      applyTextTransforms(baseRuns, {
+        capHeightMM,
+        layout: layoutMode,
+        stack: { gapMM: stackGapFactor * capHeightMM, align: stackAlign },
+        arc: { radiusMM: arcRadiusMM, direction: arcDirection },
+        slantDeg,
+        baselineY: 0,
+      }),
+    [
+      baseRuns,
+      capHeightMM,
+      layoutMode,
+      stackGapFactor,
+      stackAlign,
+      arcRadiusMM,
+      arcDirection,
+      slantDeg,
+    ],
+  );
+
   const previewBBox = useMemo(() => hersheyRunsBBox(previewRuns), [previewRuns]);
+
+  // The cursive face stitches adjacent glyphs into single strokes. One
+  // glyph per stacked line would have to CUT those stitches mid-stroke —
+  // which is exactly the join the face exists to draw — so the
+  // combination is disabled rather than silently producing torn script.
+  // Arc is fine on cursive: it bends the stitched stroke as a whole.
+  const fontJoins = FONTS[fontKey].joinAdjacent === true;
+
+  // Sweep warning: past a full lap the word laps itself and is unreadable.
+  const arcSweep = useMemo(
+    () => (layoutMode === 'arc' ? arcSweepDeg(baseRuns, arcRadiusMM) : 0),
+    [layoutMode, baseRuns, arcRadiusMM],
+  );
 
   // For drawing kerning handles we need the X of each visible-glyph-pair
   // gap, plus the Y of the line that gap belongs to. Build that by
@@ -129,7 +209,34 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
   // fly when the user types via setText, and the converter tolerates
   // out-of-range indices anyway (entries beyond the array default to 0).
 
+  // Kerning handles are computed on the FLAT layout, so once stacking or
+  // arcing has moved the glyphs they no longer point at anything. Hide
+  // them rather than draw them in the wrong place; the underlying kerning
+  // values still apply and the reset / auto-kern buttons still work.
+  const showHandles = layoutMode === 'none';
+  const slantTan = Math.tan((clampSlant(slantDeg) * Math.PI) / 180);
+
   const canInsert = text.trim().length > 0 && capHeightMM > 0 && previewRuns.length > 0;
+
+  // Both font pickers (the <select> and the thumbnail row) go through
+  // here so the cursive-vs-stacking rule is enforced in exactly one place.
+  function pickFont(next: FontKey) {
+    setFontKey(next);
+    if (FONTS[next].joinAdjacent === true && layoutMode === 'stack') setLayoutMode('none');
+    // Different face → different preset table; re-seed.
+    applySeed(text, next, capHeightMM);
+  }
+
+  // One-shot case transform on the textarea contents. The user keeps
+  // editing afterwards, so this rewrites the text rather than setting a
+  // sticky mode that would fight the next keystroke.
+  function applyCase(mode: CaseMode) {
+    const next = changeCase(text, mode);
+    if (next === text) return;
+    setText(next);
+    // Case changes the glyph pairs, so preset kerning has to re-seed.
+    applySeed(next, fontKey, capHeightMM);
+  }
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -294,6 +401,11 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
     <div className="modal-backdrop" onMouseDown={onCancel}>
       <div
         className="modal hershey-modal"
+        // The Transform section makes this modal tall; without a cap it
+        // can push Insert past the bottom of a short viewport with no
+        // way to reach it. Scroll inside the modal rather than editing
+        // the shared .modal rule in App.css, which other lanes own.
+        style={{ maxHeight: '92vh', overflowY: 'auto' }}
         onMouseDown={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -356,12 +468,7 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
             Font
             <select
               value={fontKey}
-              onChange={(e) => {
-                const next = e.target.value as FontKey;
-                setFontKey(next);
-                // Different face → different preset table; re-seed.
-                applySeed(text, next, capHeightMM);
-              }}
+              onChange={(e) => pickFont(e.target.value as FontKey)}
             >
               {fontEntries.map((f) => (
                 <option key={f.key} value={f.key}>
@@ -373,11 +480,175 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
           <FontPickerThumbnails
             fonts={fontEntries}
             activeKey={fontKey}
-            onPick={(k) => {
-              setFontKey(k);
-              applySeed(text, k, capHeightMM);
-            }}
+            onPick={pickFont}
           />
+          <fieldset style={transformFieldsetStyle}>
+            <legend style={{ fontSize: 12, padding: '0 4px' }}>Transform</legend>
+
+            <div style={transformRowStyle}>
+              <span style={transformLabelStyle}>Case</span>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {CASE_MODES.map((mode) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    className="btn-secondary"
+                    disabled={text.length === 0}
+                    onClick={() => applyCase(mode)}
+                    style={{ padding: '2px 8px', fontSize: 12 }}
+                  >
+                    {CASE_MODE_LABELS[mode]}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={transformRowStyle}>
+              <label htmlFor="hershey-slant" style={{ ...transformInlineLabelStyle, width: 44 }}>
+                Slant
+              </label>
+              <input
+                id="hershey-slant"
+                type="range"
+                min={-MAX_SLANT_DEG}
+                max={MAX_SLANT_DEG}
+                step={1}
+                value={slantDeg}
+                onChange={(e) => setSlantDeg(clampSlant(Number(e.target.value)))}
+                style={{ flex: '1 1 120px' }}
+              />
+              <input
+                type="number"
+                aria-label="Slant degrees"
+                min={-MAX_SLANT_DEG}
+                max={MAX_SLANT_DEG}
+                step={1}
+                value={slantDeg}
+                onChange={(e) => setSlantDeg(clampSlant(Number(e.target.value)))}
+                style={{ width: 64 }}
+              />
+              <span className="meta">°</span>
+              {slantDeg !== 0 && (
+                <button
+                  type="button"
+                  onClick={() => setSlantDeg(0)}
+                  style={metaLinkStyle}
+                >
+                  reset
+                </button>
+              )}
+            </div>
+
+            <div style={transformRowStyle}>
+              <label style={transformInlineLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={layoutMode === 'stack'}
+                  disabled={layoutMode === 'arc' || fontJoins}
+                  onChange={(e) => setLayoutMode(e.target.checked ? 'stack' : 'none')}
+                />{' '}
+                Stack vertically
+              </label>
+              {layoutMode === 'stack' && (
+                <>
+                  <label className="meta" style={transformInlineLabelStyle}>
+                    Gap (× cap){' '}
+                    <input
+                      type="number"
+                      min={0}
+                      max={2}
+                      step="any"
+                      value={stackGapFactor}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v) && v >= 0 && v <= 2) setStackGapFactor(v);
+                      }}
+                      style={{ width: 64 }}
+                    />
+                  </label>
+                  <label className="meta" style={transformInlineLabelStyle}>
+                    Align{' '}
+                    <select
+                      value={stackAlign}
+                      onChange={(e) => setStackAlign(e.target.value as StackAlign)}
+                    >
+                      <option value="center">Center</option>
+                      <option value="left">Left</option>
+                      <option value="right">Right</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+            {fontJoins && (
+              <p className="meta" style={{ margin: '0 0 6px' }}>
+                Vertical stacking is off for {FONTS[fontKey].displayName}: this face
+                joins adjacent letters into one continuous tube, and one glyph per
+                line would have to cut those joins mid-stroke. Pick a non-joining
+                face to stack, or use the arc — it bends the joined script intact.
+              </p>
+            )}
+
+            <div style={transformRowStyle}>
+              <label style={transformInlineLabelStyle}>
+                <input
+                  type="checkbox"
+                  checked={layoutMode === 'arc'}
+                  disabled={layoutMode === 'stack'}
+                  onChange={(e) => setLayoutMode(e.target.checked ? 'arc' : 'none')}
+                />{' '}
+                Arc
+              </label>
+              {layoutMode === 'arc' && (
+                <>
+                  <label className="meta" style={transformInlineLabelStyle}>
+                    Radius (mm){' '}
+                    <input
+                      type="number"
+                      min={1}
+                      // step="any", NOT a number: a numeric step makes
+                      // `min` the base of a valid-value lattice, and an
+                      // off-lattice value fails HTML form validation,
+                      // which silently blocks the Insert submit. Any
+                      // positive radius is a legal arc.
+                      step="any"
+                      value={arcRadiusMM}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v) && v > 0) setArcRadiusMM(v);
+                      }}
+                      style={{ width: 88 }}
+                    />
+                  </label>
+                  <label className="meta" style={transformInlineLabelStyle}>
+                    Bend{' '}
+                    <select
+                      value={arcDirection}
+                      onChange={(e) => setArcDirection(e.target.value as ArcDirection)}
+                    >
+                      <option value="up">Up (arch)</option>
+                      <option value="down">Down (sag)</option>
+                    </select>
+                  </label>
+                </>
+              )}
+            </div>
+            {layoutMode === 'arc' && (
+              <p className="meta" style={{ margin: '0 0 6px' }}>
+                Sweeps {arcSweep.toFixed(0)}°.
+                {arcSweep > 360
+                  ? ' ⚠ Past a full circle — the text laps itself. Increase the radius or shorten the text.'
+                  : ''}
+              </p>
+            )}
+
+            <p className="meta" style={{ margin: 0 }}>
+              Applied in order: case →{' '}
+              {layoutMode === 'stack' ? 'stacking' : layoutMode === 'arc' ? 'arc' : 'layout'} →
+              slant. Stacking and arc are mutually exclusive.
+              {!showHandles && ' Kerning handles are hidden while a layout transform is on.'}
+            </p>
+          </fieldset>
           <div className="hershey-preview" aria-label="Preview of Hershey strokes">
             <svg
               ref={svgRef}
@@ -401,14 +672,17 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                   strokeLinejoin="round"
                 />
               ))}
-              {handles.map((h, slotIdx) => {
+              {showHandles && handles.map((h, slotIdx) => {
                 const tri = capHeightMM * 0.18;
                 const yTop = h.lineMinY - tri * 1.4;
                 const isActive = activeSlot === slotIdx;
+                // Shear the handle by the same x-shear the strokes got at
+                // this height, so it keeps pointing at the gap it edits.
+                const hx = h.x + (h.baselineY - yTop) * slantTan;
                 return (
                   <g key={`kh-${slotIdx}`}>
                     <polygon
-                      points={`${h.x - tri},${yTop} ${h.x + tri},${yTop} ${h.x},${yTop + tri}`}
+                      points={`${hx - tri},${yTop} ${hx + tri},${yTop} ${hx},${yTop + tri}`}
                       fill={isActive ? HANDLE_FILL_ACTIVE : HANDLE_FILL}
                       style={{ cursor: 'move' }}
                       onPointerDown={(e) => handlePointerDown(e, slotIdx)}
@@ -476,6 +750,42 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
 }
 
 // -- helpers ---------------------------------------------------------------
+
+const transformFieldsetStyle: React.CSSProperties = {
+  border: '1px solid rgba(255,255,255,0.2)',
+  borderRadius: 4,
+  padding: '4px 8px 8px',
+  margin: '8px 0 0',
+};
+
+const transformRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  flexWrap: 'wrap',
+  marginBottom: 6,
+};
+
+const transformLabelStyle: React.CSSProperties = {
+  width: 44,
+  fontSize: 12,
+  flex: '0 0 auto',
+};
+
+// App.css sets `.modal label { display: flex; flex-direction: column }`,
+// which would stack a checkbox above its own caption. Transform controls
+// are row-shaped, so override locally rather than touching shared CSS.
+const transformInlineLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'row',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 12,
+  flex: '0 0 auto',
+  // The caption is an anonymous flex item beside the control and will
+  // wrap mid-phrase ("Stack / vertically") even with room to spare.
+  whiteSpace: 'nowrap',
+};
 
 const metaLinkStyle: React.CSSProperties = {
   background: 'none',
@@ -626,7 +936,7 @@ function FontThumbnailSVG({ fontKey }: { fontKey: FontKey }) {
 // (newlines NOT counted). For each slot we return the X between the two
 // glyphs' bounding boxes plus the Y of the topmost cap on that line so
 // the handle row can sit above the strokes.
-type Handle = { x: number; lineMinY: number };
+type Handle = { x: number; lineMinY: number; baselineY: number };
 
 function computeHandlePositions(
   text: string,
@@ -677,7 +987,9 @@ function computeHandlePositions(
       // triangle clears both lines if the user has wild line-heights.
       const mid = (prevGlyphRightX + glyphLeftX) / 2;
       const lineMinY = Math.min(prevGlyphLineMinY, lineCapTop);
-      handles.push({ x: mid, lineMinY });
+      // Carry the line baseline so the render can shear the handle row
+      // by the same amount the strokes under it were sheared.
+      handles.push({ x: mid, lineMinY, baselineY });
     }
     // Advance cursor by glyph width + per-pair kerning at this slot.
     cursorX += (glyph.right - glyph.left) * scale;

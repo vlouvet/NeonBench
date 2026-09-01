@@ -126,3 +126,51 @@ describe('api.exportSVGURL / exportEPSURL / exportAIURL', () => {
     );
   });
 });
+
+// Tier 2 #93 — rotate / copies. Both are absent-safe: the param is
+// only emitted when it would actually change the PDF, so an untouched
+// caller keeps producing the exact URL (and therefore the exact PDF)
+// it produced before these options existed.
+describe('api.printPDFURL rotate + copies', () => {
+  it('omits rotate when unset or empty', () => {
+    expect(api.printPDFURL(7, 42)).not.toContain('rotate');
+    expect(api.printPDFURL(7, 42, { rotate: '' })).not.toContain('rotate');
+  });
+
+  it('encodes rotate=90 and rotate=fit', () => {
+    expect(api.printPDFURL(7, 42, { rotate: '90' })).toBe(
+      '/api/projects/7/design_versions/42/print.pdf?rotate=90',
+    );
+    expect(api.printPDFURL(7, 42, { rotate: 'fit' })).toBe(
+      '/api/projects/7/design_versions/42/print.pdf?rotate=fit',
+    );
+  });
+
+  it('omits copies for undefined, 0 and 1 (all mean one copy server-side)', () => {
+    expect(api.printPDFURL(7, 42)).not.toContain('copies');
+    expect(api.printPDFURL(7, 42, { copies: 0 })).not.toContain('copies');
+    expect(api.printPDFURL(7, 42, { copies: 1 })).not.toContain('copies');
+  });
+
+  it('encodes copies for a real step-and-repeat run', () => {
+    expect(api.printPDFURL(7, 42, { copies: 6 })).toBe(
+      '/api/projects/7/design_versions/42/print.pdf?copies=6',
+    );
+  });
+
+  it('composes with the existing params in a stable order', () => {
+    expect(
+      api.printPDFURL(7, 42, {
+        paper: 'a3',
+        landscape: true,
+        stripsOnly: true,
+        mirror: false,
+        rotate: 'fit',
+        copies: 2,
+      }),
+    ).toBe(
+      '/api/projects/7/design_versions/42/print.pdf' +
+        '?paper=a3&landscape=1&strips_only=1&mirror=0&rotate=fit&copies=2',
+    );
+  });
+});

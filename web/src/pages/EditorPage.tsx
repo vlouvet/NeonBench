@@ -18,7 +18,8 @@ import HersheyTextDialog from '../components/HersheyTextDialog';
 import HousingPickerModal from '../components/HousingPickerModal';
 import { SectionHeader, CategoryIcon, type IconKind } from '../components/PanelSection';
 import PrintHost from '../components/PrintHost';
-import PrintPopover, { type PrintPopoverValues } from '../components/PrintPopover';
+import PrintPopover from '../components/PrintPopover';
+import { describePrintPrefs, loadPrintPrefs, printPrefsToURLOpts, savePrintPrefs, type PrintPopoverValues } from '../lib/printPrefs';
 import ValidationReportView, {
   type SeverityFilter,
 } from '../components/ValidationReportView';
@@ -222,17 +223,14 @@ export default function EditorPage() {
   // so the toolbar Print and the project-page download produce the
   // same PDF when the operator hasn't fiddled with the dropdown.
   const [printPopoverOpen, setPrintPopoverOpen] = useState(false);
-  const [printOpts, setPrintOpts] = useState<PrintPopoverValues>({
-    paper: 'letter',
-    landscape: false,
-    stripsOnly: false,
-    // Tier 2 #73 — opt-out for the trade-default mirrored print.
-    // Default false means "leave the mirror on" (operators bend
-    // against the back of the glass and need the pattern mirrored);
-    // checking the popover's "Print front-facing (un-mirrored)" box
-    // flips this to true and the URL builder emits ?mirror=0.
-    frontFacing: false,
-  });
+  // Tier 2 #93 — persisted per project so Quick plot repeats the last
+  // job. Defaults, sanitizing and URL derivation live in lib/printPrefs.
+  const [printOpts, setPrintOpts] = useState<PrintPopoverValues>(() =>
+    loadPrintPrefs(projectId),
+  );
+  useEffect(() => {
+    savePrintPrefs(projectId, printOpts);
+  }, [projectId, printOpts]);
   const printGroupRef = useRef<HTMLDivElement | null>(null);
   // Join-arming state for the node tool: stores the first endpoint the
   // user picked (via the "Join from head/tail" sidebar buttons). The
@@ -1777,12 +1775,11 @@ export default function EditorPage() {
                   // unchecked yields the trade-default mirrored print
                   // (omit the mirror param entirely). Tier 2 #73.
                   setPrintSrc(
-                    api.printPDFURL(projectId, versionId, {
-                      paper: printOpts.paper,
-                      landscape: printOpts.landscape,
-                      stripsOnly: printOpts.stripsOnly,
-                      mirror: printOpts.frontFacing ? false : undefined,
-                    }),
+                    api.printPDFURL(
+                      projectId,
+                      versionId,
+                      printPrefsToURLOpts(printOpts),
+                    ),
                   );
                 }}
                 disabled={dirty || printSrc !== null}
@@ -1815,6 +1812,30 @@ export default function EditorPage() {
                 {/* Down-caret glyph; matches the muted-text colour
                     pulled from var(--text). */}
                 {'▾'}
+              </button>
+              <button
+                type="button"
+                className="tool-btn"
+                onClick={() => {
+                  if (dirty) return;
+                  // Read storage at click time, so settings changed in
+                  // another tab still print what the title claims.
+                  setPrintSrc(
+                    api.printPDFURL(
+                      projectId,
+                      versionId,
+                      printPrefsToURLOpts(loadPrintPrefs(projectId)),
+                    ),
+                  );
+                }}
+                disabled={dirty || printSrc !== null}
+                title={
+                  dirty
+                    ? 'Save your edits first — Quick plot uses the last saved version of this design.'
+                    : `Quick plot — print now with the last-used settings, no popover: ${describePrintPrefs(printOpts)}`
+                }
+              >
+                Quick plot
               </button>
               {printPopoverOpen && (
                 <PrintPopover

@@ -3,6 +3,8 @@ import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
+import { flatRunPoints, segmentTypeAt } from './arcGeom';
+import { runArcs } from './runArcs';
 import { threePointArcToPoints } from './shapes/arc';
 
 // Build a minimal doc with one open polyline, one closed polyline, and
@@ -3307,5 +3309,249 @@ describe('setSegmentType', () => {
     const doc = docOf([line3()]);
     ops.convertSegmentToArc(doc, 'r1', 1);
     expect(doc.runs[0].polyline.segment_types).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #11 — reverseRun and arc segments.
+//
+// Reversing a run changes the direction of travel. `segment_types[i]`
+// describes the segment LEAVING vertex i, so the flags have to travel with
+// the chords they describe or the curvature lands on the wrong piece of
+// glass — which is what the bug reported.
+//
+// The one part of the shape reversal cannot preserve is arc handedness: the
+// schema's "arc" always bows left of travel, so a single reverse mirrors each
+// arc about its (unchanged) chord. That is pinned explicitly below rather
+// than left to be rediscovered.
+// ---------------------------------------------------------------------------
+
+const REV_EPS = 1e-9;
+
+function nearPt(a: [number, number], b: [number, number]): boolean {
+  return Math.abs(a[0] - b[0]) <= REV_EPS && Math.abs(a[1] - b[1]) <= REV_EPS;
+}
+
+function expectSamePoints(got: [number, number][], want: [number, number][]) {
+  expect(got.length).toBe(want.length);
+  for (let i = 0; i < want.length; i++) {
+    expect(
+      nearPt(got[i], want[i]),
+      `point ${i}: got [${got[i]}], want [${want[i]}]`,
+    ).toBe(true);
+  }
+}
+
+// arcChords describes where the curvature lives independently of walk
+// direction: one canonical key per arc segment, built from the UNORDERED pair
+// of endpoints. Same set before and after means every arc is still on the
+// chord the user drew it on.
+function arcChords(run: DesignRun): string[] {
+  const pts = run.polyline.points;
+  const n = pts.length;
+  const segs = run.polyline.closed ? n : n - 1;
+  const out: string[] = [];
+  for (let i = 0; i < segs; i++) {
+    if (segmentTypeAt(run, i) !== 'arc') continue;
+    const a = `${pts[i][0]},${pts[i][1]}`;
+    const b = `${pts[(i + 1) % n][0]},${pts[(i + 1) % n][1]}`;
+    out.push([a, b].sort().join('|'));
+  }
+  return out.sort();
+}
+
+function openArcRun(): DesignDoc {
+  return {
+    version: 1,
+    view_box_mm: [0, 0, 60, 60],
+    runs: [
+      {
+        id: 'run-1',
+        polyline: {
+          points: [[0, 0], [10, 0], [10, 10], [20, 10], [20, 20]],
+          closed: false,
+          segment_types: ['line', 'arc', 'line', 'arc'],
+        },
+        electrodes: [{ point_index: 0 }, { point_index: 4 }],
+      },
+    ],
+  };
+}
+
+function closedArcRun(): DesignDoc {
+  return {
+    version: 1,
+    view_box_mm: [0, 0, 60, 60],
+    runs: [
+      {
+        id: 'run-1',
+        polyline: {
+          points: [[0, 0], [30, 0], [30, 30], [0, 30]],
+          closed: true,
+          segment_types: ['arc', 'line', 'line', 'line'],
+        },
+      },
+    ],
+  };
+}
+
+describe('reverseRun and arc segments (Bug #11)', () => {
+  it('moves segment_types with the chords on an OPEN run (new j = old n-2-j)', () => {
+    const doc = openArcRun();
+    const rev = ops.reverseRun(doc, 'run-1').runs[0];
+    expect(rev.polyline.segment_types).toEqual(['arc', 'line', 'arc', 'line']);
+    expect(arcChords(rev)).toEqual(arcChords(doc.runs[0]));
+  });
+
+  it('moves segment_types with the chords on a CLOSED run (new j = old (n-2-j) mod n)', () => {
+    const doc = closedArcRun();
+    const rev = ops.reverseRun(doc, 'run-1').runs[0];
+    // n = 4, so new j takes old (2-j) mod 4: [old2, old1, old0, old3].
+    expect(rev.polyline.segment_types).toEqual(['line', 'line', 'arc', 'line']);
+    expect(arcChords(rev)).toEqual(arcChords(doc.runs[0]));
+  });
+
+  it('leaves a line-only run exactly as it always reversed', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0]], closed: false },
+          electrodes: [{ point_index: 0 }, { point_index: 4 }],
+        },
+      ],
+    };
+    const rev = ops.reverseRun(doc, 'run-1').runs[0];
+    expect(rev.polyline.points).toEqual([[4, 0], [3, 0], [2, 0], [1, 0], [0, 0]]);
+    expect(rev.electrodes).toEqual([{ point_index: 4 }, { point_index: 0 }]);
+    // A pre-#78 run must not grow a segment_types array: the Go decoder
+    // validates its length, and an all-'line' array is not what round-trips.
+    expect('segment_types' in rev.polyline).toBe(false);
+  });
+
+  it('reversing twice restores the run exactly — points, flags, anchors, shape', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          ...openArcRun().runs[0],
+          blockouts: [{ start_live_index: 0, end_live_index: 2 }],
+          annotations: [{ kind: 'jump', live_index: 1 }],
+          bends: [{ live_index: 3 }],
+        },
+      ],
+    };
+    const once = ops.reverseRun(doc, 'run-1');
+    const twice = ops.reverseRun(once, 'run-1');
+    expect(twice.runs[0]).toEqual(doc.runs[0]);
+    expectSamePoints(flatRunPoints(twice.runs[0]), flatRunPoints(doc.runs[0]));
+    // And the intermediate really did change something.
+    expect(once.runs[0].polyline.points).not.toEqual(doc.runs[0].polyline.points);
+  });
+
+  it('lands electrode, blockout, annotation and bend anchors on the same physical points', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          ...openArcRun().runs[0],
+          blockouts: [{ start_live_index: 0, end_live_index: 2 }],
+          annotations: [{ kind: 'jump', live_index: 1 }],
+          bends: [{ live_index: 3 }],
+        },
+      ],
+    };
+    const before = doc.runs[0];
+    const rev = ops.reverseRun(doc, 'run-1').runs[0];
+    const at = (r: DesignRun, live: number) => r.polyline.points[runArcs(r).live[live]];
+
+    // Electrodes keep their own identity: electrodes[0] is still the tube end
+    // that sits at [0, 0].
+    expect(rev.electrodes!.map((e) => rev.polyline.points[e.point_index]))
+      .toEqual([[0, 0], [20, 20]]);
+    // The blockout still covers the first three vertices of the glass, now
+    // reached from the other end of the walk.
+    expect(at(rev, rev.blockouts![0].start_live_index))
+      .toEqual(at(before, before.blockouts![0].end_live_index));
+    expect(at(rev, rev.blockouts![0].end_live_index))
+      .toEqual(at(before, before.blockouts![0].start_live_index));
+    expect(at(rev, rev.annotations![0].live_index))
+      .toEqual(at(before, before.annotations![0].live_index));
+    expect(rev.annotations![0].kind).toBe('jump');
+    expect(at(rev, rev.bends![0].live_index))
+      .toEqual(at(before, before.bends![0].live_index));
+  });
+
+  it('flips direction on a closed two-electrode run so the same half stays lit', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 60, 60],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [30, 0], [30, 30], [0, 30]], closed: true },
+          electrodes: [{ point_index: 0 }, { point_index: 2 }],
+          direction: 'forward',
+          blockouts: [{ start_live_index: 0, end_live_index: 1 }],
+          bends: [{ live_index: 1 }],
+        },
+      ],
+    };
+    const before = doc.runs[0];
+    const rev = ops.reverseRun(doc, 'run-1').runs[0];
+    expect(rev.direction).toBe('backward');
+
+    const livePts = (r: DesignRun) => runArcs(r).live.map((i) => r.polyline.points[i]);
+    // Same half of the loop, in the same order: the walk is anchored to
+    // electrodes[0], which keeps its identity across the reversal. Without
+    // the direction flip the OTHER half of the loop would light up — which is
+    // the whole reason the flip is here.
+    expect(livePts(rev)).toEqual(livePts(before));
+    expect(livePts({ ...rev, direction: 'forward' })).not.toEqual(livePts(before));
+
+    // And because the walk did not turn around, live-anchored children must
+    // stay exactly where they were rather than being flipped to L-1-k.
+    expect(rev.blockouts).toEqual(before.blockouts);
+    expect(rev.bends).toEqual(before.bends);
+  });
+
+  it('leaves direction alone on an open run', () => {
+    const doc = openArcRun();
+    expect(ops.reverseRun(doc, 'run-1').runs[0].direction).toBeUndefined();
+  });
+
+  // KNOWN LIMITATION, pinned so it cannot drift unnoticed.
+  //
+  // `segment_types` has exactly two values, "line" and "arc", and arcFor()
+  // always bows to the LEFT of travel. Reversing a chord flips that normal,
+  // so one reverse draws each arc mirrored about its chord: same endpoints,
+  // same radius, same length, opposite side. Preserving the bow needs a
+  // signed bulge (or arc-cw/arc-ccw) in internal/designdoc — out of scope
+  // here. When that lands, this test should be replaced by the real
+  // invariant: flatRunPoints(reverse(run)) === flatRunPoints(run) reversed.
+  it('mirrors an arc about its chord after a single reverse (schema limit)', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 20, 20],
+      runs: [
+        {
+          id: 'run-1',
+          polyline: { points: [[0, 0], [10, 0]], closed: false, segment_types: ['arc'] },
+        },
+      ],
+    };
+    const before = flatRunPoints(doc.runs[0]);
+    const after = flatRunPoints(ops.reverseRun(doc, 'run-1').runs[0]);
+    // The original bows to +y; the reversed one is its reflection in y = 0,
+    // walked backwards. Every vertex and the chord itself are untouched.
+    expect(before.some((p) => p[1] > 1)).toBe(true);
+    expectSamePoints(
+      after,
+      before.slice().reverse().map(([x, y]) => [x, -y] as [number, number]),
+    );
   });
 });

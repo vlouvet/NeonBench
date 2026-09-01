@@ -19,10 +19,22 @@
 // per JSON file's _license field.
 //
 // Coordinate convention:
-//   - JHF source units: bytes offset from ASCII 'R'. Cap height ≈ 12 JHF
-//     units (caps span y=-12 at top to y=0 at baseline; descenders reach
-//     ~y=9). Stored per-font in fonts.ts so future faces with different
-//     metrics don't need a special case.
+//   - JHF source units: bytes offset from ASCII 'R'. In the bundled data
+//     a capital spans y=-12 (cap top) to y=+9 (BASELINE), i.e. ~21 units,
+//     x-height starts at y=-5, and descenders reach y=+16.
+//
+//     CAREFUL: `fonts.ts` declares `capHeightUnits: 12`, so the scale is
+//     `capHeightMM / 12` and rendered text is about 1.75× `capHeightMM`
+//     tall — `capHeightMM` is a size knob, NOT a literal measured cap
+//     height, and `originY` is the top-ish reference, NOT the typographic
+//     baseline (that lands at `originY + 9 * scale`). Changing either
+//     number would resize every design already saved, so the values
+//     stand; this note exists because the previous version of this
+//     comment claimed the baseline was at y=0 and cost a downstream
+//     feature (Tier 2 #92 vertical stacking) a round of overlapping
+//     glyphs. Anything that needs real vertical extents should measure
+//     the emitted ink with `hersheyRunsBBox`, not derive it from
+//     `capHeightMM`.
 //   - JHF Y-axis: positive points DOWN already in this dataset, which
 //     matches SVG/screen coordinates. We do NOT flip Y.
 //   - Output units: millimeters in the design-doc coordinate system.
@@ -37,6 +49,31 @@ import { smoothStrokePoints } from './smooth';
  *  channel-letter shops actually build these signs. */
 export type HersheyRun = {
   points: [number, number][];
+  /** Layout provenance, stamped at emission time so the post-passes in
+   *  `layout.ts` (slant / vertical stacking / arc) can be PURE functions
+   *  over `HersheyRun[]` instead of re-walking the glyph loop.
+   *
+   *  Without these tags a post-pass would have to recover glyph
+   *  boundaries from geometry, which is wrong the moment two kerned
+   *  glyphs overlap in x ("AV" at -2 JHF units does), and would have to
+   *  guess which baseline a stroke belongs to in multi-line text.
+   *
+   *  All three are OPTIONAL and purely advisory: nothing in the render
+   *  or insert path reads them, hand-built `HersheyRun`s (tests, other
+   *  callers) omit them, and every transform has a documented fallback.
+   *
+   *  `glyphIndex` is the visible-glyph index — the same index space as
+   *  `perPairKerningMM` / `baselineShiftsMM`. It is UNDEFINED on strokes
+   *  produced by `joinAdjacentGlyphs`, because a stitched cursive stroke
+   *  genuinely belongs to two or more glyphs at once. */
+  glyphIndex?: number;
+  /** 0-based line number, counting '\n' in the input. */
+  lineIndex?: number;
+  /** Y (mm) of this stroke's LINE baseline. Excludes any per-glyph
+   *  `baselineShiftsMM` offset — the shift is baked into the points and
+   *  should ride along as a relative offset when a transform re-places
+   *  the glyph. */
+  baselineY?: number;
 };
 
 /**
@@ -147,6 +184,7 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
 
   let cursorX = originX;
   let baselineY = originY;
+  let lineIndex = 0;
   // pairIdx counts gaps between RENDERED glyphs (newlines don't count as
   // glyphs). After rendering the i-th glyph we look up
   // perPairKerningMM[pairIdx] for the gap to the (i+1)-th glyph and then
@@ -163,6 +201,7 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       // because the previous glyph already advanced it; the kerning we
       // tentatively added for the gap-before-newline is wiped here.
       baselineY += capHeightMM * lineHeight;
+      lineIndex++;
       cursorX = originX;
       // Newline interrupts a join sequence (the next glyph sits on a new
       // baseline, so even if X happens to align, joining would draw a
@@ -221,7 +260,12 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       // corner-preserving Catmull-Rom spline so the validator's bend-radius
       // sampling sees smooth curvature instead of polygon facets. Straight
       // strokes and hard corners pass through unchanged.
-      glyphRuns.push({ points: smoothStrokePoints(points) });
+      glyphRuns.push({
+        points: smoothStrokePoints(points),
+        glyphIndex: pairIdx,
+        lineIndex,
+        baselineY,
+      });
     }
     // Glyphs that emit no strokes (e.g. ASCII space, whose only "stroke"
     // is < 2 points and gets dropped at build time) do NOT contribute to
@@ -289,8 +333,17 @@ export function hersheyTextToRuns(opts: HersheyTextOptions): HersheyRun[] {
       capHeightMM,
     });
     if (joined) {
-      // Successful stitch — the result becomes the new acc.
-      acc = joinedStrokes;
+      // Successful stitch — the result becomes the new acc. The stitched
+      // stroke is a brand-new object with no layout tags (it spans two
+      // glyphs, so `glyphIndex` is genuinely undefined), but it does sit
+      // on a known line — joins never cross a newline — so re-stamp the
+      // line tags. Slant needs them to shear about the right baseline.
+      const meta = glyphGroups[i][0];
+      acc = joinedStrokes.map((r) =>
+        r.baselineY === undefined
+          ? { ...r, lineIndex: meta.lineIndex, baselineY: meta.baselineY }
+          : r,
+      );
     } else {
       // Failed eligibility (e.g. 't' exiting at cap-top, or huge user
       // kerning): flush prev, start fresh with this glyph isolated.
