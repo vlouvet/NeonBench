@@ -1,6 +1,30 @@
 # Tier 2 #74 — Raceway guideline as a geometric break point
 
-> **Status:** active · drafted 2026-05-09 · branch `task/2-raceway-guideline-geometric` · NW parity (auto-tube-layout behavior)
+> **Status:** SHIPPED 2026-08-31 · branch `task/2-raceway-guideline-geometric` · NW parity (auto-tube-layout behavior)
+
+> **Decisions the spec left open, and one it did not anticipate.**
+> 1. **Idempotency: no-op, not revert-then-reapply.** Splitting leaves every
+>    piece with an endpoint exactly on the line, and the crossing finder
+>    excludes the endpoints of an open run — so a second pass finds nothing.
+>    Nothing has to remember what was already cut. Moving the line and
+>    splitting again therefore ADDS a cut rather than undoing the old one;
+>    undo is the way back, and it is one step.
+> 2. **Vertex-on-line tolerance: 1e-6 mm.** Far below any real geometry,
+>    comfortably above the float noise in an interpolated crossing (~1e-13 mm).
+> 3. **A second guideline is allowed.** Each gets its own id and its own
+>    raceway group. The slice supported it for free; forbidding it would have
+>    been the extra code.
+> 4. **Closed runs are handled, not skipped.** A letter's face outline is a
+>    loop, so the loop is opened at its first crossing and cut at the rest. A
+>    closed run carrying electrodes is skipped and reported — opening it
+>    destroys the live arc with no non-arbitrary answer for which piece keeps
+>    which electrode.
+> 5. **`splitRun` had to be fixed first.** It carried only colour, diameter
+>    and notes onto the pieces, dropping `is_channel_letter_face`,
+>    `channel_letter_depth_mm`, `raceway_id`, `group_id` and `kind`. Since
+>    `groupByRaceway` buckets only runs that are BOTH a face and
+>    raceway-tagged, every piece this feature cut would have been invisible to
+>    the combined strip page. Measured: 1 strip page with the fix, 0 without.
 
 ## Goal
 

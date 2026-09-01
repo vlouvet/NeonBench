@@ -2854,3 +2854,359 @@ describe('polylineLengthMM', () => {
     expect(ops.polylineLengthMM([[5, 5]], true)).toBe(0);
   });
 });
+
+// Tier 2 #74 — the raceway guideline. Every tube crossing one horizontal line
+// gets cut there, so the pieces below it terminate in a single back-channel
+// strip. The geometry claim is "cut exactly where the glass meets the line",
+// and the operational claim is "clicking twice does not cut twice".
+describe('racewayCrossings', () => {
+  it('finds a single crossing mid-segment and reports where', () => {
+    const c = ops.racewayCrossings([[0, 0], [0, 100]], false, 25);
+    expect(c).toHaveLength(1);
+    expect(c[0].segmentIndex).toBe(0);
+    expect(c[0].t).toBeCloseTo(0.25, 9);
+  });
+
+  it('finds both crossings of a tube that dips below and comes back', () => {
+    const pts: [number, number][] = [[0, 100], [50, 0], [100, 100]];
+    const c = ops.racewayCrossings(pts, false, 50);
+    expect(c).toHaveLength(2);
+    expect(c[0].segmentIndex).toBe(0);
+    expect(c[1].segmentIndex).toBe(1);
+  });
+
+  it('returns nothing when the line misses the polyline entirely', () => {
+    expect(ops.racewayCrossings([[0, 0], [100, 0]], false, 50)).toEqual([]);
+    expect(ops.racewayCrossings([[0, 80], [100, 90]], false, 50)).toEqual([]);
+  });
+
+  // A vertex sitting on the line is a crossing — the operator put the raceway
+  // there. It must be reported once, not twice (arriving and leaving).
+  it('reports a vertex on the line exactly once', () => {
+    const pts: [number, number][] = [[0, 100], [50, 50], [100, 0]];
+    const c = ops.racewayCrossings(pts, false, 50);
+    expect(c).toHaveLength(1);
+    expect(c[0]).toEqual({ segmentIndex: 1, t: 0 });
+  });
+
+  // A tangent touch still counts. "It only grazes the line" is not a
+  // distinction that survives contact with a bending table.
+  it('counts a vertex that touches the line and turns back', () => {
+    const pts: [number, number][] = [[0, 100], [50, 50], [100, 100]];
+    expect(ops.racewayCrossings(pts, false, 50)).toHaveLength(1);
+  });
+
+  // Both endpoints of an open run are excluded. This is the whole basis of
+  // idempotency, not a cosmetic tidy-up.
+  it('excludes both endpoints of an open run', () => {
+    const pts: [number, number][] = [[0, 50], [50, 0], [100, 50]];
+    expect(ops.racewayCrossings(pts, false, 50)).toEqual([]);
+  });
+
+  it('walks the closing segment of a closed run', () => {
+    // Square straddling y=50; the line cuts the two vertical sides, one of
+    // which IS the closing segment.
+    const sq: [number, number][] = [[0, 0], [100, 0], [100, 100], [0, 100]];
+    const c = ops.racewayCrossings(sq, true, 50);
+    expect(c).toHaveLength(2);
+    expect(c.map((x) => x.segmentIndex)).toEqual([1, 3]);
+  });
+
+  // Vertex 0 of a closed run is a legitimate split point — it is not an
+  // endpoint, because the loop continues through it.
+  it('includes vertex 0 of a closed run when it lies on the line', () => {
+    const sq: [number, number][] = [[0, 50], [100, 50], [100, 100], [0, 100]];
+    const c = ops.racewayCrossings(sq, true, 50);
+    expect(c.some((x) => x.segmentIndex === 0 && x.t === 0)).toBe(true);
+  });
+
+  it('handles a segment lying along the line by reporting both its ends', () => {
+    const pts: [number, number][] = [[0, 0], [20, 50], [80, 50], [100, 0]];
+    const c = ops.racewayCrossings(pts, false, 50);
+    expect(c.map((x) => x.segmentIndex)).toEqual([1, 2]);
+  });
+
+  it('ignores a degenerate polyline', () => {
+    expect(ops.racewayCrossings([], false, 0)).toEqual([]);
+    expect(ops.racewayCrossings([[0, 0]], false, 0)).toEqual([]);
+  });
+});
+
+describe('raceway guideline ops', () => {
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 200, 200],
+    runs,
+  });
+
+  const withLine = (runs: DesignRun[], y: number): DesignDoc =>
+    ops.addRacewayGuideline(docOf(runs), y);
+
+  const vertical = (id: string, x: number, y0: number, y1: number): DesignRun => ({
+    id,
+    polyline: { points: [[x, y0], [x, y1]], closed: false },
+  });
+
+  it('allocates rw1, rw2, … and reuses a freed slot', () => {
+    let doc = docOf([]);
+    doc = ops.addRacewayGuideline(doc, 10);
+    doc = ops.addRacewayGuideline(doc, 20);
+    expect(doc.guidelines?.map((g) => g.id)).toEqual(['rw1', 'rw2']);
+    doc = ops.removeGuideline(doc, 'rw1');
+    doc = ops.addRacewayGuideline(doc, 30);
+    expect(doc.guidelines?.map((g) => g.id).sort()).toEqual(['rw1', 'rw2']);
+  });
+
+  it('drops the guidelines key entirely once the last one goes', () => {
+    let doc = ops.addRacewayGuideline(docOf([]), 10);
+    doc = ops.removeGuideline(doc, 'rw1');
+    expect('guidelines' in doc).toBe(false);
+  });
+
+  it('leaves the doc alone for an unknown or unchanged guideline', () => {
+    const doc = ops.addRacewayGuideline(docOf([]), 10);
+    expect(ops.removeGuideline(doc, 'nope')).toBe(doc);
+    expect(ops.moveGuideline(doc, 'nope', 5)).toBe(doc);
+    expect(ops.moveGuideline(doc, 'rw1', 10)).toBe(doc);
+    expect(ops.moveGuideline(doc, 'rw1', 11).guidelines?.[0].y_mm).toBe(11);
+  });
+
+  it('splits one crossing tube into two pieces sharing the raceway id', () => {
+    const doc = withLine([vertical('a', 10, 0, 100)], 40);
+    const res = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(2);
+    expect(res.doc.runs).toHaveLength(2);
+    expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+    // Cut exactly on the line, not near it.
+    for (const r of res.doc.runs) {
+      const ys = r.polyline.points.map((p) => p[1]);
+      expect(Math.min(...ys) === 40 || Math.max(...ys) === 40).toBe(true);
+    }
+  });
+
+  it('leaves a tube that does not reach the line untouched', () => {
+    const doc = withLine([vertical('a', 10, 0, 30)], 40);
+    const res = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(res.runsSplit).toBe(0);
+    expect(res.doc).toBe(doc);
+  });
+
+  it('splits a tube crossing twice into three pieces, all tagged', () => {
+    const zig: DesignRun = {
+      id: 'a',
+      polyline: { points: [[0, 100], [50, 0], [100, 100]], closed: false },
+    };
+    const res = ops.splitTubesAtRaceway(withLine([zig], 50), 'rw1');
+    expect(res.piecesCreated).toBe(3);
+    expect(res.doc.runs).toHaveLength(3);
+    expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+  });
+
+  // The claim that matters operationally: clicking the button twice does not
+  // cut the glass twice.
+  it('is idempotent — a second split at the same line is a no-op', () => {
+    const doc = withLine([vertical('a', 10, 0, 100), vertical('b', 20, 0, 100)], 40);
+    const first = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(first.runsSplit).toBe(2);
+    const second = ops.splitTubesAtRaceway(first.doc, 'rw1');
+    expect(second.runsSplit).toBe(0);
+    expect(second.doc).toBe(first.doc);
+  });
+
+  it('splits only the tubes that cross, in a mixed design', () => {
+    const doc = withLine(
+      [vertical('crosses', 10, 0, 100), vertical('above', 20, 60, 100), vertical('below', 30, 0, 20)],
+      40,
+    );
+    const res = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(res.runsSplit).toBe(1);
+    expect(res.doc.runs).toHaveLength(4);
+    expect(res.doc.runs.filter((r) => r.raceway_id === 'rw1')).toHaveLength(2);
+    expect(res.doc.runs.find((r) => r.id === 'above')?.raceway_id).toBeUndefined();
+  });
+
+  // A letter's face outline is a closed loop; a raceway through an "O" is
+  // ordinary work, so closed runs must be handled rather than skipped.
+  it('opens a closed loop at the line and cuts it into arcs', () => {
+    const sq: DesignRun = {
+      id: 'o',
+      polyline: { points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true },
+    };
+    const res = ops.splitTubesAtRaceway(withLine([sq], 50), 'rw1');
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(2);
+    expect(res.doc.runs.every((r) => r.polyline.closed === false)).toBe(true);
+    expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+    // Both pieces must start and end on the line.
+    for (const r of res.doc.runs) {
+      const pts = r.polyline.points;
+      expect(pts[0][1]).toBeCloseTo(50, 6);
+      expect(pts[pts.length - 1][1]).toBeCloseTo(50, 6);
+    }
+  });
+
+  it('preserves the closed loop’s total length when opening and cutting it', () => {
+    const sq: DesignRun = {
+      id: 'o',
+      polyline: { points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true },
+    };
+    const before = ops.polylineLengthMM(sq.polyline.points, true);
+    const res = ops.splitTubesAtRaceway(withLine([sq], 50), 'rw1');
+    const after = res.doc.runs.reduce(
+      (acc, r) => acc + ops.polylineLengthMM(r.polyline.points, false),
+      0,
+    );
+    expect(after).toBeCloseTo(before, 6);
+  });
+
+  it('is idempotent on a closed loop too', () => {
+    const sq: DesignRun = {
+      id: 'o',
+      polyline: { points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true },
+    };
+    const first = ops.splitTubesAtRaceway(withLine([sq], 50), 'rw1');
+    const second = ops.splitTubesAtRaceway(first.doc, 'rw1');
+    expect(second.runsSplit).toBe(0);
+    expect(second.doc).toBe(first.doc);
+  });
+
+  // Which piece inherits which electrode has no non-arbitrary answer once the
+  // live arc is gone, so we decline and say so.
+  it('skips a closed run carrying electrodes, and reports the skip', () => {
+    const sq: DesignRun = {
+      id: 'o',
+      polyline: { points: [[0, 0], [100, 0], [100, 100], [0, 100]], closed: true },
+      electrodes: [{ point_index: 0 }, { point_index: 2 }],
+    };
+    const res = ops.splitTubesAtRaceway(withLine([sq], 50), 'rw1');
+    expect(res.runsSplit).toBe(0);
+    expect(res.skippedClosedWithElectrodes).toBe(1);
+    expect(res.doc.runs).toHaveLength(1);
+    expect(res.doc.runs[0].polyline.closed).toBe(true);
+  });
+
+  it('carries color, diameter and notes onto every piece', () => {
+    const run: DesignRun = {
+      id: 'a',
+      polyline: { points: [[10, 0], [10, 100]], closed: false },
+      color: '#00e5ff',
+      tube_diameter_mm: 15,
+      notes: 'blue 15mm',
+    };
+    const res = ops.splitTubesAtRaceway(withLine([run], 40), 'rw1');
+    expect(res.doc.runs).toHaveLength(2);
+    for (const r of res.doc.runs) {
+      expect(r.color).toBe('#00e5ff');
+      expect(r.tube_diameter_mm).toBe(15);
+      expect(r.notes).toBe('blue 15mm');
+    }
+  });
+
+  it('does nothing for an unknown guideline id', () => {
+    const doc = withLine([vertical('a', 10, 0, 100)], 40);
+    expect(ops.splitTubesAtRaceway(doc, 'nope').doc).toBe(doc);
+  });
+
+  it('does not mutate the input doc', () => {
+    const doc = withLine([vertical('a', 10, 0, 100)], 40);
+    ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(doc.runs).toHaveLength(1);
+    expect(doc.runs[0].polyline.points).toHaveLength(2);
+  });
+
+  // Removing the line must not un-cut the glass or silently regroup the PDF.
+  it('keeps geometry and raceway tags when the guideline is deleted', () => {
+    const res = ops.splitTubesAtRaceway(withLine([vertical('a', 10, 0, 100)], 40), 'rw1');
+    const after = ops.removeGuideline(res.doc, 'rw1');
+    expect(after.runs).toHaveLength(2);
+    expect(after.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+  });
+});
+
+// Cutting a tube changes where the glass ends, not what it is. splitRun used
+// to carry only colour/diameter/notes, so a channel-letter face lost its face
+// flag on the way through — and groupByRaceway (internal/printpdf/raceway.go)
+// buckets only runs that are BOTH a face and raceway-tagged, so the combined
+// strip page silently stopped being emitted. No error, just a missing page.
+describe('splitRun classification', () => {
+  const faceRun: DesignRun = {
+    id: 'face',
+    polyline: { points: [[10, 0], [10, 50], [10, 100]], closed: false },
+    color: '#ff0000',
+    tube_diameter_mm: 12,
+    notes: 'letter O',
+    is_channel_letter_face: true,
+    channel_letter_depth_mm: 120,
+    raceway_id: 'rw1',
+    group_id: 'g1',
+  };
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 200, 200],
+    runs,
+  });
+
+  it('carries every classification field onto both pieces', () => {
+    const after = ops.splitRun(docOf([faceRun]), 'face', 1);
+    expect(after.runs).toHaveLength(2);
+    for (const r of after.runs) {
+      expect(r.is_channel_letter_face).toBe(true);
+      expect(r.channel_letter_depth_mm).toBe(120);
+      expect(r.raceway_id).toBe('rw1');
+      expect(r.group_id).toBe('g1');
+      expect(r.color).toBe('#ff0000');
+      expect(r.tube_diameter_mm).toBe(12);
+      expect(r.notes).toBe('letter O');
+    }
+  });
+
+  it('keeps a jumper a jumper', () => {
+    const jumper: DesignRun = {
+      id: 'j1',
+      polyline: { points: [[0, 0], [10, 0], [20, 0]], closed: false },
+      kind: 'jumper',
+    };
+    const after = ops.splitRun(docOf([jumper]), 'j1', 1);
+    expect(after.runs.every((r) => r.kind === 'jumper')).toBe(true);
+  });
+
+  // `direction` only means anything on a closed run, and both pieces are open.
+  it('drops direction, which is meaningless once the run is open', () => {
+    const loop: DesignRun = {
+      id: 'o',
+      polyline: { points: [[0, 0], [10, 0], [10, 10], [0, 10]], closed: true },
+      direction: 'backward',
+    };
+    const after = ops.splitRun(docOf([loop]), 'o', 2);
+    expect(after.runs.every((r) => r.direction === undefined)).toBe(true);
+  });
+
+  it('does not invent fields the source run never had', () => {
+    const plain: DesignRun = {
+      id: 'p',
+      polyline: { points: [[0, 0], [10, 0], [20, 0]], closed: false },
+    };
+    const after = ops.splitRun(docOf([plain]), 'p', 1);
+    for (const r of after.runs) {
+      expect(r.is_channel_letter_face).toBeUndefined();
+      expect(r.raceway_id).toBeUndefined();
+      expect(r.group_id).toBeUndefined();
+      expect(r.kind).toBeUndefined();
+    }
+  });
+
+  // The end-to-end consequence: a face run cut at the raceway must still be
+  // a face run, or the strip page it was cut for never renders.
+  it('leaves raceway-split face pieces eligible for the combined strip page', () => {
+    const doc = ops.addRacewayGuideline(
+      docOf([{ ...faceRun, raceway_id: undefined, polyline: { points: [[10, 0], [10, 100]], closed: false } }]),
+      50,
+    );
+    const res = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(res.runsSplit).toBe(1);
+    // Both conditions groupByRaceway requires.
+    expect(res.doc.runs.every((r) => r.is_channel_letter_face === true)).toBe(true);
+    expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+  });
+});
