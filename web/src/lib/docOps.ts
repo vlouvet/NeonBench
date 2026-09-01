@@ -26,7 +26,15 @@ import {
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection, runArcs } from './runArcs';
-import { flipArcKind, isArcKind, segmentCount, segmentTypeAt } from './arcGeom';
+import {
+  flatRunPoints,
+  flattenSegment,
+  flipArcKind,
+  isArcKind,
+  runHasArcs,
+  segmentCount,
+  segmentTypeAt,
+} from './arcGeom';
 import {
   offsetOpenPolyline,
   offsetPolygon,
@@ -681,17 +689,56 @@ export function simplifyRun(doc: DesignDoc, runId: string, epsilonMM: number): D
     for (const e of run.electrodes ?? []) {
       if (e.point_index >= 0 && e.point_index < keep.length) keep[e.point_index] = true;
     }
+    // Pin both ends of every ARC segment. RDP measures perpendicular distance
+    // to the CHORD, so it is blind to an arc's bow by construction — it will
+    // cheerfully drop the vertex that defines a 50 mm sagitta as "within
+    // epsilon of a straight line", and the arc then re-forms across whatever
+    // longer span replaced it. Pinning the endpoints keeps the drawn curve
+    // exactly where it was and has a second payoff: every span RDP is still
+    // allowed to collapse is made only of straights, so the merged segment is
+    // unambiguously a 'line' below.
+    for (let i = 0; i < segmentCount(run); i++) {
+      if (!isArcKind(segmentTypeAt(run, i))) continue;
+      keep[i] = true;
+      keep[(i + 1) % pts.length] = true;
+    }
     if (keep.every((b) => b)) return run;
     // Build the index remap and the new point list in one pass.
     const remap = new Array<number>(pts.length).fill(-1);
+    const origOf: number[] = [];
     const newPts: [number, number][] = [];
     for (let i = 0; i < pts.length; i++) {
       if (keep[i]) {
         remap[i] = newPts.length;
+        origOf.push(i);
         newPts.push(pts[i]);
       }
     }
     if (newPts.length < (run.polyline.closed ? 3 : 2)) return run;
+    // Rebuild segment_types over the surviving vertices. Dropping a vertex
+    // MERGES the two segments either side of it, so leaving the old array in
+    // place left it too long — and the Go decoder (internal/designdoc/
+    // types.go UnmarshalJSON) rejects any array that isn't exactly
+    // segmentCount entries, turning the next save of the doc into a 400.
+    // Build it only when one existed, so a pre-#78 run still round-trips
+    // without growing the key.
+    const polyline = { ...run.polyline, points: newPts };
+    if (run.polyline.segment_types) {
+      const m = newPts.length;
+      const segs = run.polyline.closed ? m : m - 1;
+      const nextTypes: SegmentKind[] = [];
+      for (let j = 0; j < segs; j++) {
+        const from = origOf[j];
+        const to = origOf[(j + 1) % m];
+        // A new segment that still spans exactly one old segment keeps its
+        // type; anything wider is a collapsed run of straights.
+        const single = run.polyline.closed
+          ? (from + 1) % pts.length === to
+          : from + 1 === to;
+        nextTypes.push(single ? segmentTypeAt(run, from) : 'line');
+      }
+      polyline.segment_types = nextTypes;
+    }
     const electrodes = (run.electrodes ?? []).map((e) => ({
       ...e,
       point_index: remap[e.point_index] >= 0 ? remap[e.point_index] : 0,
@@ -706,7 +753,7 @@ export function simplifyRun(doc: DesignDoc, runId: string, epsilonMM: number): D
     const clamp = (i: number) => Math.max(0, Math.min(newLiveLen - 1, i));
     return {
       ...run,
-      polyline: { ...run.polyline, points: newPts },
+      polyline,
       electrodes,
       blockouts: (run.blockouts ?? []).map((b) => ({
         start_live_index: clamp(Math.round((b.start_live_index / Math.max(1, pts.length - 1)) * (newPts.length - 1))),
@@ -1377,6 +1424,69 @@ export function renameLegacyRunIds(doc: DesignDoc): DesignDoc {
 // - Annotations / bends partition by live_index against the live arc;
 //   for the common open-run no-electrode case live_index === polyline
 //   index so the same partition applies.
+// carryRunClassification stamps the fields that say WHAT a run is — as opposed
+// to where its glass goes — onto a run derived from one or two existing runs.
+// It mutates and returns `to`, which every caller has just built fresh.
+//
+// It exists because forgetting one of these by omission is now the fourth
+// instance of CLAUDE.md's recurring bug class 1: splitRun (PR #140),
+// reverseRun (Bug #11 / PR #149), joinRuns' private reversedRun copy (Bug #14
+// / PR #152), and joinRuns itself (Bug #15). Two of the four were in joinRuns.
+// A longhand allow-list at each call site is what keeps failing — worse, both
+// splitRun's and joinRuns' were written under a comment claiming to be
+// complete — so the list lives here once and ops go through it.
+//
+// `b` is the second input of a MERGE (joinRuns). Its disagreement rules are
+// trade decisions, not preferences:
+//
+//   is_channel_letter_face — true if EITHER side is true. A face joined to a
+//     non-face is still face glass, and the expensive error is silent:
+//     groupByRaceway (internal/printpdf/raceway.go) buckets only runs that
+//     have IsChannelLetterFace AND a RacewayID, so a face that loses its flag
+//     stops appearing on the combined return-strip page with no error at all —
+//     the fabricator just never gets the pattern for the metal.
+//   channel_letter_depth_mm — a's if set, else b's. When both are set and
+//     disagree we take a's and warn: the operator picked two different metal
+//     depths and needs to know one was dropped, not to discover it at the
+//     brake.
+//   raceway_id, group_id — a's if set, else b's. Inheriting a membership beats
+//     ejecting the merged run from a raceway or a layer it was already in.
+//   kind — a jumper joined to anything that is NOT a jumper produces a LIVE
+//     TUBE. This is the one field where "inherit a" is actively wrong: a
+//     jumper is glass-sleeved lead wire, so joining it to live glass makes the
+//     union live, and calling the result a jumper would drop lit tube out of
+//     the 3D render and the printed legend. Only jumper + jumper stays dark.
+//
+// `direction` is deliberately absent: it means something only on a closed run
+// with two electrodes, and every run these ops mint is open (joinRuns' own
+// self-join branch closes a run by spreading the original, not through here).
+function carryRunClassification(to: DesignRun, a: DesignRun, b?: DesignRun): DesignRun {
+  if (a.is_channel_letter_face || b?.is_channel_letter_face) {
+    to.is_channel_letter_face = true;
+  }
+  const depth = a.channel_letter_depth_mm ?? b?.channel_letter_depth_mm;
+  if (depth != null) to.channel_letter_depth_mm = depth;
+  if (
+    b
+    && a.channel_letter_depth_mm != null
+    && b.channel_letter_depth_mm != null
+    && a.channel_letter_depth_mm !== b.channel_letter_depth_mm
+  ) {
+    console.warn(
+      `joinRuns: channel_letter_depth_mm disagrees (${a.channel_letter_depth_mm} vs `
+      + `${b.channel_letter_depth_mm}) — keeping ${a.channel_letter_depth_mm}`,
+    );
+  }
+  const raceway = a.raceway_id ?? b?.raceway_id;
+  if (raceway != null) to.raceway_id = raceway;
+  const group = a.group_id ?? b?.group_id;
+  if (group != null) to.group_id = group;
+  const bothJumpers = b ? a.kind === 'jumper' && b.kind === 'jumper' : a.kind === 'jumper';
+  if (bothJumpers) to.kind = 'jumper';
+  else if (a.kind != null && a.kind !== 'jumper' && b == null) to.kind = a.kind;
+  return to;
+}
+
 export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
   const run = doc.runs.find((r) => r.id === runId);
   if (!run) return doc;
@@ -1488,26 +1598,11 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
     if (run!.notes != null) next.notes = run!.notes;
     // Classification carries onto BOTH pieces. Cutting a tube changes where
     // the glass ends, not what it is: a channel-letter face split at the
-    // raceway is still face glass, a jumper is still a jumper, and both
-    // halves stay in the layer and on the raceway they were already on.
-    //
-    // Dropping these was silent and expensive. groupByRaceway (internal/
-    // printpdf/raceway.go) buckets only runs with IsChannelLetterFace AND a
-    // RacewayID, so a face run that lost its flag on the way through a split
-    // simply stopped appearing on the combined strip page — no error, just a
-    // missing page. Same shape of loss for kind ("jumper" pieces re-entering
-    // the bend list and rendering solid) and group_id (pieces falling out of
-    // their layer).
-    //
-    // `direction` is deliberately NOT carried: it only means anything on a
-    // closed run, and both pieces are open.
-    if (run!.is_channel_letter_face) next.is_channel_letter_face = run!.is_channel_letter_face;
-    if (run!.channel_letter_depth_mm != null) {
-      next.channel_letter_depth_mm = run!.channel_letter_depth_mm;
-    }
-    if (run!.raceway_id != null) next.raceway_id = run!.raceway_id;
-    if (run!.kind != null) next.kind = run!.kind;
-    if (run!.group_id != null) next.group_id = run!.group_id;
+    // raceway is still face glass, a jumper is still a jumper, and both halves
+    // stay in the layer and on the raceway they were already on. PR #140 fixed
+    // this by hand; the list now lives in carryRunClassification so joinRuns
+    // and this share one copy of it (and of the reasoning).
+    carryRunClassification(next, run!);
     if (electrodes.length > 0) next.electrodes = electrodes;
     if (blockouts.length > 0) next.blockouts = blockouts;
     if (annotations.length > 0) next.annotations = annotations;
@@ -1673,7 +1768,7 @@ export function joinRuns(
     ...((b.bends ?? []).map((bn) => ({ live_index: liveB(bn.live_index) }))),
   ];
 
-  // Result inherits runA's metadata (color, diameter, notes) and id.
+  // Presentation (color, diameter, notes) inherits runA's, along with its id.
   const joined: DesignRun = {
     id: runA.id,
     polyline: { points: joinedPts, closed: false },
@@ -1682,6 +1777,15 @@ export function joinRuns(
   if (runA.tube_diameter_mm != null) joined.tube_diameter_mm = runA.tube_diameter_mm;
   if (runA.color != null) joined.color = runA.color;
   if (runA.notes != null) joined.notes = runA.notes;
+  // Classification is a MERGE, not an inheritance, and it used to be missing
+  // entirely (Bug #15) — the five fields it covers are what make a merged
+  // channel-letter face keep its return-strip page, its raceway and its layer.
+  // The A-vs-B rules, including the counter-intuitive jumper one, are stated
+  // once at carryRunClassification. Feed it the ORIENTED runs `a`/`b` rather
+  // than runA/runB: reversedRun spreads the whole run so the fields are on
+  // both, and using the oriented pair keeps "A" meaning the same run the rest
+  // of this function calls A.
+  carryRunClassification(joined, a, b);
   if (electrodes.length > 0) joined.electrodes = electrodes;
   if (blockouts.length > 0) joined.blockouts = blockouts;
   if (annotations.length > 0) joined.annotations = annotations;
@@ -1744,6 +1848,13 @@ export function insertDoubleback(
   return mapRun(doc, runId, (run) => {
     const pts = run.polyline.points;
     if (segmentIndex < 0 || segmentIndex >= pts.length - 1) return run;
+    // An ARC segment is refused rather than served wrong. Every coordinate
+    // below is a linear interpolation of p1 -> p2, i.e. of the CHORD, so on a
+    // bowed segment the U-bend would be planted up to a quarter of the chord
+    // off the actual glass — a hairpin the bender cannot make. Placing it on
+    // the flattened curve needs the hairpin to know its own arc-length
+    // position; that is a real change, filed rather than guessed at here.
+    if (isArcKind(segmentTypeAt(run, segmentIndex))) return run;
     const tt = Math.max(0, Math.min(1, t));
     const p1 = pts[segmentIndex];
     const p2 = pts[segmentIndex + 1];
@@ -1798,9 +1909,26 @@ export function insertDoubleback(
     const shiftPoint = (i: number) => (i >= k + 1 ? i + SHIFT : i);
     const shiftLive = (i: number) => (i >= k + 1 ? i + SHIFT : i);
 
+    // segment_types shifts with the points. Segment k becomes the five
+    // straights p1-A-B-C-D-p2, and everything after it slides up by 4. Left
+    // unshifted the array was both the wrong length — which the Go decoder
+    // rejects outright, turning the next save into a 400 — and mis-indexed,
+    // moving every later arc four segments off the glass it describes. Only
+    // rebuilt when an array already exists, so a pre-#78 run doesn't grow one.
+    const polyline = { ...run.polyline, points: newPts };
+    if (run.polyline.segment_types) {
+      const before = run.polyline.segment_types.slice(0, k);
+      const after = run.polyline.segment_types.slice(k + 1);
+      polyline.segment_types = [
+        ...before,
+        'line', 'line', 'line', 'line', 'line',
+        ...after,
+      ];
+    }
+
     return {
       ...run,
-      polyline: { ...run.polyline, points: newPts },
+      polyline,
       electrodes: run.electrodes
         ? run.electrodes.map((e) => ({ ...e, point_index: shiftPoint(e.point_index) }))
         : run.electrodes,
@@ -2149,6 +2277,28 @@ export type NeonizeOptions = {
   hairpinGapMM?: number;
 };
 
+// flattenCornerStyles lifts a per-SOURCE-vertex cornerStyles array onto the
+// flattened point list `flatRunPoints` produces, so index i still names the
+// same physical corner after the arcs have been sampled into straights.
+//
+// The samples an arc contributes are interior points on a smooth curve — there
+// is no corner there to bevel or round — so they take the 'miter' default. The
+// walk mirrors flatRunPoints exactly (including the closing segment landing
+// back on vertex 0), which is what keeps the two arrays the same length.
+function flattenCornerStyles(run: DesignRun, styles: CornerStyle[]): CornerStyle[] {
+  if (!runHasArcs(run)) return styles;
+  const pts = run.polyline.points;
+  const n = pts.length;
+  const out: CornerStyle[] = [styles[0] ?? 'miter'];
+  const segs = segmentCount(run);
+  for (let i = 0; i < segs; i++) {
+    const k = flattenSegment(pts[i], pts[(i + 1) % n], segmentTypeAt(run, i)).length;
+    for (let j = 0; j < k - 1; j++) out.push('miter');
+    out.push(styles[(i + 1) % n] ?? 'miter');
+  }
+  return out;
+}
+
 export function neonize(
   doc: DesignDoc,
   runId: string,
@@ -2168,22 +2318,40 @@ export function neonize(
   }
 
   const half = spacingMM / 2;
-  const cornerStyles = options.cornerStyles;
   const stitch = options.stitch ?? false;
+  // cornerStyles indexes SOURCE vertices. Flattening inserts vertices between
+  // them, so on an arc run the raw array would put every style after the first
+  // arc on the wrong corner — remap it alongside the points.
+  const cornerStyles = options.cornerStyles
+    ? flattenCornerStyles(src, options.cornerStyles)
+    : undefined;
 
   const offsetOpts = {
     cornerStyles,
     trimSelfIntersections: true,
   };
 
+  // Offset the CURVE, not the chords (Bug #16). `polyline.points` is the
+  // control skeleton; on a run with arc segments the glass bows a quarter of
+  // each chord off it (ARC_BULGE 0.5), so offsetting the raw array produces a
+  // clean parallel outline of a shape nobody drew — 50 mm off the tube on a
+  // 200 mm arc. This is the other half of the rule in CLAUDE.md → Recurring
+  // bug classes → 1: never flatten when you are indexing, ALWAYS flatten when
+  // you need the true shape.
+  //
+  // `flatRunPoints` returns the original array when the run has no arcs, so
+  // the line-only path — which three shipped parity rows rest on — is
+  // byte-identical to before, not merely close.
+  const srcPts = flatRunPoints(src);
+
   let outer: ReturnType<typeof offsetPolygon>;
   let inner: ReturnType<typeof offsetPolygon>;
   if (src.polyline.closed) {
-    outer = offsetPolygon(src.polyline.points, +half, offsetOpts);
-    inner = offsetPolygon(src.polyline.points, -half, offsetOpts);
+    outer = offsetPolygon(srcPts, +half, offsetOpts);
+    inner = offsetPolygon(srcPts, -half, offsetOpts);
   } else {
-    outer = offsetOpenPolyline(src.polyline.points, +half, offsetOpts);
-    inner = offsetOpenPolyline(src.polyline.points, -half, offsetOpts);
+    outer = offsetOpenPolyline(srcPts, +half, offsetOpts);
+    inner = offsetOpenPolyline(srcPts, -half, offsetOpts);
   }
 
   // Build the replacement run(s). Inheritance: only carry forward the
@@ -2234,6 +2402,16 @@ export function neonize(
 
   // Stitch any non-empty warnings into a single user-facing string.
   const warnings: string[] = [];
+  if (runHasArcs(src)) {
+    // The offset of a circular arc IS a circular arc — of a different radius.
+    // `segment_types` can only express the one fixed bulge that ARC_BULGE
+    // implies for a given chord, so that curve is not representable and the
+    // emitted runs ship as flattened polylines. The operator is trading curve
+    // fidelity (they can no longer flip or re-radius those segments) for a
+    // path that actually follows the glass; say so rather than let them
+    // discover it at the node editor.
+    warnings.push('Arc segments were flattened — the offsets are polylines, not arcs.');
+  }
   if (outer.selfIntersected) {
     warnings.push('Outer offset self-intersects — clean up with the node editor.');
   }
