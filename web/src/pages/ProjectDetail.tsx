@@ -21,6 +21,7 @@ import VectorizePanel from '../components/VectorizePanel';
 import ValidationReportView from '../components/ValidationReportView';
 import PrintPanel from '../components/PrintPanel';
 import { humanizeDueDate, isOverdue } from '../lib/dueDate';
+import { NumericField } from '../components/NumericField';
 
 export default function ProjectDetail() {
   const { id } = useParams();
@@ -1072,12 +1073,10 @@ function TubeEndGapField({
   return (
     <span className="job-field">
       <strong>Tube end gap (mm):</strong>{' '}
-      <input
+      <NumericField
         autoFocus
-        type="number"
         min={0}
         max={100}
-        step={0.05}
         value={draft}
         disabled={busy}
         placeholder={`${DEFAULT_TUBE_END_GAP_MM} (default)`}
@@ -1178,12 +1177,10 @@ function ChannelLetterDepthField({
   return (
     <span className="job-field">
       <strong>Channel letter depth (mm):</strong>{' '}
-      <input
+      <NumericField
         autoFocus
-        type="number"
         min={10}
         max={500}
-        step={1}
         value={draft}
         disabled={busy}
         placeholder={`${DEFAULT_CHANNEL_LETTER_DEPTH_MM} (default)`}
@@ -1280,12 +1277,10 @@ function StripOverlapField({
   return (
     <span className="job-field">
       <strong>Strip overlap (mm):</strong>{' '}
-      <input
+      <NumericField
         autoFocus
-        type="number"
         min={0}
         max={100}
-        step={0.5}
         value={draft}
         disabled={busy}
         placeholder={`${DEFAULT_STRIP_OVERLAP_MM} (default)`}
@@ -1482,9 +1477,7 @@ function NewTubeSpecButton({
       </label>
       <label>
         Ø{' '}
-        <input
-          type="number"
-          step={0.1}
+        <NumericField
           min={5}
           max={30}
           value={diameter}
@@ -1497,9 +1490,7 @@ function NewTubeSpecButton({
       </label>
       <label>
         bend{' '}
-        <input
-          type="number"
-          step={0.5}
+        <NumericField
           min={1}
           max={200}
           value={bend}
@@ -1512,9 +1503,7 @@ function NewTubeSpecButton({
       </label>
       <label>
         seg{' '}
-        <input
-          type="number"
-          step={10}
+        <NumericField
           min={100}
           max={5000}
           value={segment}
@@ -1527,9 +1516,7 @@ function NewTubeSpecButton({
       </label>
       <label>
         spacing{' '}
-        <input
-          type="number"
-          step={0.5}
+        <NumericField
           min={1}
           max={100}
           value={spacing}
@@ -1823,9 +1810,7 @@ function TubeSpecEditor({
       <strong>Spec:</strong>
       <label>
         Ø{' '}
-        <input
-          type="number"
-          step={0.1}
+        <NumericField
           min={5}
           max={30}
           value={diameter}
@@ -1838,9 +1823,7 @@ function TubeSpecEditor({
       </label>
       <label>
         bend{' '}
-        <input
-          type="number"
-          step={0.5}
+        <NumericField
           min={1}
           max={200}
           value={bend}
@@ -1871,9 +1854,7 @@ function TubeSpecEditor({
 
       <label>
         seg{' '}
-        <input
-          type="number"
-          step={10}
+        <NumericField
           min={100}
           max={5000}
           value={segment}
@@ -1886,9 +1867,7 @@ function TubeSpecEditor({
       </label>
       <label>
         spacing{' '}
-        <input
-          type="number"
-          step={0.5}
+        <NumericField
           min={1}
           max={100}
           value={spacing}
@@ -1964,9 +1943,7 @@ function BendDerivationFields({
     >
       <label>
         wall{' '}
-        <input
-          type="number"
-          step={0.05}
+        <NumericField
           min={0.1}
           max={10.0}
           value={wallDraft}
@@ -2054,9 +2031,7 @@ function LeadInSharpBendFields({
     >
       <label>
         lead-in{' '}
-        <input
-          type="number"
-          step={0.5}
+        <NumericField
           min={0}
           max={50}
           value={leadInDraft}
@@ -2082,9 +2057,7 @@ function LeadInSharpBendFields({
       </button>
       <label>
         sharp bend{' '}
-        <input
-          type="number"
-          step={1}
+        <NumericField
           min={0}
           max={90}
           value={sharpBendDraft}

@@ -41,6 +41,7 @@ import {
   type OutlineRun,
 } from '../lib/fonts/text';
 import type { DesignRun } from '../api';
+import { NumericField } from './NumericField';
 
 type Props = {
   onCancel: () => void;
@@ -217,10 +218,8 @@ export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Cap height (mm) — the measured height of a capital H
-            <input
-              type="number"
+            <NumericField
               min={1}
-              step={1}
               value={capHeightMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -230,9 +229,7 @@ export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Letter spacing (mm)
-            <input
-              type="number"
-              step={1}
+            <NumericField
               value={letterSpacingMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -242,17 +239,8 @@ export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Line height (× cap height)
-            <input
-              type="number"
+            <NumericField
               min={0.5}
-              // step="any", NOT a numeric step. `min` is a LATTICE BASE for
-              // a numeric step, so min=0.5 step=0.1 makes 1.2 a valid value
-              // only by luck of the arithmetic — and the sibling tolerance
-              // field's default really did fall off its lattice, silently
-              // swallowing every form submit until the browser smoke test
-              // caught it. CLAUDE.md lists this exact failure; both float
-              // fields opt out of the lattice rather than depend on it.
-              step="any"
               value={lineHeight}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -262,10 +250,8 @@ export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Curve tolerance (mm) — how far a flattened curve may stray
-            <input
-              type="number"
+            <NumericField
               min={MIN_CHORD_TOLERANCE_MM}
-              step="any"
               value={chordToleranceMM}
               onChange={(e) => {
                 const v = Number(e.target.value);

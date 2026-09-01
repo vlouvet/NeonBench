@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api, type RateCard, type RateCardItem, type RateCardItemPatch } from '../api';
 import { unitCostPatch } from '../lib/estimateFormat';
+import { NumericField } from './NumericField';
 
 type Props = {
   card: RateCard;
@@ -15,49 +16,41 @@ type Props = {
 const SCALARS: {
   key: keyof RateCard & string;
   label: string;
-  step: number;
   hint: string;
 }[] = [
   {
     key: 'labour_rate_per_hour',
     label: 'Labour ($/h)',
-    step: 0.5,
     hint: 'Shop cost per bench hour.',
   },
   {
     key: 'labour_setup_minutes',
     label: 'Setup (min)',
-    step: 5,
     hint: 'Fixed minutes per sign, before any footage.',
   },
   {
     key: 'labour_minutes_per_foot',
     label: 'Minutes / ft',
-    step: 5,
     hint: 'Fabrication minutes per foot of net tube.',
   },
   {
     key: 'markup_multiplier',
     label: 'Markup (×)',
-    step: 0.01,
     hint: 'Cost × this = price. An input, not a law — check the implied margin.',
   },
   {
     key: 'stick_length_mm',
     label: 'Stick length (mm)',
-    step: 1,
     hint: 'What the supplier ships. 1524 = 5 ft.',
   },
   {
     key: 'stick_waste_mm',
     label: 'Handling waste (mm)',
-    step: 1,
     hint: 'Unusable glass per stick. Miller reserves 6 in total.',
   },
   {
     key: 'sheet_area_sq_ft',
     label: 'Sheet area (sq ft)',
-    step: 1,
     hint: 'Backing stock. 32 = a 4×8 sheet.',
   },
 ];
@@ -104,9 +97,7 @@ export default function RateCardEditor({ card, onChange, onError }: Props) {
         {SCALARS.map((f) => (
           <label key={f.key} className="est-scalar" title={f.hint}>
             <span>{f.label}</span>
-            <input
-              type="number"
-              step={f.step}
+            <NumericField
               defaultValue={(card as unknown as Record<string, number>)[f.key]}
               onBlur={(e) => patchScalar(f.key, e.currentTarget.value)}
             />
@@ -138,10 +129,9 @@ export default function RateCardEditor({ card, onChange, onError }: Props) {
                 <UnitCostInput item={it} onCommit={(body) => patchItem(it, body)} />
               </td>
               <td className="est-num">
-                <input
-                  type="number"
+                <NumericField
+                  integer
                   min={0}
-                  step={1}
                   className="est-input-sm"
                   defaultValue={it.min_qty ?? 0}
                   onBlur={(e) => {
@@ -151,10 +141,8 @@ export default function RateCardEditor({ card, onChange, onError }: Props) {
                 />
               </td>
               <td className="est-num">
-                <input
-                  type="number"
+                <NumericField
                   min={0}
-                  step={1}
                   className="est-input-sm"
                   defaultValue={it.pack_fee ?? 0}
                   onBlur={(e) => {
@@ -193,10 +181,8 @@ function UnitCostInput({
 }) {
   const stored = item.unit_cost === null ? '' : String(item.unit_cost);
   return (
-    <input
-      type="number"
+    <NumericField
       min={0}
-      step={0.0001}
       className="est-input-sm"
       placeholder="unpriced"
       defaultValue={stored}

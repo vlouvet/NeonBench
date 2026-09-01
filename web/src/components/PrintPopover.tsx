@@ -6,6 +6,7 @@ import {
   type PrintPopoverValues,
   type PrintRotate,
 } from '../lib/printPrefs';
+import { NumericField } from './NumericField';
 
 // Tier 3 #52 — popover surface for the editor toolbar's Print button.
 // Mirrors <PrintPanel>'s control set (paper / landscape) plus the
@@ -142,11 +143,10 @@ export default function PrintPopover({
         title="Print N copies of the whole page set in one job — step-and-repeat for a shop bending several identical letters. Copies multiply PAGES, not geometry: the pattern stays 1:1 and every sheet is footer-stamped “copy k of N” (Tier 2 #93)."
       >
         Copies
-        <input
-          type="number"
+        <NumericField
+          integer
           min={1}
           max={MAX_PRINT_COPIES}
-          step={1}
           value={values.copies}
           onChange={(e) => {
             // Clamp here as well as on the server. A bare number input

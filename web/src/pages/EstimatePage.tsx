@@ -11,6 +11,7 @@ import {
 import RateCardEditor from '../components/RateCardEditor';
 import { provisionalMessage, quantityRows } from '../lib/estimateFormat';
 import './estimate.css';
+import { NumericField } from '../components/NumericField';
 
 /**
  * Estimate route — quantities derived from the drawing, priced against a rate
@@ -283,14 +284,24 @@ export function Quantities({ summary }: { summary: TakeoffSummary }) {
  * The quantities a drawing cannot imply. A design does not say whether the
  * wall is brick or drywall, so install hours are typed in.
  */
-const INPUT_FIELDS: { key: keyof EstimateInputs & string; label: string; step: number }[] = [
-  { key: 'transformer_count', label: 'Transformers', step: 1 },
-  { key: 'gto_cable_ft', label: 'GTO cable (ft)', step: 1 },
-  { key: 'standoff_set_count', label: 'Standoff sets', step: 1 },
-  { key: 'backing_sq_ft', label: 'Backing (sq ft, overrides bbox)', step: 0.5 },
-  { key: 'install_hours', label: 'Install hours', step: 0.5 },
-  { key: 'design_hours', label: 'Design hours', step: 0.5 },
-  { key: 'freight', label: 'Freight', step: 1 },
+// `integer` marks the fields that really are counts of discrete things, and
+// so can safely carry NumericField's step={1} lattice. Everything else is a
+// measurement, a duration or a money amount — 25.5 ft of GTO, 3.75 sq ft of
+// backing, $412.60 of freight are all legitimate — and those take the
+// default step="any". See NumericField.tsx and todo.md row 105: a numeric
+// step here would make `min={0}` a lattice base and silently reject them.
+const INPUT_FIELDS: {
+  key: keyof EstimateInputs & string;
+  label: string;
+  integer?: boolean;
+}[] = [
+  { key: 'transformer_count', label: 'Transformers', integer: true },
+  { key: 'gto_cable_ft', label: 'GTO cable (ft)' },
+  { key: 'standoff_set_count', label: 'Standoff sets', integer: true },
+  { key: 'backing_sq_ft', label: 'Backing (sq ft, overrides bbox)' },
+  { key: 'install_hours', label: 'Install hours' },
+  { key: 'design_hours', label: 'Design hours' },
+  { key: 'freight', label: 'Freight' },
 ];
 
 function ManualInputs({
@@ -325,10 +336,9 @@ function ManualInputs({
         {INPUT_FIELDS.map((f) => (
           <label key={f.key} className="est-scalar">
             <span>{f.label}</span>
-            <input
-              type="number"
+            <NumericField
+              integer={f.integer}
               min={0}
-              step={f.step}
               defaultValue={(inputs as Record<string, number | undefined>)[f.key] ?? ''}
               onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.currentTarget.value }))}
             />

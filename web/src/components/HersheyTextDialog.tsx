@@ -55,6 +55,7 @@ import {
   type StackAlign,
   type TextLayoutMode,
 } from '../lib/hershey/layout';
+import { NumericField } from './NumericField';
 
 type Props = {
   onCancel: () => void;
@@ -435,10 +436,8 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Cap height (mm)
-            <input
-              type="number"
+            <NumericField
               min={1}
-              step={1}
               value={capHeightMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -452,11 +451,9 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
           </label>
           <label>
             Line height (× cap)
-            <input
-              type="number"
+            <NumericField
               min={0.8}
               max={3.0}
-              step={0.1}
               value={lineHeight}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -517,12 +514,10 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                 onChange={(e) => setSlantDeg(clampSlant(Number(e.target.value)))}
                 style={{ flex: '1 1 120px' }}
               />
-              <input
-                type="number"
+              <NumericField
                 aria-label="Slant degrees"
                 min={-MAX_SLANT_DEG}
                 max={MAX_SLANT_DEG}
-                step={1}
                 value={slantDeg}
                 onChange={(e) => setSlantDeg(clampSlant(Number(e.target.value)))}
                 style={{ width: 64 }}
@@ -553,11 +548,9 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                 <>
                   <label className="meta" style={transformInlineLabelStyle}>
                     Gap (× cap){' '}
-                    <input
-                      type="number"
+                    <NumericField
                       min={0}
                       max={2}
-                      step="any"
                       value={stackGapFactor}
                       onChange={(e) => {
                         const v = Number(e.target.value);
@@ -603,15 +596,8 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
                 <>
                   <label className="meta" style={transformInlineLabelStyle}>
                     Radius (mm){' '}
-                    <input
-                      type="number"
+                    <NumericField
                       min={1}
-                      // step="any", NOT a number: a numeric step makes
-                      // `min` the base of a valid-value lattice, and an
-                      // off-lattice value fails HTML form validation,
-                      // which silently blocks the Insert submit. Any
-                      // positive radius is a legal arc.
-                      step="any"
                       value={arcRadiusMM}
                       onChange={(e) => {
                         const v = Number(e.target.value);
