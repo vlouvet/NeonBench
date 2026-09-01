@@ -24,7 +24,28 @@ export type FontData = {
 export type FontEntry = {
   key: FontKey;
   displayName: string;
-  capHeightUnits: number; // JHF units; one cap-height in source coordinates
+  /** Cap height in JHF source units: the distance from the cap line to
+   *  the baseline. `hersheyTextToRuns` scales every glyph by
+   *  `capHeightMM / capHeightUnits`, so this number is what makes
+   *  `capHeightMM` a literal millimetre measurement of a capital rather
+   *  than an arbitrary size knob.
+   *
+   *  MEASURED, not assumed — `capHeight.test.ts` re-derives it from the
+   *  bundled glyph JSON on every run. It was declared as 12 until Bug
+   *  #13; the real span is 21, which is why all single-stroke text
+   *  rendered 21/12 = 1.75× the requested height. */
+  capHeightUnits: number;
+  /** JHF source y of the BASELINE. Positive because the Hershey data
+   *  hangs its capitals above y=0: a capital runs from
+   *  `baselineUnits - capHeightUnits` (cap line) to `baselineUnits`.
+   *
+   *  Needed because `hersheyTextToRuns`'s `originY` anchors JHF y=0,
+   *  which is neither the cap line nor the baseline. Anything wanting a
+   *  real cap line must use `originY + (baselineUnits - capHeightUnits)
+   *  * scale`. Before Bug #13 that expression happened to equal
+   *  `originY - capHeightMM`, so callers hard-coded the shortcut; it
+   *  only worked because the declared cap height was wrong. */
+  baselineUnits: number;
   data: FontData;
   /** Static "preset" pair-kerning table. Keys are 2-char strings (the
    *  literal pair, e.g. 'AV', 'To', 'WA'); values are kerning offsets in
@@ -36,8 +57,8 @@ export type FontEntry = {
    *  Hershey side-bearings are already integers in JHF; pinning the
    *  preset to integer JHF values means a "−1 unit" tighten is the same
    *  visual amount across faces with different cap-height-units (if any
-   *  ever ship). Today all three faces use 12 units, but the data model
-   *  doesn't have to assume that.
+   *  ever ship). Today all four faces use the same 21 units, but the
+   *  data model doesn't have to assume that.
    *
    *  Sign convention: NEGATIVE = tighten (shapes move closer), positive
    *  = loosen. Matches per-pair kerning + optical-kern outputs. */
@@ -78,36 +99,43 @@ const SANS_PRESET_KERNING: Record<string, number> = {
 // empty so the dialog's preset-seed path doesn't fight the joiner.
 const CURSIVE_PRESET_KERNING: Record<string, number> = {};
 
-// Cap-height units per face. All Hershey simplex/duplex faces we ship
-// run from y=-12 (cap top) to y=0 (baseline), so cap-height = 12. Stored
-// per-entry so a future face with different metrics doesn't have to be a
-// special case.
+// Cap-height metrics per face. All four bundled faces use the standard
+// Hershey Roman metric: cap line at JHF y=-12, baseline at y=+9, so a
+// capital spans 21 units. (x-height starts at y=-5 for the Roman/sans
+// faces and y=0 for cursive; descenders reach y=+16.) Stored per-entry
+// so a future face with different metrics doesn't have to be a special
+// case — and re-measured from the glyph data by `capHeight.test.ts`,
+// because a declared metric that nothing checks is how Bug #13 happened.
 export const FONTS: Record<FontKey, FontEntry> = {
   rowmans: {
     key: 'rowmans',
     displayName: 'Roman Simplex (default)',
-    capHeightUnits: 12,
+    capHeightUnits: 21,
+    baselineUnits: 9,
     data: rowmans as FontData,
     presetKerning: ROMAN_PRESET_KERNING,
   },
   rowmand: {
     key: 'rowmand',
     displayName: 'Roman Duplex (thicker)',
-    capHeightUnits: 12,
+    capHeightUnits: 21,
+    baselineUnits: 9,
     data: rowmand as FontData,
     presetKerning: ROMAN_PRESET_KERNING,
   },
   futural: {
     key: 'futural',
     displayName: 'Sans Simplex (Futural)',
-    capHeightUnits: 12,
+    capHeightUnits: 21,
+    baselineUnits: 9,
     data: futural as FontData,
     presetKerning: SANS_PRESET_KERNING,
   },
   cursive: {
     key: 'cursive',
     displayName: 'Cursive (connecting script)',
-    capHeightUnits: 12,
+    capHeightUnits: 21,
+    baselineUnits: 9,
     data: cursive as FontData,
     presetKerning: CURSIVE_PRESET_KERNING,
     joinAdjacent: true,

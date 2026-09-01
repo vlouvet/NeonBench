@@ -181,17 +181,20 @@ export const DEFAULT_STACK_GAP_FACTOR = 0.25;
  * different feature.
  *
  * SPACING IS MEASURED INK-TO-INK, not by a baseline pitch of
- * `capHeightMM + gap`. That looks like the obvious implementation and it
- * is wrong for this font data: the bundled Hershey faces put the
- * baseline at JHF y = +9 and the cap top at y = −12, so a capital spans
- * ~21 units while `fonts.ts` declares `capHeightUnits: 12`. Rendered
- * text is therefore about 1.75× `capHeightMM` tall, and a
- * `capHeightMM + gap` pitch overlaps consecutive glyphs by half a
- * letter. (Verified in a browser: it produced eight min-spacing errors
- * and two stroke crossings on a four-letter stack.) `capHeightMM` stays
- * the knob that sizes the DEFAULT gap; the placement itself only ever
- * looks at where the ink actually is, which is correct whatever the
- * font's metrics claim.
+ * `capHeightMM + gap`. `capHeightMM` stays the knob that sizes the
+ * DEFAULT gap; the placement itself only ever looks at where the ink
+ * actually is, which is correct whatever the font's metrics claim.
+ *
+ * This was originally forced by Bug #13: `fonts.ts` declared
+ * `capHeightUnits: 12` against font data that measures 21, so rendered
+ * text was 1.75× `capHeightMM` tall and a `capHeightMM + gap` pitch
+ * overlapped consecutive glyphs by half a letter. (Verified in a
+ * browser at the time: eight min-spacing errors and two stroke
+ * crossings on a four-letter stack.) That metric is now correct, so the
+ * two approaches agree for plain capitals — but ink-to-ink stays,
+ * because it is still the only one that gets DESCENDERS right. A
+ * baseline pitch lets a 'g' tail run into the glyph below it; see the
+ * "keeps a descender from eating the gap below it" test.
  *
  * Ink-to-ink also means a descender does not eat into the gap below it,
  * and the air between letters reads as even down the whole column —
