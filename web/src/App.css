@@ -584,6 +584,77 @@
   height: 100%;
   background: #fafafa;
 }
+/* Tier 2 #91 — mm rulers. Absolutely positioned gutters OVERLAYING the
+   canvas, so the design transform needs no ruler-sized correction. The
+   two-class selector is deliberate: it has to outrank the `.editor-canvas
+   svg { width: 100%; height: 100% }` rule directly above. */
+.editor-canvas svg.canvas-ruler {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  background: transparent;
+  z-index: 3;
+  touch-action: none;
+}
+.editor-canvas svg.canvas-ruler-h {
+  cursor: row-resize;
+}
+.editor-canvas svg.canvas-ruler-v {
+  cursor: col-resize;
+}
+.canvas-ruler .ruler-bg {
+  fill: #f1f3f6;
+}
+.canvas-ruler .ruler-edge {
+  stroke: #c8cdd6;
+  stroke-width: 1;
+}
+.canvas-ruler .ruler-tick {
+  stroke: #9aa3b0;
+  stroke-width: 1;
+}
+.canvas-ruler .ruler-tick.major {
+  stroke: #5b6470;
+}
+.canvas-ruler .ruler-label {
+  fill: #5b6470;
+  font-size: 9px;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  user-select: none;
+}
+/* Where a guide sits, echoed onto its ruler. Same hues as the canvas
+   lines so the two read as one object. */
+.canvas-ruler .ruler-guide-mark {
+  stroke: #5b8cff;
+  stroke-width: 1;
+}
+.canvas-ruler .ruler-guide-mark.construction {
+  stroke: #00a389;
+}
+.canvas-ruler .ruler-cursor {
+  stroke: #ff3b6b;
+  stroke-width: 1;
+}
+.canvas-ruler-corner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  z-index: 4;
+  background: #e7eaef;
+  border-right: 1px solid #c8cdd6;
+  border-bottom: 1px solid #c8cdd6;
+  box-sizing: border-box;
+  font-size: 8px;
+  line-height: 22px;
+  text-align: center;
+  color: #7b8492;
+  user-select: none;
+  pointer-events: none;
+}
 /* Center grab handle on a selection — drag to move the run(s). */
 .move-handle {
   cursor: grab;
@@ -1472,6 +1543,12 @@
      output. The PDF path doesn't share this stylesheet, but a parent
      File→Print path does, so suppress the markers explicitly. */
   .validation-marker {
+    display: none !important;
+  }
+  /* Tier 2 #91 — rulers and the corner box are editor chrome, not part
+     of the design. Never print them. */
+  .canvas-ruler,
+  .canvas-ruler-corner {
     display: none !important;
   }
 }

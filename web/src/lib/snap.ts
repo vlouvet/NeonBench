@@ -1,19 +1,26 @@
-// Drawing-tool snap helpers (Tier 3 #34).
+// Drawing-tool snap helpers (Tier 3 #34, extended by Tier 2 #91).
 //
-// Three snap modes compose during the in-progress drawing of pen / rect
+// Four snap modes compose during the in-progress drawing of pen / rect
 // / circle / arc shapes:
 //
-//   geometry > angle > grid
+//   geometry > guides > angle > grid
 //
 //   1. Geometry — when the cursor is within `snapRadiusMM` of an existing
 //      run's vertex (or segment midpoint) the working point jumps to that
 //      exact location. A real geometric point should beat a 5 mm grid
 //      intersection nearby — operators expect "click on that vertex" to
 //      land on the vertex, not the nearest grid cell.
-//   2. Angle — Shift-held while dragging the working segment. The angle
+//   2. Guides — construction lines dragged off the canvas rulers (Tier 2
+//      #91). Ranked BELOW geometry because "land exactly on this existing
+//      vertex" is a harder promise than "land on this construction line",
+//      and above angle/grid because the operator drew that line on purpose.
+//      A guide locks only its own axis; the free coordinate falls through
+//      to grid snap. An h-guide and a v-guide in range at once yield their
+//      intersection.
+//   3. Angle — Shift-held while dragging the working segment. The angle
 //      from the previous anchor to the cursor snaps to the nearest 15°
 //      increment (same magnitude, snapped direction).
-//   3. Grid — the existing `snapEnabled + snapMM` quantize-to-grid that
+//   4. Grid — the existing `snapEnabled + snapMM` quantize-to-grid that
 //      EditorCanvas's `snapPoint` already implements; applied last so a
 //      free-cursor click still rounds to the user-set grid.
 //
@@ -147,17 +154,82 @@ export function findGeometrySnap(
   return best;
 }
 
-// Compose all three snap modes for a working point. Returns the snapped
+// Tier 2 #91 — a construction / raceway guide reduced to what snapping
+// needs. `axis: 'h'` is a horizontal line at y = posMM; `'v'` is a vertical
+// line at x = posMM. Kept structural (no `Guideline` import) so this module
+// stays free of api.ts, same as `SnapRunLike`.
+export type SnapGuideLike = {
+  id: string;
+  axis: 'h' | 'v';
+  posMM: number;
+};
+
+// Which guide, if any, captured each axis. Both null means no guide fired.
+// Both non-null is the intersection case — the cursor sat inside the snap
+// radius of a horizontal AND a vertical guide, and the working point lands
+// exactly where they cross.
+export type GuideSnap = {
+  h: SnapGuideLike | null;
+  v: SnapGuideLike | null;
+};
+
+// Nearest horizontal guide (by |y − posMM|) and nearest vertical guide (by
+// |x − posMM|) within `radius` mm of `target`, independently. The two axes
+// are probed separately on purpose: a guide constrains ONE coordinate, so
+// "closest guide overall" would be the wrong question — it would let a
+// nearby horizontal guide suppress a vertical one the cursor is also sitting
+// on, and the intersection case would never fire.
+export function findGuideSnap(
+  guides: ReadonlyArray<SnapGuideLike>,
+  target: Point,
+  radius: number,
+): GuideSnap {
+  let bestH: SnapGuideLike | null = null;
+  let bestHD = radius;
+  let bestV: SnapGuideLike | null = null;
+  let bestVD = radius;
+  for (const g of guides) {
+    if (!Number.isFinite(g.posMM)) continue;
+    if (g.axis === 'v') {
+      const d = Math.abs(target[0] - g.posMM);
+      if (d <= bestVD) {
+        bestVD = d;
+        bestV = g;
+      }
+    } else {
+      const d = Math.abs(target[1] - g.posMM);
+      if (d <= bestHD) {
+        bestHD = d;
+        bestH = g;
+      }
+    }
+  }
+  return { h: bestH, v: bestV };
+}
+
+// Compose all four snap modes for a working point. Returns the snapped
 // world-space point AND the geometry-snap result (for visual cue render
 // at the call site — the EditorCanvas paints a hover ring on it).
 //
 // Composition rules (in order):
-//   1. If geometry snap fires, return that exact point. Skip angle
-//      and grid — a "lock to vertex" intent should not be re-quantized.
-//   2. Else if `anchor` is given AND `shiftHeld`, lock to nearest
+//   1. If geometry snap fires, return that exact point. Skip guides,
+//      angle and grid — a "lock to vertex" intent should not be
+//      re-quantized.
+//   2. Else if a construction guide is in range on either axis, lock
+//      that axis to the guide. The OTHER axis is not held hostage: it
+//      falls through to grid snap (or stays free when grid snap is off),
+//      so a horizontal guide constrains y and leaves x alone. Both axes
+//      firing at once gives the intersection. Skip angle — the operator
+//      drew that line to land on it.
+//   3. Else if `anchor` is given AND `shiftHeld`, lock to nearest
 //      `stepDeg`-degree direction from `anchor`. Skip grid — the user
 //      explicitly chose a precise angle.
-//   3. Else apply grid snap (no-op when grid snap is off).
+//   4. Else apply grid snap (no-op when grid snap is off).
+//
+// Guide snapping is gated on `snapEnabled`, the same toggle as grid
+// snap: "snap off" has to mean the cursor is genuinely free, or the
+// toggle stops being trustworthy. Geometry snap keeps its existing
+// always-on behavior.
 //
 // `anchor` is the fixed point the angle snap pivots around — for the
 // pen tool it's the last committed vertex; for rect/circle/arc it's
@@ -166,7 +238,12 @@ export type ComposedSnap = {
   point: Point;
   geometry: GeometrySnap | null;
   angleLocked: boolean;
+  // Tier 2 #91 — which guide captured each axis, for the highlight the
+  // canvas paints on a guide that is actively attracting the cursor.
+  guides: GuideSnap;
 };
+
+const NO_GUIDE_SNAP: GuideSnap = { h: null, v: null };
 
 export function composeSnap(args: {
   cursor: Point;
@@ -177,6 +254,7 @@ export function composeSnap(args: {
   snapEnabled: boolean;
   snapMM: number;
   stepDeg?: number;
+  guides?: ReadonlyArray<SnapGuideLike>;
 }): ComposedSnap {
   const {
     cursor,
@@ -187,22 +265,50 @@ export function composeSnap(args: {
     snapEnabled,
     snapMM,
     stepDeg = ANGLE_SNAP_STEP_DEG,
+    guides,
   } = args;
+  const radius = snapRadiusMM(scale, snapEnabled, snapMM);
   // Geometry first — this is the "click here, get this exact point"
   // hard lock. Always probed (not gated on snapEnabled) since the user
   // expects existing geometry to attract the cursor regardless of the
   // grid-snap toggle. The radius itself adapts to the toggle though
   // (see `snapRadiusMM`).
-  const geometry = findGeometrySnap(runs, cursor, snapRadiusMM(scale, snapEnabled, snapMM));
+  const geometry = findGeometrySnap(runs, cursor, radius);
   if (geometry) {
-    return { point: geometry.point, geometry, angleLocked: false };
+    return { point: geometry.point, geometry, angleLocked: false, guides: NO_GUIDE_SNAP };
+  }
+  // Guides next. Same radius as geometry so the two attractors feel
+  // calibrated identically, but only when the snap toggle is on.
+  if (snapEnabled && guides && guides.length > 0) {
+    const hit = findGuideSnap(guides, cursor, radius);
+    if (hit.h || hit.v) {
+      // The un-captured axis still gets the grid treatment — a guide
+      // constrains one coordinate, not the point.
+      const gridded = snapToGrid(cursor, snapEnabled, snapMM);
+      return {
+        point: [hit.v ? hit.v.posMM : gridded[0], hit.h ? hit.h.posMM : gridded[1]],
+        geometry: null,
+        angleLocked: false,
+        guides: hit,
+      };
+    }
   }
   // Angle next — only when an anchor is available AND shift is held.
   if (anchor && shiftHeld) {
-    return { point: snapToAngle(anchor, cursor, stepDeg), geometry: null, angleLocked: true };
+    return {
+      point: snapToAngle(anchor, cursor, stepDeg),
+      geometry: null,
+      angleLocked: true,
+      guides: NO_GUIDE_SNAP,
+    };
   }
   // Grid as the fallback. Non-cursor sites (label drop, vertex drag)
   // can call `snapToGrid` directly; this composed path is for the
-  // drawing tools that want geometry > angle > grid in lockstep.
-  return { point: snapToGrid(cursor, snapEnabled, snapMM), geometry: null, angleLocked: false };
+  // drawing tools that want geometry > guides > angle > grid in lockstep.
+  return {
+    point: snapToGrid(cursor, snapEnabled, snapMM),
+    geometry: null,
+    angleLocked: false,
+    guides: NO_GUIDE_SNAP,
+  };
 }

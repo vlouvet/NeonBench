@@ -18,6 +18,7 @@ web UI.
 > with stitched single-tube output, **groups + layers panel** with
 > per-group visibility + lock toggles, multi-select + drag-drop image
 > upload, snap-to-angle / snap-to-geometry on every drawing tool,
+> **mm rulers with drag-off construction guides and snap-to-guides**,
 > common + custom electrode housings, connect-tubes (jumper runs),
 > move-opening / break-tube-open, multi-vertex select + drag + merge
 > in node-edit mode, a right-click node context menu, circular arc
@@ -329,7 +330,12 @@ under **Git Bash**, which ships with Git for Windows.
      the glass, not a false positive.
    - **Snap** — toolbar toggle + mm spacing. Affects label, dimension,
      and vertex drag (run-path picks always snap to the nearest
-     polyline vertex).
+     polyline vertex). Drawing tools compose four snap modes in
+     priority order: existing geometry, then construction guides, then
+     15° angle lock (Shift), then the mm grid.
+   - **Rulers** — toolbar toggle (on by default). mm rulers along the
+     canvas top and left edge, labelled at whichever step stays legible
+     at the current zoom, with a cursor position indicator on each.
    Per-run sidebar: gas/phosphor color, diameter override, free-text
    notes (transformer specs, gas, voltage), simplify / reverse / neonize
    path ops.
@@ -362,6 +368,18 @@ under **Git Bash**, which ships with Git for Windows.
    splitting again *adds* a second cut rather than undoing the first;
    undo is the way back, and it is one step. Deleting the guideline
    leaves the cuts and their raceway tag alone.
+
+   **Construction guides** — press on a ruler and drag into the canvas
+   to pull out a guide: the top ruler gives a horizontal one, the left
+   ruler a vertical one. Release back over a ruler to cancel. Drag a
+   guide to move it, click to select, `Delete` to remove, `Esc` to
+   deselect. Guides are teal with a fine dash, to keep them clearly
+   apart from the blue long-dash raceway guideline — a raceway guide
+   means "tubes get cut here", a construction guide means nothing to
+   the fabricator and never reaches the PDF, DXF, or the split action.
+   With **Snap** on, drawing tools lock to guides: a horizontal guide
+   pins y and leaves x free (or grid-snapped), and a horizontal plus a
+   vertical guide together land you on their intersection.
 
    **Split overlong tubes** — the validator errors when a run exceeds
    the tube spec's max segment length, because it will not come off a

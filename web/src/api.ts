@@ -174,21 +174,41 @@ export type DesignDoc = {
   // pre-33b docs — consumers should treat `undefined` and `[]` as
   // equivalent ("no groups defined").
   groups?: Group[];
-  // Tier 2 #74 — editor construction lines. V1 is horizontal-only
-  // (`kind: 'raceway'`). Mirrors `designdoc.Doc.Guidelines`; the Go
-  // decoder runs with DisallowUnknownFields, so this type and the Go
-  // struct have to move together or every save 400s.
+  // Tier 2 #74 / #91 — editor construction lines. Mirrors
+  // `designdoc.Doc.Guidelines`; the Go decoder runs with
+  // DisallowUnknownFields, so this type and the Go struct have to move
+  // together or every save 400s.
   guidelines?: Guideline[];
 };
 
-// Tier 2 #74 — a horizontal construction line. `id` doubles as the
-// `raceway_id` stamped on every run split at this line, so "these tubes
-// share a raceway" has one source of truth instead of two that can drift.
-// Mirrors `internal/designdoc.Guideline` byte-for-byte.
+// Tier 2 #74 / #91 — a construction line in the editor. Mirrors
+// `internal/designdoc.Guideline` byte-for-byte.
+//
+// `kind: 'raceway'` is load-bearing: that guideline's `id` doubles as the
+// `raceway_id` stamped on every run split at it, so "these tubes share a
+// raceway" has one source of truth instead of two that can drift. Raceways
+// are horizontal-only — the Go decoder rejects `axis: 'v'` on one, because
+// splitTubesAtRaceway reads `y_mm` and a vertical back-channel strip is not
+// something a shop can build.
+//
+// `kind: 'construction'` is a pure layout aid (Tier 2 #91): dragged off the
+// canvas rulers, snapped to while drawing, and invisible to the PDF / DXF
+// emitters and to the split path.
+export type GuidelineKind = 'raceway' | 'construction';
+
+// Undefined and 'h' both mean horizontal; only 'v' moves the position over
+// to `x_mm`. Absent on every pre-#91 doc, which is what keeps their JSON
+// byte-identical through an editor round-trip.
+export type GuidelineAxis = 'h' | 'v';
+
 export type Guideline = {
   id: string;
-  kind: 'raceway';
+  kind: GuidelineKind;
   y_mm: number;
+  // Position for `axis: 'v'` guides. Omitted (not 0) on horizontal ones —
+  // the Go struct tags it omitempty for the same reason.
+  x_mm?: number;
+  axis?: GuidelineAxis;
 };
 
 // Tier 3 #33b — display-name + identity for one group of runs.
