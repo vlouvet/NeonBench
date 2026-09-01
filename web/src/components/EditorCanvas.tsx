@@ -425,6 +425,10 @@ export default function EditorCanvas({
   // is exactly what laying out a raceway sign looks like. Only the SPLIT
   // action discriminates by kind.
   const snapGuides = useMemo(() => snapGuidesForDoc(doc), [doc]);
+  // The four tools that place points by clicking empty canvas. Guides make
+  // themselves click-through for these — see the guide render block.
+  const shapeToolActive =
+    tool === 'pen' || tool === 'rect' || tool === 'circle' || tool === 'arc';
   // Insert-doubleback tool: hover-tracked nearest segment + parametric
   // position so the canvas can render a ghost preview of the hairpin
   // before the user commits.
@@ -2204,11 +2208,21 @@ export default function EditorCanvas({
             return (
               <g key={g.id}>
                 {/* Fat transparent line: the visible stroke is 1px at any
-                    zoom, which is not a click target. */}
+                    zoom, which is not a click target.
+
+                    It stands down entirely while a shape tool is active
+                    (Tier 2 #91). The whole point of a guide is to draw ON
+                    it, and this band is 10px wide — leaving it live would
+                    mean every click aimed at the guide grabbed the guide
+                    instead of placing a vertex, i.e. the one gesture the
+                    feature exists for would be the one it swallowed. Guides
+                    are still selectable and draggable under every
+                    non-drawing tool. */}
                 <line
                   {...p}
                   stroke="transparent"
                   strokeWidth={10 / transform.k}
+                  pointerEvents={shapeToolActive ? 'none' : undefined}
                   style={{ cursor: vertical ? 'ew-resize' : 'ns-resize' }}
                   onPointerDown={(e) => beginGuidelineDrag(e, g.id, vertical)}
                 />
