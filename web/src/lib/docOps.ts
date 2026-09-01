@@ -24,7 +24,7 @@ import {
   type HousingType,
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
-import { defaultDirection } from './runArcs';
+import { defaultDirection, runArcs } from './runArcs';
 import { segmentCount, segmentTypeAt } from './arcGeom';
 import {
   offsetOpenPolyline,
@@ -833,24 +833,106 @@ function perpDist(p: [number, number], a: [number, number], b: [number, number])
   return Math.abs((dy * p[0] - dx * p[1]) + b[0] * a[1] - b[1] * a[0]) / len;
 }
 
-// reverseRun flips the polyline order and rewrites every index that
-// referenced a polyline vertex (electrodes) so they keep pointing at
-// the same physical point. Live-arc indices stay numerically valid:
-// their length doesn't change, just the walk direction. Useful when
-// the user wants to swap which end of an open run is "start" — affects
-// electrode-to-electrode order and the bend-list numbering.
+// reverseRun flips the run's direction of travel: the polyline order is
+// reversed and every index that referenced a polyline vertex or a live-arc
+// position is rewritten so it keeps pointing at the same physical place.
+// Useful when the user wants to swap which end of an open run is "start" —
+// it drives electrode-to-electrode order and the bend-list numbering.
+//
+// Arc segments (Tier 3 #78) make this more than an array reverse.
+// `segment_types[i]` describes the segment LEAVING vertex i, so after the
+// reversal index i joins a different pair of vertices than it did before and
+// the flags have to travel with the chords they describe: for an open
+// n-point run new j = old (n-2-j), for a closed run new j = old (n-2-j) mod
+// n. Leaving them alone is what Bug #11 reported — curvature jumping onto
+// whichever chords happened to inherit the old indices.
+//
+// KNOWN LIMITATION — arc handedness. `arcFor(p0, p1)` always bows toward
+// (-dy, dx), i.e. to the LEFT of travel, and `segment_types` cannot say
+// otherwise: internal/designdoc/types.go admits exactly "line" and "arc".
+// Reversing a chord flips that normal, so after ONE reverse each arc is
+// drawn mirrored about its (unchanged) chord. Vertices, chords, radii and
+// arc lengths all survive; only the side the bow falls on does not.
+// Preserving it properly needs a signed bulge — or "arc-cw"/"arc-ccw" — in
+// the schema, a Go-and-TypeScript change well outside this function. Two
+// consequences fall out of that and are pinned by tests:
+//   - reverseRun is an involution. Reversing twice restores the exact shape,
+//     because the two handedness flips cancel.
+//   - a mirror is reflect-then-reverse, and there the reflection's handedness
+//     flip cancels the reversal's, so mirrored arcs land on the right side.
 export function reverseRun(doc: DesignDoc, runId: string): DesignDoc {
   return mapRun(doc, runId, (run) => {
     const pts = run.polyline.points;
     const n = pts.length;
     if (n < 2) return run;
-    const reversed = pts.slice().reverse();
+    const closed = !!run.polyline.closed;
     const flip = (i: number) => n - 1 - i;
-    return {
-      ...run,
-      polyline: { ...run.polyline, points: reversed },
-      electrodes: (run.electrodes ?? []).map((e) => ({ ...e, point_index: flip(e.point_index) })),
+
+    const polyline = { ...run.polyline, points: pts.slice().reverse() };
+    // Only rebuild the array when one exists: a pre-#78 run has no
+    // segment_types and must round-trip without growing one, and the Go
+    // decoder rejects an array that isn't exactly segmentCount long.
+    if (run.polyline.segment_types) {
+      const count = segmentCount(run);
+      const moved: ('line' | 'arc')[] = [];
+      for (let j = 0; j < count; j++) {
+        const src = closed ? (((n - 2 - j) % n) + n) % n : n - 2 - j;
+        moved.push(segmentTypeAt(run, src));
+      }
+      polyline.segment_types = moved;
+    }
+
+    const next: DesignRun = { ...run, polyline };
+    if (run.electrodes) {
+      next.electrodes = run.electrodes.map((e) => ({ ...e, point_index: flip(e.point_index) }));
+    }
+    // Walking a closed loop the other way swaps which half of it is lit, so
+    // an explicit direction has to flip to keep the same arc live. An unset
+    // direction needs no help: defaultDirection measures the two halves and
+    // its answer survives the reversal on its own.
+    if (closed && run.direction && (run.electrodes?.length ?? 0) === 2) {
+      next.direction = run.direction === 'forward' ? 'backward' : 'forward';
+    }
+
+    // Blockouts, annotations and bends are anchored to positions along the
+    // LIVE walk, not to raw polyline indices — the convention splitRun and
+    // insertDoubleback already follow. That walk does NOT always turn around
+    // with the point list: an open run's walk is the polyline itself so it
+    // reverses, but a closed two-electrode run's walk still starts at
+    // electrodes[0] — which keeps its identity here — and, with `direction`
+    // flipped above, covers the same half in the same order, so its positions
+    // do not move at all. Resolving each position through the polyline vertex
+    // it names is exact for both cases; assuming L-1-k is not.
+    const oldLive = runArcs(run).live;
+    const newLive = runArcs(next).live;
+    const posOfVertex = new Map<number, number>();
+    for (let i = newLive.length - 1; i >= 0; i--) posOfVertex.set(newLive[i], i);
+    const livePos = (k: number) => {
+      const clamped = Math.min(Math.max(k, 0), oldLive.length - 1);
+      return posOfVertex.get(flip(oldLive[clamped])) ?? clamped;
     };
+    const walkReversed = oldLive.length > 1 && livePos(0) > livePos(oldLive.length - 1);
+
+    if (run.blockouts) {
+      next.blockouts = run.blockouts.map((b) => {
+        const s = livePos(b.start_live_index);
+        const e = livePos(b.end_live_index);
+        // A blockout spans start -> end walking FORWARD, wrapping past the
+        // end of a closed live arc. When the walk turns around, its two ends
+        // trade places — one formula that is right for wrapping and
+        // non-wrapping spans alike, and an identity when applied twice.
+        return walkReversed
+          ? { start_live_index: e, end_live_index: s }
+          : { start_live_index: s, end_live_index: e };
+      });
+    }
+    if (run.annotations) {
+      next.annotations = run.annotations.map((a) => ({ ...a, live_index: livePos(a.live_index) }));
+    }
+    if (run.bends) {
+      next.bends = run.bends.map((b) => ({ live_index: livePos(b.live_index) }));
+    }
+    return next;
   });
 }
 
