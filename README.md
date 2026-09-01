@@ -309,6 +309,36 @@ under **Git Bash**, which ships with Git for Windows.
      letters into one continuous tube; the arc bends that stitched
      script intact. The dialog's live preview shows the transformed
      result, which is the exact geometry Insert puts on the canvas.
+   - **Outline text** — the *other* text tool, and the difference
+     matters. **Add text** gives you Hershey single-stroke
+     centrelines, which are already tube paths. **Outline text** reads
+     a customer-supplied `.ttf` / `.otf` / `.woff` and gives you the
+     **filled outline** of each glyph — the edge of the ink, not the
+     centre of a tube. Bend an outline as drawn and you get two tubes
+     per stroke, so an outline is a starting point: either
+     **Neonize** each contour into a parallel tube pair, or insert it
+     with the **channel-letter face** flag so the print PDF emits a
+     return strip per contour. The dialog asks which before you
+     insert.
+
+     Everything comes from the font's own tables. Cap height is the
+     measured ink height of that face's `H` (falling back to the OS/2
+     `sCapHeight` when a face has no `H`, then to a fraction of the
+     em, and the dialog says which), so typing `250` gives you a
+     capital that measures 250 mm — round letters overshoot it
+     slightly, which is real typography, not an error. Kerning uses
+     the face's own pairs. Counters are emitted as separate contours
+     with the opposite winding, so the hole in an `o` stays a hole.
+     Curves are flattened to a chord tolerance you set in mm (default
+     0.25 mm).
+
+     **NeonBench ships no fonts.** Typefaces are licensed and bundling
+     one would be redistribution, so you load the customer's file from
+     your own machine; it is parsed in the browser, never uploaded and
+     never stored in the project. Outlines derived from a licensed
+     face are covered by your licence with its foundry. Note that most
+     macOS system fonts are `.ttc` collections, which cannot be read —
+     export a single `.ttf` or `.otf`.
    - **Pen / Rect / Circle / Arc** — draw directly on the canvas. Pen
      drops a polyline a click at a time (double-click or Enter to
      commit, Esc cancels). Rect and Circle are pointer-down →
@@ -417,6 +447,22 @@ under **Git Bash**, which ships with Git for Windows.
    the run's direction internally to keep every arc bowing the way it
    should, so the canvas, the printed pattern and the DXF all agree.
    Runs in a locked layer are left out and the buttons say so.
+
+   **Step & repeat** — the same section arrays the selection into a
+   grid: a count across and down, and a pitch measured either *edge to
+   edge* (gap) or *centre to centre*. The original stays put as the
+   top-left cell. The preview line shows how many copies, how many runs
+   that adds, the overall size of the finished array and the actual
+   step, so a gap entered where a centre pitch was meant is visible
+   before you commit; arrays over 400 new runs are refused. The gap is
+   measured off the true outline too, so a row of curved tubes really
+   is that far apart. Copies carry the original's colour, diameter,
+   channel-letter face flag and depth — but **not** its raceway, since
+   a copy 500 mm away is not screwed to the same back-channel and would
+   otherwise appear on that raceway's return-strip page. Each copy of a
+   grouped selection gets its own new group ("E copy 1", "E copy 2"),
+   so a multi-run letter still travels as one unit while staying
+   separately selectable. One undo step.
 
 6. **Save** the edits. A new design version row is written; navigate
    between versions in the project page's history list.

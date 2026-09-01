@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
@@ -30,10 +30,21 @@ import { NEON_COLORS, colorHex } from '../lib/neonColors';
 import { effectiveBends } from '../lib/bends';
 import * as arrange from '../lib/arrange';
 import * as ops from '../lib/docOps';
+import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepRepeat';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
+
+// Tier 2 #99 — the OpenType dialog pulls in opentype.js, which is 250 kB
+// of parser (73 kB gzipped) that most editing sessions never touch.
+// `lazy()` puts it in its own chunk, fetched the first time the operator
+// opens the dialog, so the editor's first paint pays nothing for it —
+// the same trade App.tsx already makes for the three.js preview.
+// Measured with vite 8: main chunk 576.18 kB -> 576.81 kB (+0.6 kB), plus a
+// 250.83 kB / 73.16 kB-gzip OutlineTextDialog chunk. Imported eagerly it
+// pushed the main chunk to 827.82 kB / 239.98 kB gzip instead.
+const OutlineTextDialog = lazy(() => import('../components/OutlineTextDialog'));
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -190,6 +201,10 @@ export default function EditorPage() {
   }, [sidebarWidth]);
   const [hersheyOpen, setHersheyOpen] = useState(false);
   const [channelLetterOpen, setChannelLetterOpen] = useState(false);
+  // Tier 2 #99 — OpenType outline text. Separate from `hersheyOpen`
+  // on purpose: the two dialogs emit different KINDS of run (open
+  // centreline vs closed outline) and must not be confusable.
+  const [outlineTextOpen, setOutlineTextOpen] = useState(false);
   // Tier 3 #62 — housing-picker modal target. Non-null when the
   // operator right-clicked an electrode pin; carries enough context
   // (run id + electrode index within run.electrodes) for the modal
@@ -1356,6 +1371,34 @@ export default function EditorPage() {
     applyOp((prev) => ({ doc: arrange.reorderRuns(prev, selectedRunIds, move) }));
   }
 
+  // Tier 3 #103 — step and repeat. One applyOp, so a 4 x 3 array is a single
+  // undo step rather than eleven.
+  //
+  // The plan is recomputed here against the RENDERED doc purely to word the
+  // toast; `applyOp` computes the doc from the same value, so the number in
+  // the message and the number of runs added cannot disagree. The op itself
+  // re-plans internally, which is what keeps it safe as a pure export.
+  //
+  // The selection is deliberately left on the ORIGINAL runs, matching the
+  // other four arrange ops: the usual next move is to array again on the
+  // other axis, and re-selecting the source by hand each time is worse than
+  // clicking the new copies when you actually want them.
+  function stepRepeatSelected(opts: StepRepeatOptions) {
+    if (!doc) return;
+    const plan = stepRepeatPlan(doc, selectedRunIds, opts);
+    if (plan.error) {
+      setStatusMessage(plan.error);
+      return;
+    }
+    applyOp((prev) => ({ doc: stepRepeat(prev, selectedRunIds, opts) }));
+    setStatusMessage(
+      `Arrayed ${plan.runIds.length} run${plan.runIds.length === 1 ? '' : 's'} ` +
+        `into a ${plan.countX} × ${plan.countY} grid — added ${plan.newRuns} run` +
+        `${plan.newRuns === 1 ? '' : 's'}. Copies keep their channel-letter settings; ` +
+        `they do not inherit the raceway.`,
+    );
+  }
+
   // Neonize replaces the selected run with parallel offset run(s) — the
   // "double-stroke" channel-letter primitive (NW #123/131/141). Default
   // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
@@ -1501,6 +1544,42 @@ export default function EditorPage() {
     }));
     editDoc((prev) => ops.insertChannelLetterRuns(prev, translated));
     setChannelLetterOpen(false);
+  }
+
+  // Insert OpenType outline text (Tier 2 #99). Same centring pattern as
+  // the two dialogs above, but the runs are CLOSED contours rather than
+  // open centrelines: they are the boundary of the ink, and the operator
+  // turns them into tubes afterwards with Neonize or the channel-letter
+  // face flag. The dialog says so; this handler must not quietly convert
+  // them into anything else.
+  function insertOutlineText(runs: DesignRun[]) {
+    if (!doc || runs.length === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const r of runs) {
+      for (const [x, y] of r.polyline.points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+    const [vx, vy, vw, vh] = doc.view_box_mm;
+    const cx = vx + vw / 2;
+    const cy = vy + vh / 2;
+    const dx = Number.isFinite(minX) ? cx - (minX + maxX) / 2 : 0;
+    const dy = Number.isFinite(minY) ? cy - (minY + maxY) / 2 : 0;
+    const translated = runs.map<DesignRun>((r) => ({
+      ...r,
+      // Bug #02: seed diameter from the project tube spec so an inserted
+      // run reports a real size instead of "ø ?mm".
+      tube_diameter_mm: r.tube_diameter_mm ?? tubeSpec?.diameter_mm,
+      polyline: {
+        ...r.polyline,
+        points: r.polyline.points.map(([x, y]) => [x + dx, y + dy] as [number, number]),
+      },
+    }));
+    editDoc((prev) => ops.appendRuns(prev, translated, 'otf'));
+    setOutlineTextOpen(false);
   }
 
   // Switching the project's tube spec from inside the editor needs to do
@@ -1756,6 +1835,12 @@ export default function EditorPage() {
               onClick={() => setHersheyOpen(true)}
               title="Insert Hershey single-stroke text as new tube runs"
             >Add text</button>
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => setOutlineTextOpen(true)}
+              title="Set text in a customer-supplied OpenType/TrueType font as closed OUTLINES (not tube centrelines) — then Neonize or use as channel-letter faces"
+            >Outline text</button>
             <button
               type="button"
               className="tool-btn"
@@ -2225,6 +2310,7 @@ export default function EditorPage() {
                 onDistribute={distributeSelected}
                 onMirror={mirrorSelected}
                 onReorder={reorderSelected}
+                onStepRepeat={stepRepeatSelected}
               />
             </div>
           )}
@@ -2654,6 +2740,14 @@ export default function EditorPage() {
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
         />
+      )}
+      {outlineTextOpen && (
+        <Suspense fallback={null}>
+          <OutlineTextDialog
+            onCancel={() => setOutlineTextOpen(false)}
+            onInsert={(runs) => insertOutlineText(runs)}
+          />
+        </Suspense>
       )}
       {channelLetterOpen && (
         <ChannelLetterWizardDialog
