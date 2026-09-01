@@ -500,6 +500,10 @@ Round H Tier 3 specs drafted in PR #107 alongside the Tier 2 batch. These polish
 
 103. ✅ **Step and repeat (array duplication)** — shipped in PR #157. Verified in a real browser against the one discriminating case: the seeded arc bows +y with sagitta 50 mm, so a vertical gap-mode array steps 150 mm (100 gap + 50 bow) where a hull-based bbox would step 100 and overlap the source's bow — wrong only on the printed pattern. Spec: `specs/done/tier3-103-step-and-repeat.md`.
 
+110. **What Neonize's output should inherit** *(follow-up from #98 + Bug #15)*. `neonize`'s `withMeta` carries only diameter, colour and notes — the fifth instance of the carry-and-remap class. **But "carry everything" is the wrong fix here**, which is why it is a spec and not a bug: Neonize consumes a face *outline* and emits the *tube paths that light it*, so the output is a different kind of object. `is_channel_letter_face` must NOT carry — flagging tubes as faces would generate return-strip pages for parts that do not exist. `group_id`, `raceway_id` and `kind` should carry. Per-field reasoning and the decision date are in the spec. Spec: `specs/active/tier3-110-neonize-metadata-carry.md`.
+
+111. **`polylineLengthMM` diverges from the validator** *(filed by Bug #16's agent, deliberately not fixed there)*. The TS helper sums chords; the Go validator flattens through `ToSVG` → cubics and measures the curve. On a run with arcs the two disagree, so `autoSplitOverlongTubes` can believe it has fixed a run the validator still flags — **exactly the failure mode Tier 2 #75's spec warned about**, now real because arcs shipped. Not fixed in PR #161 because it ripples into `EditorPage.tsx`, which a parallel agent owned. Make the TS side arc-aware and re-pin the "measure the way the validator measures" invariant.
+
 ### Tier 4 — Deliberate "no for now"
 
 These are NW-the-graphic-design-suite, not NW-the-neon-tool. Skip unless a shop specifically asks:
