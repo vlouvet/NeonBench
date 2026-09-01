@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
 	"github.com/vlouvet/neonbench/internal/printpdf"
@@ -75,6 +76,34 @@ func (s *apiServer) handlePrintPDF(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("mirror") == "0" {
 		mirrorOff := false
 		opts.Mirror = &mirrorOff
+	}
+	// rotate=90 / rotate=fit (Tier 2 #93). Absent (or explicitly empty)
+	// means no rotation, which is what makes this parameter absent-safe:
+	// a caller that never mentions it gets the exact PDF NeonBench
+	// produced before the option existed. Any other value is a 400
+	// rather than a silently-ignored typo — `?rotate=fitt` producing an
+	// un-rotated 6-sheet print with no complaint is the failure mode
+	// worth spending an error code on.
+	rotate := r.URL.Query().Get("rotate")
+	if !printpdf.ValidRotate(rotate) {
+		writeError(w, http.StatusBadRequest, "unknown rotate: "+rotate+
+			" (try: 90, fit)")
+		return
+	}
+	opts.Rotate = rotate
+	// copies=N (Tier 2 #93 step-and-repeat). Validated and clamped HERE
+	// rather than in the renderer so bad input is a 400 instead of a 200
+	// with a surprising PDF — the same contract the `paper` param above
+	// follows. Non-numeric, zero, negative and above-MaxCopies all fail
+	// the same way; N copies of the full page set is the only success.
+	if raw := r.URL.Query().Get("copies"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 1 || n > printpdf.MaxCopies {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf(
+				"copies must be a whole number between 1 and %d", printpdf.MaxCopies))
+			return
+		}
+		opts.Copies = n
 	}
 	opts.ProjectName = project.Name
 	if v.Label != nil {
