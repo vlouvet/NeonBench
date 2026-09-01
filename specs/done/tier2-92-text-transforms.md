@@ -1,6 +1,6 @@
 # Tier 2 #92 — Text: case, slant, vertical stacking, and text on an arc
 
-> **Status:** active · started 2026-08-31 · branch `task/2-text-transforms`
+> **Status:** done · started 2026-08-31 · branch `task/2-text-transforms` · PR #146
 
 ## Goal
 
