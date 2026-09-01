@@ -782,6 +782,9 @@ const transformInlineLabelStyle: React.CSSProperties = {
   gap: 4,
   fontSize: 12,
   flex: '0 0 auto',
+  // The caption is an anonymous flex item beside the control and will
+  // wrap mid-phrase ("Stack / vertically") even with room to spare.
+  whiteSpace: 'nowrap',
 };
 
 const metaLinkStyle: React.CSSProperties = {
