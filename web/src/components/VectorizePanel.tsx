@@ -3,6 +3,7 @@ import { api, type DesignVersion, type VectorizeRequest } from '../api';
 import { DEFAULT_LUMA_R, DEFAULT_LUMA_G, DEFAULT_LUMA_B } from '../lib/binarize';
 import { cacheToFullRes } from '../lib/cropCoords';
 import { houghPeaks } from '../lib/hough';
+import { NumericField } from './NumericField';
 
 // Max dimension we'll render the preview at. Source images larger than this
 // are downsampled before being binarized — this is a UI hint, not the actual
@@ -1046,8 +1047,7 @@ export default function VectorizePanel({
       <div className="vp-grid">
         <label>
           Target width (mm)
-          <input
-            type="number"
+          <NumericField
             min={1}
             max={5000}
             value={targetWidthMM}
@@ -1227,11 +1227,9 @@ export default function VectorizePanel({
                 }
               />
               <div className="vp-rotation-row">
-                <input
-                  type="number"
+                <NumericField
                   min={-45}
                   max={45}
-                  step={0.5}
                   value={adjustments.rotationDeg}
                   onChange={(e) =>
                     setAdjustments((a) => ({
@@ -1391,8 +1389,8 @@ export default function VectorizePanel({
             <div className="vp-grid">
               <label>
                 X
-                <input
-                  type="number"
+                <NumericField
+                  integer
                   min={0}
                   value={adjustments.cropX}
                   onChange={(e) =>
@@ -1406,8 +1404,8 @@ export default function VectorizePanel({
               </label>
               <label>
                 Y
-                <input
-                  type="number"
+                <NumericField
+                  integer
                   min={0}
                   value={adjustments.cropY}
                   onChange={(e) =>
@@ -1421,8 +1419,8 @@ export default function VectorizePanel({
               </label>
               <label>
                 W
-                <input
-                  type="number"
+                <NumericField
+                  integer
                   min={1}
                   value={adjustments.cropW}
                   onChange={(e) =>
@@ -1436,8 +1434,8 @@ export default function VectorizePanel({
               </label>
               <label>
                 H
-                <input
-                  type="number"
+                <NumericField
+                  integer
                   min={1}
                   value={adjustments.cropH}
                   onChange={(e) =>
@@ -1471,9 +1469,7 @@ export default function VectorizePanel({
           <div className="vp-grid">
             <label title="Ramer-Douglas-Peucker tolerance in mm. Higher values smooth more aggressively (fewer vertices, more rounded corners). Blank uses an automatic value derived from the project tube diameter.">
               Smoothing ε (mm)
-              <input
-                type="number"
-                step={0.1}
+              <NumericField
                 min={0}
                 max={5}
                 value={smoothingMM}
@@ -1486,9 +1482,7 @@ export default function VectorizePanel({
             </label>
             <label title="Minimum branch length to keep, in mm. Skeleton spurs shorter than this get pruned. Blank uses an automatic value of about 2× the project tube diameter.">
               Min spur (mm)
-              <input
-                type="number"
-                step={0.5}
+              <NumericField
                 min={0}
                 max={50}
                 value={minSpurMM}

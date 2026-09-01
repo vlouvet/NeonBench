@@ -11,6 +11,7 @@ import {
   type ListFilters,
   type SortMode,
 } from '../lib/listFilters';
+import { NumericField } from '../components/NumericField';
 
 // Search-debounce window for URL + localStorage writes. Matches the
 // "type, pause briefly, then commit" feel users get from native search
@@ -496,11 +497,9 @@ function NewProjectModal({
           </label>
           <label>
             Tube end gap (mm) (optional)
-            <input
-              type="number"
+            <NumericField
               min={0}
               max={100}
-              step={0.05}
               value={tubeEndGap}
               onChange={(e) => setTubeEndGap(e.target.value)}
               placeholder="6.35 (default)"

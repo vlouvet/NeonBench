@@ -24,6 +24,7 @@ import {
 } from '../lib/channelLetter';
 import { FONTS, type FontKey } from '../lib/hershey/fonts';
 import type { DesignRun } from '../api';
+import { NumericField } from './NumericField';
 
 type Props = {
   onCancel: () => void;
@@ -179,10 +180,8 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
           </label>
           <label>
             Cap height (mm)
-            <input
-              type="number"
+            <NumericField
               min={1}
-              step={1}
               value={capHeightMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -192,10 +191,8 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
           </label>
           <label>
             Tube clearance (mm) — face return inset
-            <input
-              type="number"
+            <NumericField
               min={0}
-              step={1}
               value={clearanceMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -205,10 +202,8 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
           </label>
           <label>
             Tube outside diameter (mm)
-            <input
-              type="number"
+            <NumericField
               min={1}
-              step={1}
               value={tubeDiameterMM}
               onChange={(e) => {
                 const v = Number(e.target.value);
@@ -238,9 +233,7 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
             <>
               <label>
                 Raceway Y (mm from baseline)
-                <input
-                  type="number"
-                  step={1}
+                <NumericField
                   value={racewayYMM}
                   onChange={(e) => {
                     const v = Number(e.target.value);
