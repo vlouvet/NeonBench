@@ -25,8 +25,13 @@ final sheet carries a full content width, not a step, so dividing the whole
 design by `stepW` over-counts whenever the remainder falls inside the overlap
 band.
 
-Probed against the real default (`contentW = 190`, `OverlapMM = 10`,
-`stepW = 180` — the default at `render.go:287`):
+Probed on **A4 portrait** (`contentW = 190`, `OverlapMM = 10`, `stepW = 180`).
+
+**Correction (2026-09-01, after implementation):** an earlier draft of this
+line called those figures "the default at `render.go:287`". They are not —
+`DefaultOptions()` returns `PaperLetter` (215.9 x 279.4, giving content 195.9
+and step 185.9 at the 10 mm margin). The numbers below are A4. The arithmetic
+and the proposed formula are unaffected; only the paper was mislabelled.
 
 ```
 designW= 190.0  old=2  proposed=1  coverage=190.0 ok=true   <-- OLD WASTES 1 SHEET

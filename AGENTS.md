@@ -67,6 +67,25 @@ Then say this explicitly in the dispatch prompt: **a wrong premise is a
 finding — report it, don't silently work around it.** The best results in both
 rounds came from agents that pushed back on the spec.
 
+### A grep that finds nothing is not proof of absence
+
+Verifying premises by grepping for a symbol has a specific failure mode, and
+it cost a wrong premise in the #112 spec. I concluded the exemption list had
+no pinning test because `grep NUMERIC_INPUT_EXEMPT_FILES` returned only the
+declaration and its own use. The test existed — it asserted against the
+**resolved eslint config** instead of importing the constant, deliberately, so
+that it measured the rule's real reach rather than a list someone could edit.
+A grep for the name could never have found it.
+
+**Search for what the thing would *do*, not what it would be called.** Before
+writing "X does not exist" into a spec, grep for the behaviour (here:
+`ESLint`, `exempt`, `calculateConfigForFile`), check the obvious test file for
+the module by name, and prefer running the suite and watching for the absence
+of a failure over reasoning from a symbol's call sites. Getting this wrong is
+expensive in a specific way: it does not just add work, it points the agent at
+the wrong problem, and it puts a false claim into `todo.md` where the next
+round will trust it.
+
 ## The spec has to be on `origin/main` before you dispatch
 
 A worktree agent branches from `origin/main`. **Untracked files in your working
@@ -140,11 +159,29 @@ For trivial tasks (todo.md updates, status fixes), skip the spec and write inlin
 
 After parallel agents return:
 
-1. **Verify each PR independently** — agent verbal reports occasionally glitch even when the work shipped (~1 in 5 in our experience). Always confirm via `gh pr checks <n>`, `gh pr view <n> --json files`, and `gh pr diff <n>`. Don't rely on the verbal report alone.
+1. **Verify each PR independently** — agent verbal reports occasionally glitch even when the work shipped (~1 in 5 in our experience). Always confirm via `gh pr view <n> --json files`, `gh pr diff <n>`, and the check query in item 2 (**not** bare `gh pr checks <n>` — it reports a snapshot that is easy to read as settled when it isn't). Don't rely on the verbal report alone.
 
-2. **Merge order:** smallest scope first, increasing FE / shared-file overlap last. Each subsequent PR will need `gh pr update-branch <n>` because of the `strict: true` branch-protection setting.
+2. **Waiting for CI: assert what succeeded, never what is absent.** The
+   obvious guard — poll until nothing is pending — is wrong, and it has now
+   produced a false green twice in one session. **A check that has not been
+   created yet is not pending**, so the gap between two runs (a second commit,
+   a `gh pr update-branch`, a re-run) reads as "settled and clean." Poll on the
+   set of check names that have *positively succeeded* for the PR's current
+   head SHA:
 
-3. **Manual merge resolution:** when `gh pr update-branch` reports `Cannot update PR branch due to conflicts`, the conflict is usually two parallel additions to the same file. Resolve locally:
+   ```sh
+   SHA=$(gh pr view <n> --json headRefOid -q .headRefOid)
+   until ok=$(gh api "repos/vlouvet/NeonBench/commits/$SHA/check-runs"        -q '[.check_runs[] | select(.status=="completed" and .conclusion=="success") | .name] | sort | join(",")');        [ "$ok" = "test,windows-smoke" ]; do sleep 20; done
+   ```
+
+   Re-read the head SHA after any push or `update-branch` — the old SHA's
+   checks stay green forever and will happily answer for a commit you are no
+   longer merging. `gh pr view --json mergeStateStatus` returning `CLEAN`
+   (not `BLOCKED`) is the independent second opinion.
+
+3. **Merge order:** smallest scope first, increasing FE / shared-file overlap last. Each subsequent PR will need `gh pr update-branch <n>` because of the `strict: true` branch-protection setting.
+
+4. **Manual merge resolution:** when `gh pr update-branch` reports `Cannot update PR branch due to conflicts`, the conflict is usually two parallel additions to the same file. Resolve locally:
 
    ```sh
    git checkout -B task/<branch> origin/task/<branch>
