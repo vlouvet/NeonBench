@@ -1,6 +1,6 @@
 # Tier 2 #99 — TrueType / OpenType font support
 
-> **Status:** done · PR #NNN · drafted 2026-08-31 · branch `task/2-opentype-fonts`
+> **Status:** done · PR #158 · drafted 2026-08-31 · branch `task/2-opentype-fonts`
 
 ## Goal
 
