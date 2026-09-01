@@ -1432,17 +1432,88 @@ export function renameLegacyRunIds(doc: DesignDoc): DesignDoc {
 // - Annotations / bends partition by live_index against the live arc;
 //   for the common open-run no-electrode case live_index === polyline
 //   index so the same partition applies.
-// carryRunClassification stamps the fields that say WHAT a run is — as opposed
-// to where its glass goes — onto a run derived from one or two existing runs.
-// It mutates and returns `to`, which every caller has just built fresh.
+
+// RunClassificationField enumerates the fields that say WHAT a run is — as
+// opposed to where its glass goes.
 //
-// It exists because forgetting one of these by omission is now the fourth
+// Every op that derives a run from another has to answer for each of them, and
+// "carry it" is NOT always the right answer (Tier 3 #110): splitRun and
+// joinRuns produce a run of the same nature as their input, neonize produces a
+// different kind of object from its input. So the answers live in a Record per
+// op rather than in an allow-list per call site. The Record is what makes this
+// non-negotiable — add a sixth field to the union and TypeScript refuses to
+// compile until every op has answered for it, which is exactly the drift that
+// produced bug class 1 four times over.
+type RunClassificationField =
+  | 'is_channel_letter_face'
+  | 'channel_letter_depth_mm'
+  | 'raceway_id'
+  | 'group_id'
+  | 'kind';
+
+type RunClassificationCarry = Readonly<Record<RunClassificationField, boolean>>;
+
+// CARRY_SAME_NATURE — ops whose output is the same kind of object as their
+// input. splitRun cuts one tube into two, joinRuns welds two into one; neither
+// changes what the glass IS, so everything carries. This is the behaviour
+// PR #140 (splitRun) and Bug #15 (joinRuns) each had to restore by hand.
+const CARRY_SAME_NATURE: RunClassificationCarry = {
+  is_channel_letter_face: true,
+  channel_letter_depth_mm: true,
+  raceway_id: true,
+  group_id: true,
+  kind: true,
+};
+
+// CARRY_NEONIZED — Tier 3 #110. neonize is the op where "carry everything" is
+// the WRONG fix: it consumes a face OUTLINE and emits the tube paths that light
+// it. Per-field calls, each a trade decision rather than a preference:
+const CARRY_NEONIZED: RunClassificationCarry = {
+  // NO. The emitted runs are glass, not sheet metal. BOTH return-strip paths in
+  // internal/printpdf/render.go gate on IsChannelLetterFace — the per-run loop
+  // directly, the shared-raceway one through groupByRaceway — so carrying this
+  // would put a fabrication drawing for a part that does not exist into the
+  // operator's printed stack. This is the one field where carrying actively
+  // breaks output rather than merely being untidy.
+  is_channel_letter_face: false,
+  // NO. It describes how far the FACE projects; a tube has no return to fold.
+  // Only runDepthMM reads it and only for face runs, so carrying it would be
+  // inert today and quietly wrong the day something else does.
+  channel_letter_depth_mm: false,
+  // YES. Those tubes really do terminate at that raceway, and the box is sized
+  // to reach every tagged run whether or not it is a face — see
+  // RacewayMemberExtentMM (internal/designdoc/raceway.go) and racewayMembers
+  // (internal/printpdf/racewaypage.go), whose non-face fallback exists for
+  // exactly this shape of design. Safe because the strip pages need the face
+  // flag as well, and that one does not carry.
+  raceway_id: true,
+  // YES. The offsets belong to the same logical letter as their source, and
+  // neonize REPLACES that source: drop this and the group loses a member
+  // instead of gaining two, silently ejecting the geometry the operator just
+  // generated from the thing they are working on.
+  group_id: true,
+  // YES, on least-surprise. Neonizing a jumper is unusual, but if someone does
+  // it, the result staying a jumper is more predictable than glass-sleeved lead
+  // wire silently becoming live tube.
+  kind: true,
+};
+
+// carryRunClassification stamps those fields onto a run derived from one or two
+// existing runs, honouring the caller's `carry` Record. It mutates and returns
+// `to`, which every caller has just built fresh.
+//
+// It exists because forgetting one of these by omission is now the fifth
 // instance of CLAUDE.md's recurring bug class 1: splitRun (PR #140),
 // reverseRun (Bug #11 / PR #149), joinRuns' private reversedRun copy (Bug #14
-// / PR #152), and joinRuns itself (Bug #15). Two of the four were in joinRuns.
-// A longhand allow-list at each call site is what keeps failing — worse, both
-// splitRun's and joinRuns' were written under a comment claiming to be
-// complete — so the list lives here once and ops go through it.
+// / PR #152), joinRuns itself (Bug #15), and neonize (Tier 3 #110). Two of the
+// five were in joinRuns. A longhand allow-list at each call site is what keeps
+// failing — worse, both splitRun's and joinRuns' were written under a comment
+// claiming to be complete — so the list lives here once and ops go through it.
+//
+// The fifth one is why `carry` exists rather than the list simply being
+// unconditional. neonize's answer is a strict subset, and getting there by
+// writing a sixth longhand allow-list next door is how this recurs a sixth
+// time; see CARRY_NEONIZED above for which fields it declines and why.
 //
 // `b` is the second input of a MERGE (joinRuns). Its disagreement rules are
 // trade decisions, not preferences:
@@ -1468,31 +1539,52 @@ export function renameLegacyRunIds(doc: DesignDoc): DesignDoc {
 // `direction` is deliberately absent: it means something only on a closed run
 // with two electrodes, and every run these ops mint is open (joinRuns' own
 // self-join branch closes a run by spreading the original, not through here).
-function carryRunClassification(to: DesignRun, a: DesignRun, b?: DesignRun): DesignRun {
-  if (a.is_channel_letter_face || b?.is_channel_letter_face) {
+function carryRunClassification(
+  to: DesignRun,
+  a: DesignRun,
+  b?: DesignRun,
+  carry: RunClassificationCarry = CARRY_SAME_NATURE,
+): DesignRun {
+  if (carry.is_channel_letter_face && (a.is_channel_letter_face || b?.is_channel_letter_face)) {
     to.is_channel_letter_face = true;
   }
-  const depth = a.channel_letter_depth_mm ?? b?.channel_letter_depth_mm;
-  if (depth != null) to.channel_letter_depth_mm = depth;
-  if (
-    b
-    && a.channel_letter_depth_mm != null
-    && b.channel_letter_depth_mm != null
-    && a.channel_letter_depth_mm !== b.channel_letter_depth_mm
-  ) {
-    console.warn(
-      `joinRuns: channel_letter_depth_mm disagrees (${a.channel_letter_depth_mm} vs `
-      + `${b.channel_letter_depth_mm}) — keeping ${a.channel_letter_depth_mm}`,
-    );
+  if (carry.channel_letter_depth_mm) {
+    const depth = a.channel_letter_depth_mm ?? b?.channel_letter_depth_mm;
+    if (depth != null) to.channel_letter_depth_mm = depth;
+    if (
+      b
+      && a.channel_letter_depth_mm != null
+      && b.channel_letter_depth_mm != null
+      && a.channel_letter_depth_mm !== b.channel_letter_depth_mm
+    ) {
+      console.warn(
+        `joinRuns: channel_letter_depth_mm disagrees (${a.channel_letter_depth_mm} vs `
+        + `${b.channel_letter_depth_mm}) — keeping ${a.channel_letter_depth_mm}`,
+      );
+    }
   }
-  const raceway = a.raceway_id ?? b?.raceway_id;
-  if (raceway != null) to.raceway_id = raceway;
-  const group = a.group_id ?? b?.group_id;
-  if (group != null) to.group_id = group;
-  const bothJumpers = b ? a.kind === 'jumper' && b.kind === 'jumper' : a.kind === 'jumper';
-  if (bothJumpers) to.kind = 'jumper';
-  else if (a.kind != null && a.kind !== 'jumper' && b == null) to.kind = a.kind;
+  if (carry.raceway_id) {
+    const raceway = a.raceway_id ?? b?.raceway_id;
+    if (raceway != null) to.raceway_id = raceway;
+  }
+  if (carry.group_id) {
+    const group = a.group_id ?? b?.group_id;
+    if (group != null) to.group_id = group;
+  }
+  if (carry.kind) {
+    const bothJumpers = b ? a.kind === 'jumper' && b.kind === 'jumper' : a.kind === 'jumper';
+    if (bothJumpers) to.kind = 'jumper';
+    else if (a.kind != null && a.kind !== 'jumper' && b == null) to.kind = a.kind;
+  }
   return to;
+}
+
+// carryNeonizedClassification — the single-source variant neonize uses. Named
+// rather than passing CARRY_NEONIZED inline at the call site so that "what does
+// neonizing inherit" and "what does splitting inherit" are one grep apart, and
+// so neither can be edited without the reader meeting the other.
+function carryNeonizedClassification(to: DesignRun, src: DesignRun): DesignRun {
+  return carryRunClassification(to, src, undefined, CARRY_NEONIZED);
 }
 
 export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
@@ -2379,13 +2471,22 @@ export function neonize(
     inner = offsetOpenPolyline(srcPts, -half, offsetOpts);
   }
 
-  // Build the replacement run(s). Inheritance: only carry forward the
-  // run-level properties that aren't index-bound.
+  // Build the replacement run(s). Inheritance has two halves. The index-bound
+  // fields (electrodes, blockouts, annotations, bends, and `direction`, which
+  // only means anything on a closed run with two electrodes) do not carry: the
+  // emitted path is not the walk the source described, so there is nothing for
+  // those indices to point at. The CLASSIFICATION fields carry selectively —
+  // see CARRY_NEONIZED for the per-field reasoning. The short version is that
+  // neonize is the one derived-run op where "carry everything" is wrong: the
+  // face flag must not carry (it would emit return-strip pages for metal nobody
+  // is cutting) while the memberships and `kind` must (dropping them ejects the
+  // glass the operator just generated from its group and its raceway).
   function withMeta(id: string, points: [number, number][], closed: boolean): DesignRun {
     const r: DesignRun = { id, polyline: { points, closed } };
     if (src.tube_diameter_mm != null) r.tube_diameter_mm = src.tube_diameter_mm;
     if (src.color != null) r.color = src.color;
     if (src.notes != null) r.notes = src.notes;
+    carryNeonizedClassification(r, src);
     return r;
   }
 
