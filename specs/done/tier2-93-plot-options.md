@@ -1,6 +1,6 @@
 # Tier 2 #93 — Plot options: rotate-to-fit, step-and-repeat, quick plot
 
-> **Status:** active · started 2026-08-31 · branch `task/2-plot-options`
+> **Status:** done · started 2026-08-31 · shipped 2026-08-31 · branch `task/2-plot-options` · PR #145
 
 ## Goal
 
