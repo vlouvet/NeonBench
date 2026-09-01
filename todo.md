@@ -181,19 +181,51 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 | Category | ✅ | 🟡 | ❌ | 🚫 |
 |---|---|---|---|---|
 | Neon Design Tools | 16 | 0 | 3 | 4 |
-| Fonts & Text | 0 | 3 | 15 | 0 |
-| Design Tools | 5 | 4 | 30 | 3 |
-| Effects | 0 | 0 | 13 | 0 |
+| Fonts & Text | 4 | 3 | 11 | 0 |
+| Design Tools | 12 | 4 | 23 | 3 |
+| Effects | 1 | 2 | 3 | 7 |
 | Vector Graphics | 2 | 2 | 6 | 0 |
 | Image Manipulation | 5 | 1 | 1 | 0 |
-| Cutting/Plotting/Printing | 5 | 1 | 3 | 9 |
+| Cutting/Plotting/Printing | 7 | 2 | 0 | 9 |
 | Productivity | 4 | 1 | 5 | 0 |
-| Wide Format | 0 | 0 | 4 | 3 |
-| **Totals** | **37** | **12** | **80** | **19** |
+| Wide Format | 0 | 0 | 0 | 7 |
+| **Totals** | **51** | **15** | **52** | **30** |
 
 Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡. The post-Phase 3 Neon Design Tools audit (Tier 3 #60–#63 spec drafts) reclassified four rows ❌ → 🚫 (Tier 4) — **#121 Mounting Holes**, **#134 Switch Drop / Flat Blend**, **#136 Tube Support Holes**, **#137 Auto Tube Count**, **#138 Auto Spacing** — as either out of NeonBench's scope or already covered by shipped functionality (Neonize / "support" annotations). May 2026 Tier 1 + Tier 3 rounds shipped four more Neon Design Tools rows ❌ → ✅: **#120 Add Common Housings** + **#126 Create Custom Housings** (combined in PR #77), **#125 Connect Tubes** (PR #79 — jumper runs), and **#130 Move Opening / Break Tube Open** (PR #78). Late May 2026 polish round closed the groups + per-group preview loop, promoting **#140 Neon Preview for Groups** 🟡 → ✅ (PR #101 shipped the `?groupId` filter + visibility-aware preview after Tier 3 #33b/c landed groups + layers). Cumulative ✅ has gone **30 → 31 → 32 → 36 → 37** since the Tier 2 close-out; 🟡 dropped to 12; ❌ holds at 80; 🚫 sits at 19.
 
 The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that is the honest reading rather than a gap in the accounting: all four features enrich rows already marked ✅ — **#78 Node Edit Tools** (the right-click context menu and arc↔line conversion) and **#123 Auto Tube Layout** (the raceway guideline's split-at-line and the overlong-tube split). NW's advertised feature list counts a capability once; the depth behind those two rows roughly doubled without a new row to claim. Two shipped bugs were fixed in the same round (`specs/done/bug-09-preview-coplanar-crossings.md` — crossing tubes drawn coplanar in the 3D preview so glass passed through glass; `specs/done/bug-10-tube-spec-switch-desync.md` — switching the project tube spec validated the saved version rather than the live doc and left runs pinned to the old diameter), and **v0.2.0** was cut and signed from the result.
+
+The **late-August 2026 parity round (PRs #144–#149)** is the largest single
+tally movement since the audit was taken: **✅ 37 → 51, ❌ 80 → 52.** Four
+parallel agents closed Design Tools arrange ops (#144) and rulers/guides/snap
+(#147), the first-ever ✅ rows in Fonts & Text (#146), and the last ❌ in
+Cutting/Plotting/Printing (#145). Of the 14-row swing, **7 came from building
+and 7 from correcting the ledger** — layers and redo had shipped long ago and
+were still marked ❌; Contour, Inline/Outline and Knife were counted as gaps
+that `offset.ts` and the split ops already cover; and 4 Wide Format rows plus 7
+Effects rows were carrying a decided "no" as an open gap. Both halves are
+recorded row-by-row above rather than merged into one number, because a
+correction is not an accomplishment.
+
+Two accounting corrections are worth naming. The blanket Tier 4 entry "all
+shadows / effects (NW #61–73)" was **instructing agents to refuse Weld** —
+boolean union of overlapping outlines, which script and connected lettering
+genuinely need and which nothing in the codebase provides. It has been narrowed
+to the seven rows that are actually marketing-render or compositing features.
+And the parity list's Design Tools ❌ entry names ~23 features against 30
+numbers, so per-row attribution in that category is approximate; the category
+totals are what is defensible.
+
+The round also surfaced **four latent bugs in already-merged code**, none of
+which move a tally row and all of which affect shipped features: `reverseRun`
+corrupting arc segments (Bug #11, fixed in PR #149); multi-tile **mirrored**
+prints placing the design's halves on the wrong sheets, on the trade-default
+path (Bug #12); `capHeightMM` rendering every piece of single-stroke text 1.75×
+the requested height (Bug #13); and `joinRuns` carrying its own copy of the
+`reverseRun` bug plus inverted blockout ranges (Bug #14). Bug #11 established
+that a boolean arc flag **cannot survive a reversal** — `arcFor` always bows
+left of travel — which promotes Tier 3 #87's signed arc side from polish to a
+correctness prerequisite for three ops.
 
 ### Neon Design Tools (the core — 23 features)
 
@@ -227,7 +259,8 @@ The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that
 
 - 🟡 #1 Direct Text Entry — Hershey single-stroke text shipped via modal in PR #8 + multi-line + per-letter kerning in PR #31 (Roman Simplex / Roman Duplex / Sans Simplex bundled); inline-on-canvas typing remains the gap.
 - 🟡 #15 Kerning — per-letter custom kerning shipped via draggable triangle handles in the Hershey modal (PR #31); inline-on-canvas kerning still ❌.
-- ❌ #2–13, 16, 17: property bar, script fonts, spacing/slant/arc/rotate handles, spell-check, WYSIWYG font picker, vertical text, change case
+- ✅ #16 Vertical Text · #17 Change Case · slant (oblique) and text-on-an-arc from the #4–8 handles group — all four shipped in PR #146 as pure post-passes over `hersheyTextToRuns`, so kerning, baseline shifts and cursive joining keep working underneath. **First ✅ rows this category has ever had.**
+- ❌ #2–13 remainder: property bar, script fonts, rotate handles, spell-check, WYSIWYG font picker
 - 🟡 #14 Text Notes — per-run free-text Notes field; doc-level text labels via annotation
 - ❌ #18 Font Wizard (match scanned letter to digital font)
 
@@ -236,14 +269,27 @@ The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that
 - ✅ #36 Grids · #37 Anti-aliased rendering · #53 Automatic Vectorizing · #54 Dimensioning
 - 🟡 #30 Color Management (per-run gas color only) · #32 Common Shapes (rect / circle shipped in PR #10; rounded-rect still missing) · #40 Measure Tool (via dimension lines) · #52 Text Notes Enhanced (per-run notes)
 - ✅ #38 History Window (cross-session via design_versions list + in-session undo/redo with coalescing in `EditorPage.tsx`)
-- ❌ #19, 22–29, 31, 33–35, 39, 41–51, 55–58, 60: depth order, alignment, anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, distribute, layers, mirror, move-to-layer, nested groups, redo, rounded rect, rulers, guidelines, snap-to-guides, stack, step-and-repeat, polygon/star, styles, hotkeys, soft-shadow opts
+- ✅ alignment · distribute · mirror · depth order (stack) — shipped in PR #144 (`web/src/lib/arrange.ts` + sidebar panel), operating on the existing multi-selection
+- ✅ rulers · guidelines · snap-to-guides — shipped in PR #147; `Guideline.Kind` gained `"construction"` alongside `"raceway"` plus a vertical axis, additive with `omitempty` so pre-existing doc JSON stays byte-identical
+- ✅ layers · redo — **these were already shipped and the row was simply stale**: layers are the Groups panel from Tier 3 #33c, redo is the in-session undo/redo stack in `EditorPage.tsx`. Corrected during the August 2026 audit, not built this round
+- ❌ remainder: anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, move-to-layer, nested groups, rounded rect, step-and-repeat, polygon/star, styles, programmable hotkeys, soft-shadow opts
 - ❌ #20 Type1/OpenType font support · #59 Color Vectorizing
 - 🚫 #21, 34, 51 Drawing engine / refresh / streamlined UI (modern web stack) · #58 TWAIN (use OS-level scanning)
 
 ### Effects (13 features)
 
-- ❌ #61–73: Weld, Common Weld, Contour, Warp, Cast/Drop/Soft/Extruded/Perspective Shadow, Inline/Outline, Knife, Text on Path, Clipping Paths
-- Mostly cosmetic/marketing-render features. Low priority for shop production; revisit if doing client mockups in NeonBench rather than a separate tool.
+Reclassified 2026-08-31. The previous blanket "❌ #61–73, mostly cosmetic" was
+wrong in both directions: it counted three already-shipped capabilities as gaps,
+and it hid the single most valuable unbuilt feature in the category behind a
+Tier 4 refusal.
+
+- 🚫 Cast / Drop / Soft / Extruded / Perspective Shadow (5) — marketing-render filters. NeonBench answers this need with the 3D glow preview (PRs #57–63), which is a better answer than a 2D shadow filter.
+- 🚫 Clipping Paths — compositing; no meaning for a tube path.
+- 🚫 Warp — envelope distortion. Arguably "fit copy to a shaped panel", but warping a tube path invalidates bend radii; needs a design decision before anyone builds it.
+- ❌ **Weld** and **Common Weld** — boolean union of overlapping outlines. **The highest-value unbuilt row in this category.** Script and connected lettering where glyphs overlap must become ONE continuous tube path before Neonize runs, and there is no boolean op anywhere in the codebase. ⚠️ **Naming trap:** "weld" already means a *physical glass weld* in `internal/validate/rules.go` (`weldRadius`, the spacing rule for where a glassblower joins two tubes). A boolean-union feature must NOT be called weld here.
+- ❌ Text on Path — arbitrary-path text. Text-on-an-*arc* shipped in PR #146 and named this as its explicit follow-up, so it is queued, not refused.
+- 🟡 Contour · Inline/Outline — `offsetPolygon` / `offsetOpenPolyline` with miter/round/bevel corners already exists (`web/src/lib/shapes/offset.ts`) and powers Neonize + Parallel Tube Layout. The primitive is built; repeated-offset-at-a-step is the gap.
+- ✅ Knife (cut a path) — `splitRun`, `breakOpen`, `splitTubesAtRaceway` and `autoSplitOverlongTubes` all ship, exposed through the node context menu (PR #139).
 
 ### Vector Graphics Tools (10 features)
 
@@ -263,7 +309,9 @@ The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that
 - ✅ #93 Horizontal/Vertical Paneling (oversize tiling) · #96 Plot to File (1:1 PDF) · #108 DXF Routing/Engraving export (PR #12; annotations layer in PR #28)
 - ✅ #92 All Windows Printers (download → OS print dialog via hidden iframe + `window.print()` — PR #38)
 - 🟡 #97 Print Preview (PDF is the preview)
-- ❌ #94 Mirror/Scale/Rotate at plot · #98 Quick Plot · #99 Plot Step-and-Repeat
+- ✅ #98 Quick Plot · #99 Plot Step-and-Repeat — shipped in PR #145. Quick plot replays the last-used settings from per-project `localStorage`; step-and-repeat emits N copies of the **page set** (1..50), deliberately *not* arraying copies onto one sheet, since two 1:1 patterns sharing a sheet cannot both be cut out
+- 🟡 #94 Mirror/Scale/Rotate at plot — mirror shipped in PR #73, rotate (90° / rotate-to-fit, picking the orientation with fewer tiles) in PR #145. **Scale is deliberately unbuilt**: what "print at 87%" means in a 1:1 production tool needs a design decision first, not an implementation
+- **This category now has zero ❌** — every row is shipped, partial, or a deliberate 🚫
 - ✅ #106 Channel Letter Return Patterns (per-run face flag + per-project depth + PDF unfolded-strip pages — PR #25; per-run depth override + perimeter validator + raceway grouping + strip-overlap shear line in PR #43)
 - 🚫 #91, 95, 100–105, 107: plotter/cutter drivers, network plot, plot manager, USB cutter, weed lines/borders, Windows print driver, pen fill — neon shops use a printed full-size pattern, not a vinyl cutter
 
@@ -276,7 +324,7 @@ The August 2026 editor round (PRs #135–#142) moved **no tally rows**, and that
 
 ### Wide Format Printing (7 features)
 
-- ❌ / 🚫 #142–148 (CMYK/HSV, GIF/TIFF LZW, stroke support, image resampling, WIA, external image edit, photomask). NeonBench is not a wide-format RIP — out of scope.
+- 🚫 #142–148 (CMYK/HSV, GIF/TIFF LZW, stroke support, image resampling, WIA, external image edit, photomask). NeonBench is not a wide-format RIP. The four rows still counted ❌ here were reclassified 🚫 on 2026-08-31 — carrying a decided "no" as an open gap overstates the backlog.
 
 ---
 
@@ -404,11 +452,27 @@ Round H Tier 3 specs drafted in PR #107 alongside the Tier 2 batch. These polish
 
 89. **Run ids should not shuffle after a batch split** *(follow-up from #75)*. `nextRunId` returns the lowest unused slot, so ids freed mid-batch get reused and a 4-way split comes out `r1, r3, r2, r5` in physical order. Cosmetic and long-standing, but the operations that produce the most pieces at once are the newest ones (#74, #75), and the run list is how a piece gets identified at the bench. Fix is a high-water mark instead of lowest-free; the trade is larger numbers with gaps, which is cheaper than shuffles. Never rename an existing run — an id is what got written on the bench tag. Spec: `specs/active/tier3-89-run-id-allocation.md`.
 
+90. ✅ **Arrange: align, distribute, mirror, depth order** (NW Design Tools). Shipped in PR #144. Pure ops in `web/src/lib/arrange.ts` over the existing multi-selection, plus a sidebar panel; draw order is `doc.runs` array order, so depth order is an array permutation. **Bounding boxes are arc-aware** — a run with an arc bows outside the hull of its vertices, so a bbox from raw `polyline.points` clips the curve and aligns the wrong edge; `flatRunPoints` is the only honest source. **Mirroring is not a coordinate negation:** `arcFor` bows toward `(-dy, dx)`, a handedness-dependent side, so a naive flip leaves vertices correct while every arc bows the wrong way. The fix mirrors *and* reverses vertex order so the two handedness flips cancel — which costs a full index remap of `segment_types`, electrodes, `direction`, and the live-arc positions behind blockouts/annotations/bends. Deleting the reversal turns 7 tests red. Spec: `specs/done/tier2-90-arrange-align-distribute-mirror-order.md`.
+
+91. ✅ **Rulers, construction guides, and snap-to-guides** (NW Design Tools). Shipped in PR #147. mm rulers on both canvas edges, drag-off-the-ruler guides, and guide snapping wired into `composeSnap` at priority **geometry > guides > angle > grid** — geometry keeps the top slot because "land exactly on this existing vertex" is a harder promise than "land on this construction line". `Guideline` gained `"construction"` and a vertical axis, additive with `omitempty` so pre-#91 doc JSON stays byte-identical. **A bug unit tests could not catch:** with a shape tool active, a click aimed at a guide was swallowed by the guide's 10px grab band (`stopPropagation`), making "put this vertex on that line" the one gesture the feature existed for and could not do; guides are now `pointer-events: none` under the drawing tools. **A gap in the spec, correctly escalated:** the shipped "Split tubes at raceway" button was gated only on `selectedGuidelineId`, so selecting a construction guide would have split the design at its `y_mm` — 0 for a vertical one. Spec: `specs/done/tier2-91-rulers-guides-snap.md`.
+
+92. ✅ **Text transforms: case, slant, vertical stacking, arc** (NW Fonts & Text). Shipped in PR #146. Four pure post-passes over `HersheyRun[]`, composed in one place as case → layout → slant, feeding both the dialog preview and the insert. **Cursive + vertical stacking is disabled with an explanation rather than half-supported** — the glyph stitch *is* the feature on a joining face and there is no honest place to cut it; arc stays enabled because it bends the stitched script intact. **Two bugs only the browser caught:** an arc-radius input with `min=1 step=10` made `min` a lattice base, so the default 500 failed HTML validation and *silently swallowed the Insert submit*; and stacking by a `capHeightMM + gap` pitch overlapped glyphs by half a letter, which is what exposed Bug #13. Spec: `specs/done/tier2-92-text-transforms.md`.
+
+93. ✅ **Plot options: rotate to fit, copies, quick plot** (NW #94 partial, #98, #99). Shipped in PR #145. `rotate=90|fit` and `copies=1..50` as absent-safe query params validated in the handler (bad input is a 400, not a 200 with a surprising PDF); quick plot replays per-project settings from `localStorage`. **Mirror and rotation do not commute**, so the order is fixed as *mirror, then rotate* — mirroring is a property of how the bender reads the glass, rotation of how the paper is fed — implemented via `R·Mh = Mv·R` so the un-rotated path stays byte-identical, and pinned by a known-point test. Copies multiply **pages**, never geometry: two 1:1 patterns sharing a sheet cannot both be cut out. Footers state the rotation and the copy number, because a rotated pattern found on a bench a week later with nothing indicating it is a fabrication hazard. Spec: `specs/done/tier2-93-plot-options.md`.
+
+94. **Editor re-fits the view on every doc change** *(follow-up from #91)*. `EditorCanvas` re-fits whenever doc identity changes, so any edit throws away the operator's pan and zoom. Pre-existing and unrelated to the guides slice, but it surfaced there after an hour of smoke-test debugging, and it is a daily-use irritant in a tool meant for close work on large patterns.
+
+95. **Arrange follow-ups: align to page, align to key object, rotate + numeric transforms, distribute by gap** *(follow-up from #90)*. Align currently targets the selection bbox only. Aligning to the page/viewBox, to a last-clicked "key object", distributing by even *gap* rather than even *centre*, and numeric-entry rotate/scale are the four asks that fall straight out of the shipped panel.
+
+96. **Text on an arbitrary path** *(follow-up from #92)*. Text-on-an-arc ships; bending a baseline onto a user-drawn run is the general case, and it is also NW's Effects "Text on Path" row. Per-character rotation on the arc (glyphs currently rotate with the baseline tangent as a whole) and inline on-canvas editing are the other two deferred items.
+
+97. **Print presets, and a decision on scale-at-plot** *(follow-up from #93)*. Print settings live in `localStorage` per project; server-side presets would survive a browser change and could be shared across a shop. Separately, **scale-at-plot is a design question, not a task**: what a 1:1 production tool means by "print at 87%" needs answering before anyone implements NW #94's remaining third.
+
 ### Tier 4 — Deliberate "no for now"
 
 These are NW-the-graphic-design-suite, not NW-the-neon-tool. Skip unless a shop specifically asks:
 
-- All shadows / effects (NW #61–73, #142–148)
+- Shadows and compositing effects — Cast / Drop / Soft / Extruded / Perspective Shadow, Clipping Paths, Warp (part of NW #61–73), and all of #142–148. **Narrowed 2026-08-31:** the old blanket "#61–73" instructed agents to refuse **Weld** (boolean union), which script lettering genuinely needs, and also covered Contour / Inline-Outline / Knife, which already ship. See the Effects section of Appendix A for the row-by-row split.
 - Vinyl-cutter plumbing (NW #91, #95, #101–105, #107)
 - TWAIN / WIA (NW #58, #146)
 - Email Layout / Spell Checker / Customizable toolbar (NW #111, #114, #110)
