@@ -257,6 +257,51 @@ describe('splitRunBySegments — arc expansion', () => {
     expect(at).toBe(seg.points.length - 1);
   });
 
+  // Tier 3 #87 found this one while making the side storable, and it is a
+  // real bug in shipped code rather than a consequence of the schema change.
+  //
+  // A live walk that crosses an arc BACKWARDS used to flatten `b -> a`, which
+  // asks arcFor for the arc that bows left of b->a — the MIRROR of the glass
+  // this segment actually is — and then walked those samples from the far end,
+  // so the 3D tube zigzagged across its own chord. The fix flattens the
+  // forward segment once and walks the samples in reverse.
+  it('traces the same glass when the live walk crosses an arc backwards', () => {
+    // Closed loop, two electrodes, direction 'backward': the live walk leaves
+    // vertex 0 towards vertex 3, so it crosses segment 2 ([100,100] ->
+    // [0,100]) in reverse.
+    const run: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+        closed: true,
+        segment_types: ['line', 'line', 'arc', 'line'],
+      },
+      electrodes: [{ point_index: 0 }, { point_index: 2 }],
+      direction: 'backward',
+    };
+    const pts = splitRunBySegments(run)[0].points;
+    // Forward, segment 2 runs [100,100] -> [0,100]: direction (-1, 0), whose
+    // left normal is (0, -1), so the bow reaches y = 75 at the midpoint.
+    const cx = 50;
+    const cy = 100 + Math.sqrt(62.5 * 62.5 - 50 * 50);
+    const onArc = pts.filter((p) => Math.abs(Math.hypot(p[0] - cx, p[1] - cy) - 62.5) < 0.01);
+    expect(onArc.length).toBeGreaterThan(20);
+    // The bow is BELOW the chord (y < 100), which is the whole point: the old
+    // code put it above, on the mirror circle.
+    const apex = onArc.reduce((b, p) => (p[1] < b[1] ? p : b), onArc[0]);
+    expect(apex[1]).toBeCloseTo(75, 1);
+    expect(pts.every((p) => p[1] <= 100.0001)).toBe(true);
+
+    // And the samples are in walk order — monotonically away from [0,100]
+    // towards [100,100], not starting at the far end and doubling back.
+    const start = pts.findIndex((p) => Math.abs(p[0]) < 1e-9 && Math.abs(p[1] - 100) < 1e-9);
+    expect(start).toBeGreaterThanOrEqual(0);
+    for (let i = start + 1; i < pts.length; i++) {
+      expect(pts[i][0]).toBeGreaterThan(pts[i - 1][0] - 1e-9);
+    }
+    expect(pts[pts.length - 1]).toEqual([100, 100]);
+  });
+
   it('is inert when segment_types says every segment is a line', () => {
     const withField: DesignRun = {
       id: 'r1',

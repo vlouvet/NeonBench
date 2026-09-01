@@ -13,7 +13,7 @@ import (
 func TestArcForGeometry(t *testing.T) {
 	p0 := [2]float64{0, 0}
 	p1 := [2]float64{100, 0}
-	a, ok := ArcFor(p0, p1)
+	a, ok := ArcFor(p0, p1, false)
 	if !ok {
 		t.Fatal("ArcFor returned !ok for a 100mm chord")
 	}
@@ -43,7 +43,7 @@ func TestArcForGeometry(t *testing.T) {
 func TestArcSagittaAndSide(t *testing.T) {
 	p0 := [2]float64{0, 0}
 	p1 := [2]float64{100, 0}
-	pts := FlattenSegment(p0, p1, true)
+	pts := FlattenSegment(p0, p1, SegmentArc)
 	var apex [2]float64
 	best := 0.0
 	for _, p := range pts {
@@ -69,8 +69,8 @@ func TestArcSagittaAndSide(t *testing.T) {
 func TestFlattenSegmentStaysOnTheCircle(t *testing.T) {
 	p0 := [2]float64{10, 20}
 	p1 := [2]float64{90, 75}
-	a, _ := ArcFor(p0, p1)
-	pts := FlattenSegment(p0, p1, true)
+	a, _ := ArcFor(p0, p1, false)
+	pts := FlattenSegment(p0, p1, SegmentArc)
 	for _, p := range pts {
 		d := math.Hypot(p[0]-a.CX, p[1]-a.CY)
 		if math.Abs(d-a.RadiusMM) > 1e-6 {
@@ -90,14 +90,14 @@ func TestFlattenSegmentStaysOnTheCircle(t *testing.T) {
 }
 
 func TestArcForDegenerateChord(t *testing.T) {
-	if _, ok := ArcFor([2]float64{5, 5}, [2]float64{5, 5}); ok {
+	if _, ok := ArcFor([2]float64{5, 5}, [2]float64{5, 5}, false); ok {
 		t.Error("a zero-length chord defines no circle; want ok=false")
 	}
 	// The safe fallback is to treat it as a line, not to panic or emit NaN.
-	if got := ArcSegmentLengthMM([2]float64{5, 5}, [2]float64{5, 5}, true); got != 0 {
+	if got := ArcSegmentLengthMM([2]float64{5, 5}, [2]float64{5, 5}, SegmentArc); got != 0 {
 		t.Errorf("degenerate arc length = %v, want 0", got)
 	}
-	if got := FlattenSegment([2]float64{5, 5}, [2]float64{5, 5}, true); len(got) != 1 {
+	if got := FlattenSegment([2]float64{5, 5}, [2]float64{5, 5}, SegmentArc); len(got) != 1 {
 		t.Errorf("degenerate arc flattened to %d points, want 1", len(got))
 	}
 }
@@ -191,7 +191,21 @@ func TestPolylineUnmarshalValidation(t *testing.T) {
 		{
 			name:    "unknown value",
 			json:    `{"points":[[0,0],[1,0]],"closed":false,"segment_types":["spline"]}`,
-			wantErr: `want "line" or "arc"`,
+			wantErr: `want "line", "arc" or "arc_r"`,
+		},
+		{
+			// Tier 3 #87 — the flipped side is a first-class value, not a
+			// typo. A decoder that rejected it would make every doc with a
+			// flipped arc a 400 on save.
+			name: "flipped arc accepted",
+			json: `{"points":[[0,0],[1,0]],"closed":false,"segment_types":["arc_r"]}`,
+		},
+		{
+			// The near-miss spelling stays rejected, so a typo can't quietly
+			// straighten a curve.
+			name:    "near-miss flipped spelling rejected",
+			json:    `{"points":[[0,0],[1,0]],"closed":false,"segment_types":["arc-r"]}`,
+			wantErr: `want "line", "arc" or "arc_r"`,
 		},
 		{
 			name:    "unknown key is still rejected",
@@ -245,12 +259,12 @@ func TestSegmentTangents(t *testing.T) {
 	p0 := [2]float64{0, 0}
 	p1 := [2]float64{100, 0}
 
-	lv, ar := SegmentTangents(p0, p1, false)
+	lv, ar := SegmentTangents(p0, p1, SegmentLine)
 	if math.Abs(lv[0]-1) > 1e-12 || math.Abs(lv[1]) > 1e-12 || lv != ar {
 		t.Errorf("a line's tangents must both be the chord direction, got %v / %v", lv, ar)
 	}
 
-	lv, ar = SegmentTangents(p0, p1, true)
+	lv, ar = SegmentTangents(p0, p1, SegmentArc)
 	half := 2 * math.Atan(ArcBulge) // θ/2
 	// Leaving rotated +θ/2, arriving rotated −θ/2, about the chord.
 	if got := math.Atan2(lv[1], lv[0]); math.Abs(got-half) > 1e-12 {
@@ -441,5 +455,218 @@ func TestBendsUnchangedWithoutArcs(t *testing.T) {
 		if a[i] != b[i] {
 			t.Errorf("bend %d differs:\n  %+v\n  %+v", i, a[i], b[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3 #87 — the signed arc side.
+// ---------------------------------------------------------------------------
+
+// A flipped arc is the mirror of the unflipped one ABOUT ITS CHORD: same
+// endpoints, same circle radius, same arc length, other side. Anything else
+// and "flip" would be moving glass rather than moving a bow.
+func TestFlippedArcIsTheMirrorAboutTheChord(t *testing.T) {
+	p0 := [2]float64{0, 0}
+	p1 := [2]float64{100, 0}
+
+	up, ok := ArcFor(p0, p1, false)
+	if !ok {
+		t.Fatal("ArcFor(unflipped) returned !ok")
+	}
+	down, ok := ArcFor(p0, p1, true)
+	if !ok {
+		t.Fatal("ArcFor(flipped) returned !ok")
+	}
+
+	// The chord runs +x, so the mirror is in y = 0: the two centres are
+	// reflections of one another.
+	if math.Abs(up.CX-down.CX) > 1e-9 || math.Abs(up.CY+down.CY) > 1e-9 {
+		t.Errorf("centres are not reflections: %v,%v vs %v,%v", up.CX, up.CY, down.CX, down.CY)
+	}
+	// The probe in CLAUDE.md's bug-class 1: forward centre (50, -37.5).
+	if math.Abs(up.CX-50) > 1e-9 || math.Abs(up.CY+37.5) > 1e-9 {
+		t.Errorf("unflipped centre = (%v, %v), want (50, -37.5)", up.CX, up.CY)
+	}
+	if math.Abs(down.CX-50) > 1e-9 || math.Abs(down.CY-37.5) > 1e-9 {
+		t.Errorf("flipped centre = (%v, %v), want (50, +37.5)", down.CX, down.CY)
+	}
+	if math.Abs(up.RadiusMM-down.RadiusMM) > 1e-12 {
+		t.Errorf("radii differ: %v vs %v", up.RadiusMM, down.RadiusMM)
+	}
+	if math.Abs(up.IncludedMM-down.IncludedMM) > 1e-12 {
+		t.Errorf("arc lengths differ: %v vs %v", up.IncludedMM, down.IncludedMM)
+	}
+	if up.SweepCCW == down.SweepCCW {
+		t.Error("the two sides must sweep opposite ways")
+	}
+
+	// And the flattened curves are reflections point for point — the apex of
+	// one is the apex of the other about the chord.
+	upPts := FlattenSegment(p0, p1, SegmentArc)
+	downPts := FlattenSegment(p0, p1, SegmentArcR)
+	if len(upPts) != len(downPts) {
+		t.Fatalf("sample counts differ: %d vs %d", len(upPts), len(downPts))
+	}
+	sawBow := false
+	for i := range upPts {
+		if math.Abs(upPts[i][0]-downPts[i][0]) > 1e-9 || math.Abs(upPts[i][1]+downPts[i][1]) > 1e-9 {
+			t.Fatalf("sample %d is not a reflection: %v vs %v", i, upPts[i], downPts[i])
+		}
+		if math.Abs(upPts[i][1]) > 1 {
+			sawBow = true
+		}
+	}
+	if !sawBow {
+		t.Error("the arcs never left their chord; the test proves nothing")
+	}
+}
+
+// The length a flipped arc measures must be identical, because the glass is
+// the same glass. Every takeoff, estimate and bend-list number rides on this,
+// so it is asserted at the polyline level and not just on Arc.IncludedMM.
+func TestFlippedArcMeasuresTheSame(t *testing.T) {
+	pts := [][2]float64{{0, 0}, {100, 0}, {100, 80}}
+	up := Polyline{Points: pts, SegmentTypes: []string{SegmentArc, SegmentArcR}}
+	down := Polyline{Points: pts, SegmentTypes: []string{SegmentArcR, SegmentArc}}
+	if a, b := up.LengthMM(), down.LengthMM(); math.Abs(a-b) > 1e-9 {
+		t.Errorf("flipping the sides changed the length: %v vs %v", a, b)
+	}
+	seg := ArcSegmentLengthMM(pts[0], pts[1], SegmentArc)
+	segR := ArcSegmentLengthMM(pts[0], pts[1], SegmentArcR)
+	if math.Abs(seg-segR) > 1e-12 {
+		t.Errorf("segment lengths differ by side: %v vs %v", seg, segR)
+	}
+}
+
+// A flipped arc must be recognised as an arc everywhere the boolean used to
+// be asked. A consumer left comparing against SegmentArc alone silently
+// straightens every flipped segment.
+func TestFlippedArcCountsAsAnArc(t *testing.T) {
+	pl := Polyline{
+		Points:       [][2]float64{{0, 0}, {100, 0}},
+		SegmentTypes: []string{SegmentArcR},
+	}
+	if !pl.HasArcs() {
+		t.Error("HasArcs missed a flipped arc, so every fast path would skip its curve")
+	}
+	if got := pl.SegmentType(0); got != SegmentArcR {
+		t.Errorf("SegmentType = %q, want %q", got, SegmentArcR)
+	}
+	if len(pl.FlatPoints()) < 3 {
+		t.Error("FlatPoints did not expand a flipped arc")
+	}
+	if !IsArcType(SegmentArcR) || !IsArcType(SegmentArc) || IsArcType(SegmentLine) {
+		t.Error("IsArcType disagrees with the segment-type constants")
+	}
+	if !ArcFlipped(SegmentArcR) || ArcFlipped(SegmentArc) || ArcFlipped(SegmentLine) {
+		t.Error("ArcFlipped disagrees with the segment-type constants")
+	}
+	if FlipArcType(SegmentArc) != SegmentArcR || FlipArcType(SegmentArcR) != SegmentArc {
+		t.Error("FlipArcType must swap the two arc sides")
+	}
+	if FlipArcType(SegmentLine) != SegmentLine {
+		t.Error("a line has no side to flip")
+	}
+}
+
+// The tangents an arc leaves and rejoins its chord on swap with the side. The
+// bend list is built from these, so a flipped arc that reported the unflipped
+// tangents would put every adjacent bend angle on the wrong hand.
+func TestFlippedArcTangentsMirror(t *testing.T) {
+	p0 := [2]float64{0, 0}
+	p1 := [2]float64{100, 0}
+	lv, ar := SegmentTangents(p0, p1, SegmentArc)
+	flv, far := SegmentTangents(p0, p1, SegmentArcR)
+	if math.Abs(lv[0]-flv[0]) > 1e-12 || math.Abs(lv[1]+flv[1]) > 1e-12 {
+		t.Errorf("leaving tangents are not reflections: %v vs %v", lv, flv)
+	}
+	if math.Abs(ar[0]-far[0]) > 1e-12 || math.Abs(ar[1]+far[1]) > 1e-12 {
+		t.Errorf("arriving tangents are not reflections: %v vs %v", ar, far)
+	}
+}
+
+// The Go twin of the TypeScript reversal invariant: walking a reversed point
+// list with each arc's side flipped traces exactly the same glass, backwards.
+// This is the geometric statement Bug #11 could not make.
+func TestReversedPolylineWithFlippedSidesIsTheSameShape(t *testing.T) {
+	fwd := Polyline{
+		Points:       [][2]float64{{0, 0}, {100, 0}, {100, 80}, {20, 60}},
+		SegmentTypes: []string{SegmentArc, SegmentLine, SegmentArcR},
+	}
+	n := len(fwd.Points)
+	rev := Polyline{Points: make([][2]float64, n), SegmentTypes: make([]string, n-1)}
+	for i, p := range fwd.Points {
+		rev.Points[n-1-i] = p
+	}
+	for j := 0; j < n-1; j++ {
+		rev.SegmentTypes[j] = FlipArcType(fwd.SegmentTypes[n-2-j])
+	}
+
+	a := fwd.FlatPoints()
+	b := rev.FlatPoints()
+	if len(a) != len(b) {
+		t.Fatalf("flattened point counts differ: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		want := b[len(b)-1-i]
+		if math.Abs(a[i][0]-want[0]) > 1e-9 || math.Abs(a[i][1]-want[1]) > 1e-9 {
+			t.Fatalf("point %d: %v vs reversed %v", i, a[i], want)
+		}
+	}
+	if math.Abs(fwd.LengthMM()-rev.LengthMM()) > 1e-9 {
+		t.Errorf("lengths differ: %v vs %v", fwd.LengthMM(), rev.LengthMM())
+	}
+}
+
+// The cubics are what the SVG writer, the EPS/AI export and the PDF page all
+// draw from, so the side has to reach them. A flipped arc whose cubics still
+// bowed the unflipped way would show the operator the right curve on the
+// canvas and print its mirror — the exact split this schema exists to close.
+func TestArcCubicsFollowTheSide(t *testing.T) {
+	p0 := [2]float64{0, 0}
+	p1 := [2]float64{100, 0}
+
+	if got := ArcCubics(p0, p1, SegmentLine, false); got != nil {
+		t.Errorf("a line segment produced cubics: %v", got)
+	}
+
+	up := ArcCubics(p0, p1, SegmentArc, false)
+	down := ArcCubics(p0, p1, SegmentArcR, false)
+	if len(up) != len(down) || len(up) == 0 {
+		t.Fatalf("cubic counts differ or empty: %d vs %d", len(up), len(down))
+	}
+	sawBow := false
+	for i := range up {
+		if math.Abs(up[i].C1Y) > 1 {
+			sawBow = true
+		}
+		if math.Abs(up[i].C1X-down[i].C1X) > 1e-9 || math.Abs(up[i].C1Y+down[i].C1Y) > 1e-9 ||
+			math.Abs(up[i].C2X-down[i].C2X) > 1e-9 || math.Abs(up[i].C2Y+down[i].C2Y) > 1e-9 ||
+			math.Abs(up[i].X-down[i].X) > 1e-9 || math.Abs(up[i].Y+down[i].Y) > 1e-9 {
+			t.Fatalf("cubic %d is not a reflection: %+v vs %+v", i, up[i], down[i])
+		}
+	}
+	if !sawBow {
+		t.Error("the control points never left the chord; the test proves nothing")
+	}
+
+	// End to end through the SVG writer, which is what the validator, the EPS
+	// export and the printed pattern all consume.
+	docFor := func(st string) string {
+		return string(ToSVG(&Doc{
+			Version:   1,
+			ViewBoxMM: [4]float64{0, 0, 200, 200},
+			Runs: []Run{{
+				ID:       "r1",
+				Polyline: Polyline{Points: [][2]float64{p0, p1}, SegmentTypes: []string{st}},
+			}},
+		}))
+	}
+	upSVG, downSVG := docFor(SegmentArc), docFor(SegmentArcR)
+	if !strings.Contains(upSVG, "C") || !strings.Contains(downSVG, "C") {
+		t.Fatal("the SVG writer emitted no cubic for an arc segment")
+	}
+	if upSVG == downSVG {
+		t.Error("the two sides produced byte-identical SVG; the side never reached the writer")
 	}
 }

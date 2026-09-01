@@ -8,6 +8,7 @@ import {
   type DesignRun,
   type DesignVersion,
   type Project,
+  type SegmentKind,
   type TubeSpec,
   type ValidationReport,
 } from '../api';
@@ -33,6 +34,7 @@ import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepR
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
+import { isArcKind } from '../lib/arcGeom';
 
 // Tier 2 #99 — the OpenType dialog pulls in opentype.js, which is 250 kB
 // of parser (73 kB gzipped) that most editing sessions never touch.
@@ -1082,14 +1084,24 @@ export default function EditorPage() {
 
   // Tier 3 #78 — curve or straighten one segment. The vertex list does not
   // change, so nothing anchored by index moves.
-  function setSegmentType(runId: string, segmentIndex: number, type: 'line' | 'arc') {
+  function setSegmentType(runId: string, segmentIndex: number, type: SegmentKind) {
     editDoc((prev) => ops.setSegmentType(prev, runId, segmentIndex, type));
     setSelectedToOne(runId);
     setStatusMessage(
-      type === 'arc'
+      isArcKind(type)
         ? 'Segment converted to an arc — validation re-runs against the curve, not the chord.'
         : 'Segment straightened.',
     );
+  }
+
+  // Tier 3 #87 — move an arc's bow to the other side of its chord. The op
+  // reads the current side out of the doc it is handed, so the flip cannot go
+  // stale between the click and the state update; nothing here needs to know
+  // which side it is on.
+  function flipSegmentArc(runId: string, segmentIndex: number) {
+    editDoc((prev) => ops.flipSegmentArc(prev, runId, segmentIndex));
+    setSelectedToOne(runId);
+    setStatusMessage('Arc flipped — same endpoints, same length, bow on the other side.');
   }
 
   // Tier 2 #74 — raceway guideline handlers. Adding drops the line at the
@@ -2015,6 +2027,7 @@ export default function EditorPage() {
           onElectrodeContextMenu={openHousingPicker}
           onSetTool={setTool}
           onSetSegmentType={setSegmentType}
+          onFlipSegmentArc={flipSegmentArc}
           selectedGuidelineId={selectedGuidelineId}
           onSelectGuideline={setSelectedGuidelineId}
           onMoveGuideline={moveGuideline}

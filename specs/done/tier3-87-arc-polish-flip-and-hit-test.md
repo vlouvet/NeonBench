@@ -1,6 +1,30 @@
 # Tier 3 #87 — Arc polish: flip the bow, and hit-test the curve
 
-> **Status:** active · drafted 2026-08-31 · branch `task/3-arc-polish` · follow-up from Tier 3 #78
+> **Status:** done · PR #159 · drafted 2026-08-31 · branch `task/3-arc-polish` · follow-up from Tier 3 #78
+
+> **Amendments discovered during implementation** (the spec was right about the
+> hard part; these are the places it was not):
+>
+> - **Deliverable 5's reversal invariant does not hold literally on a CLOSED
+>   run.** Reversal is `points.reverse()`, so the reversed run starts at the
+>   original *last* vertex and its flattened walk is the reversed original
+>   **rotated**, not equal to it. Same glass, entered at a different point. The
+>   test compares closed runs as curves, pinning the rotation by vertex identity
+>   rather than fuzzy-matching it.
+> - **Gap 2's premise is partly stale.** The primary 2D click-to-select already
+>   followed the curve: the run's hit target is a 12px `pointerEvents="stroke"`
+>   path over the same cubics it draws. `nearestRunId` — used by click-to-select
+>   on a validation marker — did not, and it was **vertex**-based rather than
+>   chord-based, which is worse than described: a marker halfway along a 400 mm
+>   straight run reads as 200 mm away.
+> - **A flip is an op, not a canvas computation.** Having the canvas read the
+>   current side and ask for the opposite is the stale-read shape CLAUDE.md's
+>   bug-class 3 warns about; `flipSegmentArc` in `docOps.ts` reads the side from
+>   the doc it is handed.
+> - **Two pre-existing bugs surfaced in scope:** `splitRunBySegments` flattened a
+>   backwards live walk as `b -> a` (the mirror arc, samples from the far end),
+>   and `nodeMenuItems` gated on `=== 'arc'` so a flipped segment was offered
+>   "Convert to arc". Both fixed here.
 
 > **Priority raised 2026-08-31.** This is no longer polish. Bug #11 established
 > that a boolean arc flag **cannot survive a reversal**: `arcFor` always bows

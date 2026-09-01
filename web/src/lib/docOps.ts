@@ -16,6 +16,7 @@ import type {
   Dimension,
   Group,
   Label,
+  SegmentKind,
 } from '../api';
 import { computeBends, type BendPoint } from './bends';
 import {
@@ -25,7 +26,7 @@ import {
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection, runArcs } from './runArcs';
-import { segmentCount, segmentTypeAt } from './arcGeom';
+import { flipArcKind, isArcKind, segmentCount, segmentTypeAt } from './arcGeom';
 import {
   offsetOpenPolyline,
   offsetPolygon,
@@ -847,19 +848,24 @@ function perpDist(p: [number, number], a: [number, number], b: [number, number])
 // n. Leaving them alone is what Bug #11 reported — curvature jumping onto
 // whichever chords happened to inherit the old indices.
 //
-// KNOWN LIMITATION — arc handedness. `arcFor(p0, p1)` always bows toward
-// (-dy, dx), i.e. to the LEFT of travel, and `segment_types` cannot say
-// otherwise: internal/designdoc/types.go admits exactly "line" and "arc".
-// Reversing a chord flips that normal, so after ONE reverse each arc is
-// drawn mirrored about its (unchanged) chord. Vertices, chords, radii and
-// arc lengths all survive; only the side the bow falls on does not.
-// Preserving it properly needs a signed bulge — or "arc-cw"/"arc-ccw" — in
-// the schema, a Go-and-TypeScript change well outside this function. Two
-// consequences fall out of that and are pinned by tests:
-//   - reverseRun is an involution. Reversing twice restores the exact shape,
-//     because the two handedness flips cancel.
-//   - a mirror is reflect-then-reverse, and there the reflection's handedness
-//     flip cancels the reversal's, so mirrored arcs land on the right side.
+// ARC HANDEDNESS — Tier 3 #87. `arcFor` bows toward (-dy, dx), i.e. to the
+// LEFT of travel, so reversing a chord moves the bow to the other side. A
+// boolean "is an arc" therefore could not survive a reversal at all, which is
+// what Bug #11 reported and what PR #149's index remap could not fix.
+//
+// `segment_types` now stores the side ('arc' vs 'arc_r'), so the fix is to
+// flip each carried value as it moves: the two flips — the one the reversal
+// forces on the geometry, and the one applied to the stored side — cancel,
+// and the drawn curve does not move at all. Reversing an arc run is now
+// shape-preserving, which is what "reverse" has always claimed.
+//
+// The invariant that pins it is geometric, not a field assertion:
+// flatRunPoints(reversed) equals flatRunPoints(original) reversed.
+//
+// Do NOT add this flip to `mirrorRuns` in arrange.ts. A mirror is
+// reflect-then-reverse: the reflection already flips handedness once, the
+// reversal flips it back, and the stored side must stay put. Flipping there
+// too is a double-flip that inverts every mirrored curve.
 export function reverseRun(doc: DesignDoc, runId: string): DesignDoc {
   return mapRun(doc, runId, reversedRun);
 }
@@ -883,10 +889,13 @@ function reversedRun(run: DesignRun): DesignRun {
   // decoder rejects an array that isn't exactly segmentCount long.
   if (run.polyline.segment_types) {
     const count = segmentCount(run);
-    const moved: ('line' | 'arc')[] = [];
+    const moved: SegmentKind[] = [];
     for (let j = 0; j < count; j++) {
       const src = closed ? (((n - 2 - j) % n) + n) % n : n - 2 - j;
-      moved.push(segmentTypeAt(run, src));
+      // Index remap AND side flip. The remap alone was Bug #11's fix and
+      // still left every bow mirrored; the flip is what makes the reversal
+      // shape-preserving.
+      moved.push(flipArcKind(segmentTypeAt(run, src)));
     }
     polyline.segment_types = moved;
   }
@@ -1538,15 +1547,13 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
 // Annotations / electrodes / blockouts / bends are transformed through
 // the reversal + concatenation. The math is bug-prone — see tests.
 //
-// KNOWN LIMITATION — arc handedness, the same one reverseRun carries. Any
-// endpoint combination other than tail-to-head reverses an input, and
-// `arcFor` always bows to the LEFT of travel while `segment_types` admits
-// only "line" and "arc". So a reversed arc keeps its chord, radius and arc
-// length but is drawn mirrored about that chord. Which segments are curved
-// is preserved exactly; which side the bow falls on is not. Fixing that
-// needs a signed bulge (or "arc-cw"/"arc-ccw") in internal/designdoc and its
-// TypeScript twin — Tier 3 #87. A tail-to-head join reverses nothing and so
-// preserves the drawn shape outright.
+// ARC HANDEDNESS — was a known limitation, resolved by Tier 3 #87. Any
+// endpoint combination other than tail-to-head reverses an input, and `arcFor`
+// bows to the LEFT of travel, so a reversal used to draw every arc mirrored
+// about its (unchanged) chord. The reversal here is the shared `reversedRun`,
+// which now flips each segment's stored side ('arc' <-> 'arc_r') as it remaps
+// it, so the drawn curve stays put for ALL FOUR endpoint combinations. A
+// tail-to-head join still reverses nothing at all.
 export function joinRuns(
   doc: DesignDoc,
   runIdA: string,
@@ -1603,7 +1610,7 @@ export function joinRuns(
   // reversed or not — decayed to a straight chord. Build it only when one of
   // the inputs actually had one, so a pre-#78 pair still round-trips without
   // growing the key.
-  let joinedTypes: ('line' | 'arc')[] | undefined;
+  let joinedTypes: SegmentKind[] | undefined;
   if (a.polyline.segment_types || b.polyline.segment_types) {
     joinedTypes = [];
     for (let j = 0; j < joinedPts.length - 1; j++) {
@@ -3161,7 +3168,7 @@ export function setSegmentType(
   doc: DesignDoc,
   runId: string,
   segmentIndex: number,
-  type: 'line' | 'arc',
+  type: SegmentKind,
 ): DesignDoc {
   const run = doc.runs.find((r) => r.id === runId);
   if (!run) return doc;
@@ -3171,22 +3178,23 @@ export function setSegmentType(
 
   // An arc needs two distinct endpoints to define a circle. Refusing here
   // keeps a degenerate segment from being marked curved and then silently
-  // drawn straight by every consumer.
-  if (type === 'arc') {
+  // drawn straight by every consumer. Both sides are equally undefined on a
+  // zero-length chord, so the guard asks isArcKind rather than naming 'arc'.
+  if (isArcKind(type)) {
     const pts = run.polyline.points;
     const a = pts[segmentIndex];
     const b = pts[(segmentIndex + 1) % pts.length];
     if (a[0] === b[0] && a[1] === b[1]) return doc;
   }
 
-  const next: ('line' | 'arc')[] = [];
+  const next: SegmentKind[] = [];
   for (let i = 0; i < count; i++) {
     next.push(i === segmentIndex ? type : segmentTypeAt(run, i));
   }
 
   return mapRun(doc, runId, (r) => {
     const polyline = { ...r.polyline };
-    if (next.some((t) => t === 'arc')) {
+    if (next.some((t) => isArcKind(t))) {
       polyline.segment_types = next;
     } else {
       delete polyline.segment_types;
@@ -3209,4 +3217,23 @@ export function convertSegmentToLine(
   segmentIndex: number,
 ): DesignDoc {
   return setSegmentType(doc, runId, segmentIndex, 'line');
+}
+
+// flipSegmentArc — Tier 3 #87. Move an arc's bow to the other side of its
+// chord. The endpoints, the radius and the arc LENGTH are all unchanged; only
+// which side the glass falls on moves, so no takeoff, estimate or validation
+// number shifts under a flip.
+//
+// A no-op on a straight segment: there is no side to flip, and inventing one
+// would turn "flip" into a second, differently-named "convert to arc".
+export function flipSegmentArc(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  const current = segmentTypeAt(run, segmentIndex);
+  if (!isArcKind(current)) return doc;
+  return setSegmentType(doc, runId, segmentIndex, flipArcKind(current));
 }

@@ -299,9 +299,9 @@ type Polyline struct {
 	// pre-#78 blob has — means every segment is a straight line, so old
 	// docs load and render identically.
 	//
-	// The only non-default value is "arc": the glass between those two
-	// vertices follows a circular arc rather than the chord. Crucially this
-	// does NOT change the vertex list. Electrodes, bends, blockouts and
+	// The non-default values are "arc" and "arc_r": the glass between those
+	// two vertices follows a circular arc rather than the chord. Crucially
+	// this does NOT change the vertex list. Electrodes, bends, blockouts and
 	// annotations all index into Points, and an arc that inserted vertices
 	// would silently renumber every one of them. An arc changes what is
 	// drawn BETWEEN two vertices, nothing else.
@@ -309,10 +309,52 @@ type Polyline struct {
 }
 
 // Segment type values. Anything else is rejected at unmarshal.
+//
+// Tier 3 #87 — the SIDE the bow falls on is part of the value, because a
+// boolean "is an arc" cannot survive a point-order reversal. ArcFor bows to
+// the left of travel, so reversing a chord moves the centre to the other side
+// (probed: forward (50,-37.5), reversed (50,+37.5)), and no amount of index
+// remapping undoes it — Bug #11. With the side stored, an op that reverses
+// point order flips each arc's value and the drawn shape is preserved.
+//
+// "arc" keeps its pre-#87 meaning exactly: bow to the LEFT of travel, i.e.
+// toward the chord direction rotated to (-dy, dx). Every stored document
+// therefore reads back as the shape it was saved as, with no migration; and
+// omitempty keeps a pre-#78 blob byte-identical.
+//
+// "arc_r" is the mirror of "arc" about the chord — same endpoints, same
+// radius, same arc length, other side.
 const (
 	SegmentLine = "line"
 	SegmentArc  = "arc"
+	SegmentArcR = "arc_r"
 )
+
+// IsArcType reports whether a segment-type value draws a curve. Consumers ask
+// this rather than comparing against SegmentArc, which is now only one of the
+// two curved values — a bare `== SegmentArc` silently straightens every
+// flipped arc.
+func IsArcType(t string) bool { return t == SegmentArc || t == SegmentArcR }
+
+// ArcFlipped reports whether a segment-type value bows to the RIGHT of
+// travel. False for "line", which has no side at all.
+func ArcFlipped(t string) bool { return t == SegmentArcR }
+
+// FlipArcType returns the same segment with its bow on the other side of the
+// chord. A line has no side and comes back unchanged.
+//
+// This is what every point-order reversal owes each of its arcs: travelling a
+// chord backwards flips which side is "left", so the stored side must flip to
+// keep the glass where it was.
+func FlipArcType(t string) string {
+	switch t {
+	case SegmentArc:
+		return SegmentArcR
+	case SegmentArcR:
+		return SegmentArc
+	}
+	return SegmentLine
+}
 
 // ArcBulge is the arc's sagitta expressed as a fraction of half the chord —
 // the same quantity AutoCAD calls a bulge. 0.5 means the arc bows out from
@@ -335,8 +377,11 @@ func (p *Polyline) SegmentType(i int) string {
 	if i < 0 || i >= len(p.SegmentTypes) {
 		return SegmentLine
 	}
-	if p.SegmentTypes[i] == SegmentArc {
+	switch p.SegmentTypes[i] {
+	case SegmentArc:
 		return SegmentArc
+	case SegmentArcR:
+		return SegmentArcR
 	}
 	return SegmentLine
 }
@@ -345,7 +390,7 @@ func (p *Polyline) SegmentType(i int) string {
 // its existing fast path untouched for the overwhelmingly common case.
 func (p *Polyline) HasArcs() bool {
 	for _, t := range p.SegmentTypes {
-		if t == SegmentArc {
+		if IsArcType(t) {
 			return true
 		}
 	}
@@ -390,9 +435,9 @@ func (p *Polyline) UnmarshalJSON(data []byte) error {
 				len(out.SegmentTypes), want, len(out.Points), out.Closed)
 		}
 		for i, t := range out.SegmentTypes {
-			if t != SegmentLine && t != SegmentArc {
-				return fmt.Errorf("polyline: segment_types[%d] = %q, want %q or %q",
-					i, t, SegmentLine, SegmentArc)
+			if t != SegmentLine && !IsArcType(t) {
+				return fmt.Errorf("polyline: segment_types[%d] = %q, want %q, %q or %q",
+					i, t, SegmentLine, SegmentArc, SegmentArcR)
 			}
 		}
 	}

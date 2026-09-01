@@ -3,7 +3,7 @@ import type { DesignDoc, DesignRun } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
-import { flatRunPoints, segmentTypeAt } from './arcGeom';
+import { flatRunPoints, isArcKind, segmentTypeAt, walkSegmentLengthMM } from './arcGeom';
 import { blockoutSegments, runArcs } from './runArcs';
 import { threePointArcToPoints } from './shapes/arc';
 
@@ -3310,6 +3310,69 @@ describe('setSegmentType', () => {
     ops.convertSegmentToArc(doc, 'r1', 1);
     expect(doc.runs[0].polyline.segment_types).toBeUndefined();
   });
+
+  // -------------------------------------------------------------------------
+  // Tier 3 #87 — flipSegmentArc
+  // -------------------------------------------------------------------------
+
+  it('flips one arc to the other side and back', () => {
+    let doc = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    doc = ops.flipSegmentArc(doc, 'r1', 1);
+    expect(doc.runs[0].polyline.segment_types).toEqual(['line', 'arc_r']);
+    doc = ops.flipSegmentArc(doc, 'r1', 1);
+    expect(doc.runs[0].polyline.segment_types).toEqual(['line', 'arc']);
+  });
+
+  it('moves the drawn glass to the mirror of where it was, and nowhere else', () => {
+    const doc = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    const before = flatRunPoints(doc.runs[0]);
+    const after = flatRunPoints(ops.flipSegmentArc(doc, 'r1', 1).runs[0]);
+    expect(after).toHaveLength(before.length);
+    // Segment 1 runs [100,0] -> [200,0] along y = 0, so the flip is a
+    // reflection in y = 0 of exactly that segment's samples.
+    expectSamePoints(after, before.map(([x, y]) => [x, -y] as [number, number]));
+    // The chord is unmoved: the vertex list never changes under a flip.
+    expect(ops.flipSegmentArc(doc, 'r1', 1).runs[0].polyline.points)
+      .toEqual(doc.runs[0].polyline.points);
+  });
+
+  it('does not change the run length — a flip moves glass, it does not add any', () => {
+    const doc = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    const len = (d: DesignDoc) => {
+      const r = d.runs[0];
+      let total = 0;
+      for (let i = 0; i < r.polyline.points.length - 1; i++) {
+        total += walkSegmentLengthMM(r, i, i + 1);
+      }
+      return total;
+    };
+    expect(len(ops.flipSegmentArc(doc, 'r1', 1))).toBeCloseTo(len(doc), 12);
+  });
+
+  it('is a no-op on a straight segment, a bad index and a missing run', () => {
+    const doc = ops.convertSegmentToArc(docOf([line3()]), 'r1', 1);
+    expect(ops.flipSegmentArc(doc, 'r1', 0)).toBe(doc); // segment 0 is a line
+    expect(ops.flipSegmentArc(doc, 'r1', 9)).toBe(doc);
+    expect(ops.flipSegmentArc(doc, 'r1', -1)).toBe(doc);
+    expect(ops.flipSegmentArc(doc, 'nope', 1)).toBe(doc);
+    expect(ops.flipSegmentArc(docOf([line3()]), 'r1', 1)).toBeTruthy();
+    expect(ops.flipSegmentArc(docOf([line3()]), 'r1', 1).runs[0].polyline.segment_types)
+      .toBeUndefined();
+  });
+
+  it('leaves index-anchored data untouched, exactly as convert does', () => {
+    const run: DesignRun = {
+      ...line3(),
+      electrodes: [{ point_index: 0 }, { point_index: 2 }],
+      bends: [{ live_index: 1 }],
+      annotations: [{ kind: 'support', live_index: 1 }],
+    };
+    const doc = ops.convertSegmentToArc(docOf([run]), 'r1', 1);
+    const next = ops.flipSegmentArc(doc, 'r1', 1).runs[0];
+    expect(next.electrodes).toEqual(run.electrodes);
+    expect(next.bends).toEqual(run.bends);
+    expect(next.annotations).toEqual(run.annotations);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3320,10 +3383,12 @@ describe('setSegmentType', () => {
 // the chords they describe or the curvature lands on the wrong piece of
 // glass — which is what the bug reported.
 //
-// The one part of the shape reversal cannot preserve is arc handedness: the
-// schema's "arc" always bows left of travel, so a single reverse mirrors each
-// arc about its (unchanged) chord. That is pinned explicitly below rather
-// than left to be rediscovered.
+// Arc handedness used to be the one part of the shape a reversal could not
+// preserve: "arc" always bows left of travel, so a single reverse mirrored
+// every arc about its (unchanged) chord. Tier 3 #87 gave the schema a signed
+// side ('arc' / 'arc_r'), and reversedRun now flips it as it remaps — so the
+// KNOWN-LIMITATION test that pinned the mirroring has been replaced by the
+// real geometric invariant at the bottom of this block.
 // ---------------------------------------------------------------------------
 
 const REV_EPS = 1e-9;
@@ -3342,6 +3407,32 @@ function expectSamePoints(got: [number, number][], want: [number, number][]) {
   }
 }
 
+// expectSameClosedCurve compares two flattened CLOSED walks as curves rather
+// than as lists.
+//
+// Reversing a closed run is `points.slice().reverse()`, so the reversed run
+// starts at the ORIGINAL LAST vertex, not at the original first one. Its
+// flattened walk is therefore the reversed original walk rotated to a
+// different start — the same glass, entered at a different point. Comparing
+// the two lists element-for-element would fail on that rotation alone and say
+// nothing about the shape, which is the thing under test.
+//
+// The rotation is not fuzzy-matched: `got[0]` is a VERTEX, every vertex
+// appears exactly once in a flattened walk (FlattenSegment lands exactly on
+// its declared endpoint), and the assertion below insists on that uniqueness
+// before rotating.
+function expectSameClosedCurve(got: [number, number][], want: [number, number][]) {
+  expect(nearPt(got[0], got[got.length - 1])).toBe(true);
+  expect(nearPt(want[0], want[want.length - 1])).toBe(true);
+  const g = got.slice(0, -1);
+  const w = want.slice(0, -1);
+  expect(g.length).toBe(w.length);
+  const starts = w.map((p, i) => (nearPt(p, g[0]) ? i : -1)).filter((i) => i >= 0);
+  expect(starts, `got[0] = [${g[0]}] should appear exactly once in the expected walk`)
+    .toHaveLength(1);
+  expectSamePoints(g, w.slice(starts[0]).concat(w.slice(0, starts[0])));
+}
+
 // arcChords describes where the curvature lives independently of walk
 // direction: one canonical key per arc segment, built from the UNORDERED pair
 // of endpoints. Same set before and after means every arc is still on the
@@ -3352,7 +3443,9 @@ function arcChords(run: DesignRun): string[] {
   const segs = run.polyline.closed ? n : n - 1;
   const out: string[] = [];
   for (let i = 0; i < segs; i++) {
-    if (segmentTypeAt(run, i) !== 'arc') continue;
+    // isArcKind, not `!== 'arc'`: a reversal now yields 'arc_r', and a bare
+    // equality check would report "no arcs here" and pass vacuously.
+    if (!isArcKind(segmentTypeAt(run, i))) continue;
     const a = `${pts[i][0]},${pts[i][1]}`;
     const b = `${pts[(i + 1) % n][0]},${pts[(i + 1) % n][1]}`;
     out.push([a, b].sort().join('|'));
@@ -3399,7 +3492,10 @@ describe('reverseRun and arc segments (Bug #11)', () => {
   it('moves segment_types with the chords on an OPEN run (new j = old n-2-j)', () => {
     const doc = openArcRun();
     const rev = ops.reverseRun(doc, 'run-1').runs[0];
-    expect(rev.polyline.segment_types).toEqual(['arc', 'line', 'arc', 'line']);
+    // Tier 3 #87 — the remap carries the segment AND the flip carries the
+    // side. Both inputs were 'arc' (left of the old travel direction), so
+    // reversed they are 'arc_r' (right of the new one) — the same glass.
+    expect(rev.polyline.segment_types).toEqual(['arc_r', 'line', 'arc_r', 'line']);
     expect(arcChords(rev)).toEqual(arcChords(doc.runs[0]));
   });
 
@@ -3407,8 +3503,15 @@ describe('reverseRun and arc segments (Bug #11)', () => {
     const doc = closedArcRun();
     const rev = ops.reverseRun(doc, 'run-1').runs[0];
     // n = 4, so new j takes old (2-j) mod 4: [old2, old1, old0, old3].
-    expect(rev.polyline.segment_types).toEqual(['line', 'line', 'arc', 'line']);
+    expect(rev.polyline.segment_types).toEqual(['line', 'line', 'arc_r', 'line']);
     expect(arcChords(rev)).toEqual(arcChords(doc.runs[0]));
+  });
+
+  it('is an involution on the stored side, not just on the geometry', () => {
+    for (const doc of [openArcRun(), closedArcRun()]) {
+      const twice = ops.reverseRun(ops.reverseRun(doc, 'run-1'), 'run-1').runs[0];
+      expect(twice.polyline.segment_types).toEqual(doc.runs[0].polyline.segment_types);
+    }
   });
 
   it('leaves a line-only run exactly as it always reversed', () => {
@@ -3524,35 +3627,66 @@ describe('reverseRun and arc segments (Bug #11)', () => {
     expect(ops.reverseRun(doc, 'run-1').runs[0].direction).toBeUndefined();
   });
 
-  // KNOWN LIMITATION, pinned so it cannot drift unnoticed.
+  // THE INVARIANT — Tier 3 #87. This replaces the KNOWN-LIMITATION test PR
+  // #149 left here, which pinned the opposite behaviour: that a single reverse
+  // MIRRORED each arc about its chord, because a boolean "arc" could not say
+  // which side the bow fell on. The schema can now say it, `reversedRun` flips
+  // it with the reversal, and reversing has become what it always claimed to
+  // be — a change of travel direction that does not move any glass.
   //
-  // `segment_types` has exactly two values, "line" and "arc", and arcFor()
-  // always bows to the LEFT of travel. Reversing a chord flips that normal,
-  // so one reverse draws each arc mirrored about its chord: same endpoints,
-  // same radius, same length, opposite side. Preserving the bow needs a
-  // signed bulge (or arc-cw/arc-ccw) in internal/designdoc — out of scope
-  // here. When that lands, this test should be replaced by the real
-  // invariant: flatRunPoints(reverse(run)) === flatRunPoints(run) reversed.
-  it('mirrors an arc about its chord after a single reverse (schema limit)', () => {
-    const doc: DesignDoc = {
-      version: 1,
-      view_box_mm: [0, 0, 20, 20],
-      runs: [
-        {
+  // Deliberately geometric rather than field-by-field: field assertions pass
+  // while the drawn shape is wrong, which is exactly how Bug #11 shipped.
+  describe('reversing preserves the drawn curve exactly', () => {
+    const cases: [string, DesignDoc][] = [
+      ['a single open arc', {
+        version: 1,
+        view_box_mm: [0, 0, 20, 20],
+        runs: [{
           id: 'run-1',
           polyline: { points: [[0, 0], [10, 0]], closed: false, segment_types: ['arc'] },
-        },
-      ],
-    };
-    const before = flatRunPoints(doc.runs[0]);
-    const after = flatRunPoints(ops.reverseRun(doc, 'run-1').runs[0]);
-    // The original bows to +y; the reversed one is its reflection in y = 0,
-    // walked backwards. Every vertex and the chord itself are untouched.
-    expect(before.some((p) => p[1] > 1)).toBe(true);
-    expectSamePoints(
-      after,
-      before.slice().reverse().map(([x, y]) => [x, -y] as [number, number]),
-    );
+        }],
+      }],
+      ['an open run with arcs on both sides', {
+        version: 1,
+        view_box_mm: [0, 0, 60, 60],
+        runs: [{
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [10, 0], [10, 10], [20, 10], [20, 20]],
+            closed: false,
+            segment_types: ['arc', 'line', 'arc_r', 'arc'],
+          },
+        }],
+      }],
+      ['a closed run, where the segment remap wraps', {
+        version: 1,
+        view_box_mm: [0, 0, 60, 60],
+        runs: [{
+          id: 'run-1',
+          polyline: {
+            points: [[0, 0], [30, 0], [30, 30], [0, 30]],
+            closed: true,
+            segment_types: ['arc', 'line', 'arc_r', 'arc'],
+          },
+        }],
+      }],
+      ['the open-arc fixture the rest of this block uses', openArcRun()],
+      ['the closed-arc fixture the rest of this block uses', closedArcRun()],
+    ];
+
+    for (const [name, doc] of cases) {
+      it(`flatRunPoints(reverse(r)) equals flatRunPoints(r) reversed — ${name}`, () => {
+        const run = doc.runs[0];
+        const before = flatRunPoints(run);
+        const after = flatRunPoints(ops.reverseRun(doc, 'run-1').runs[0]);
+        // Guard against a vacuous pass: the fixture must actually bow off its
+        // own chords, or "same points" would only be saying "still straight".
+        expect(before.length).toBeGreaterThan(run.polyline.points.length);
+        const want = before.slice().reverse();
+        if (run.polyline.closed) expectSameClosedCurve(after, want);
+        else expectSamePoints(after, want);
+      });
+    }
   });
 });
 
@@ -3673,6 +3807,28 @@ describe('joinRuns and arc segments (Bug #14)', () => {
       expect(arcChords(joined)).toEqual(
         [...arcChords(doc.runs[0]), ...arcChords(combo.b)].sort(),
       );
+    });
+
+    // Tier 3 #87 — the stronger claim the signed side makes possible. Bug #14
+    // could only pin WHICH chords were curved, because a reversed input had
+    // its bows mirrored and there was no way to say otherwise. Now the drawn
+    // glass itself has to survive, for every endpoint combination.
+    it(`keeps every bow on the side it was drawn — ${combo.name}`, () => {
+      const doc = joinDoc(combo.b);
+      const joined = ops.joinRuns(doc, 'a', combo.endpointA, 'b', combo.endpointB).runs[0];
+      const drawn = flatRunPoints(joined);
+      // Every sample of each input's own curve must appear in the joined
+      // curve. Order and direction are the join's business; position is not.
+      for (const input of [doc.runs[0], combo.b]) {
+        for (const p of flatRunPoints(input)) {
+          expect(
+            drawn.some((q) => nearPt(q, p)),
+            `${combo.name}: sample [${p}] from run ${input.id} is not on the joined curve`,
+          ).toBe(true);
+        }
+      }
+      // Teeth: these fixtures really do bow, so the check is not vacuous.
+      expect(drawn.length).toBeGreaterThan(joined.polyline.points.length + 20);
     });
   }
 
