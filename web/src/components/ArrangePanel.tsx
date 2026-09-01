@@ -33,6 +33,7 @@ import {
   type PitchMode,
   type StepRepeatOptions,
 } from '../lib/stepRepeat';
+import { NumericField } from './NumericField';
 
 export type ArrangePanelProps = {
   doc: DesignDoc | null;
@@ -364,10 +365,9 @@ export default function ArrangePanel({
       <div style={fieldRowStyle}>
         <label style={fieldStyle}>
           Across
-          <input
-            type="number"
+          <NumericField
+            integer
             min={1}
-            step={1}
             value={countX}
             data-testid="step-repeat-count-x"
             style={fieldInputStyle}
@@ -376,10 +376,9 @@ export default function ArrangePanel({
         </label>
         <label style={fieldStyle}>
           Down
-          <input
-            type="number"
+          <NumericField
+            integer
             min={1}
-            step={1}
             value={countY}
             data-testid="step-repeat-count-y"
             style={fieldInputStyle}
@@ -390,9 +389,7 @@ export default function ArrangePanel({
       <div style={fieldRowStyle}>
         <label style={fieldStyle}>
           {pitchLabel} X (mm)
-          <input
-            type="number"
-            step="any"
+          <NumericField
             value={pitchX}
             data-testid="step-repeat-pitch-x"
             style={fieldInputStyle}
@@ -401,9 +398,7 @@ export default function ArrangePanel({
         </label>
         <label style={fieldStyle}>
           {pitchLabel} Y (mm)
-          <input
-            type="number"
-            step="any"
+          <NumericField
             value={pitchY}
             data-testid="step-repeat-pitch-y"
             style={fieldInputStyle}
