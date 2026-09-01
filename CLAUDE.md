@@ -296,7 +296,7 @@ To add a schema migration:
 Don't accept these as tasks even if asked, without first confirming with the user:
 
 - Vinyl-cutter / plotter driver work (NW #91, 95, 101–105, 107)
-- Effects / shadows for marketing renders (NW #61–73, 142–148)
+- Shadows and compositing for marketing renders — Cast / Drop / Soft / Extruded / Perspective Shadow, Clipping Paths, Warp (part of NW #61–73), plus all of #142–148. **Not the whole #61–73 range:** that blanket wording used to cover **Weld** (boolean union of overlapping outlines), which script and connected lettering genuinely need and which nothing here provides — that one is a real gap, not a "no". Contour, Inline/Outline and Knife in the same range already ship. See `todo.md` Appendix A → Effects for the split.
 - TWAIN / WIA scanner integration (NW #58, 146)
 - Color vectorizing — single-color binarize is the right model for tube production (NW #59)
 - Email / spell-check / customizable toolbar (NW #110, 111, 114)
