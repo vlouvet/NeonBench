@@ -188,6 +188,26 @@ For any UI change: drive the real build in a browser, and assert on **data read
 back out** — the saved doc, the API response, the generated PDF — not on the
 render layer you just drew.
 
+**There is no DOM test environment, and that is deliberate.** `vite.config.ts`
+declares no `test` block, and neither jsdom, happy-dom nor testing-library is a
+dependency, so `vitest` runs in plain node. There is no `document`, so nothing
+that needs one — clicks, focus, refs, effects, layout, `useState` transitions —
+can be tested here at all. **That is the whole bulleted list above:** every one
+of those bugs is invisible to this suite by construction, which is why the rule
+is to drive the real build.
+
+**What you CAN do in node is render to static markup.** `NumericField.test.tsx`
+is the worked example: `renderToStaticMarkup` from `react-dom/server` returns
+the emitted HTML as a string, so a component's *output contract* is testable
+even though its behaviour is not — it asserts `step="any"` is emitted, and that
+a hostile `{...spread}` cannot smuggle `step="0.05"` past the wrapper. Reach for
+this whenever the thing you need to pin is "what attributes/markup does this
+produce", and reach for the browser for anything that involves an interaction.
+
+Do **not** add a DOM harness so that the thing you just changed becomes
+testable. It is a large, unrequested change riding inside an unrelated PR; say
+you need it and let the user decide.
+
 ### 4. Go and TypeScript twins must move together
 
 `internal/designdoc/arc.go` ↔ `web/src/lib/arcGeom.ts`; the validator's
