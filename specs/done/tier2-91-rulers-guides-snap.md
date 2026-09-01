@@ -1,6 +1,6 @@
 # Tier 2 #91 — Rulers, construction guides, and snap-to-guides
 
-> **Status:** active · started 2026-08-31 · branch `task/2-rulers-guides`
+> **Status:** done · started 2026-08-31 · branch `task/2-rulers-guides` · PR #147
 
 ## Goal
 
