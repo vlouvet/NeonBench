@@ -4403,6 +4403,190 @@ describe('joinRuns carries classification (Bug #15)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tier 3 #110 — what NEONIZE's output inherits.
+//
+// The fifth instance of CLAUDE.md bug class 1, and the first one where "carry
+// everything" is the wrong fix. splitRun and joinRuns produce a run of the same
+// nature as their input, so a dropped field there is pure loss. neonize is not
+// that op: it consumes a channel-letter face OUTLINE and emits the TUBE PATHS
+// that light it, replacing the source. The output is a different kind of object
+// from the input, so each field gets its own answer (see CARRY_NEONIZED in
+// docOps.ts):
+//
+//   is_channel_letter_face  NO — tubes are glass, not sheet metal
+//   channel_letter_depth_mm NO — describes how far the FACE projects
+//   raceway_id              YES — the glass really does land in that box
+//   group_id                YES — the offsets are the same logical letter
+//   kind                    YES — a neonized jumper stays a jumper
+//   direction               NO  — the emitted path is not the source's walk
+//
+// The face flag is the expensive one and it goes BOTH ways. Dropping it is what
+// broke splitRun in PR #140 (no strip page for metal that IS being cut);
+// carrying it here would emit a return-strip page for metal that is NOT being
+// cut — the fabricator gets a drawing for a part that does not exist. Both
+// strip-page paths in internal/printpdf/render.go gate on IsChannelLetterFace
+// (the per-run loop directly, the shared-raceway one through groupByRaceway),
+// so "no run in the output carries the flag" is the same condition as "the PDF
+// grows no strip pages".
+// ---------------------------------------------------------------------------
+describe('neonize classification carry (Tier 3 #110)', () => {
+  // A channel-letter face outline with every classification field set.
+  // `kind: 'jumper'` on a face is contrived — no shop draws a face as a jumper
+  // — but it is the only way to watch `kind` carry at all, and the two fields
+  // are independent.
+  function faceDoc(extra: Partial<DesignRun> = {}): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [{
+        id: 'face',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 100]] as [number, number][],
+          closed: true,
+        },
+        tube_diameter_mm: 12,
+        is_channel_letter_face: true,
+        channel_letter_depth_mm: 90,
+        raceway_id: 'gl1',
+        group_id: 'g1',
+        kind: 'jumper',
+        ...extra,
+      }],
+    };
+  }
+  const emitted = (doc: DesignDoc) => doc.runs.filter((r) => r.id !== 'face');
+
+  it('the fixture really is fully classified (guards the negatives below)', () => {
+    // Bug class 7 defence: every "did NOT carry" assertion in this block is
+    // vacuous if the source never had the field. Pin the fixture once.
+    const src = faceDoc().runs[0];
+    expect(src.is_channel_letter_face).toBe(true);
+    expect(src.channel_letter_depth_mm).toBe(90);
+    expect(src.raceway_id).toBe('gl1');
+    expect(src.group_id).toBe('g1');
+    expect(src.kind).toBe('jumper');
+  });
+
+  it('the emitted tubes are NOT faces — no strip page for metal nobody is cutting', () => {
+    const out = ops.neonize(faceDoc(), 'face', 20).doc;
+    expect(out.runs.length).toBe(2);
+    expect(out.runs.find((r) => r.id === 'face')).toBeUndefined();
+    for (const r of out.runs) {
+      expect('is_channel_letter_face' in r).toBe(false);
+      expect('channel_letter_depth_mm' in r).toBe(false);
+    }
+
+    // NEGATIVE CONTROL. Those two assertions also pass on a neonize that
+    // carries nothing at all, which is what shipped before this change — so on
+    // their own they say nothing about whether the decision is expressed in the
+    // code or merely absent from it. Run the SAME source through splitRun,
+    // which shares the helper and whose answer is the opposite: route neonize
+    // through splitRun's field set and the loop above fails; gut the helper to
+    // make that pass and this half fails.
+    for (const h of ops.splitRun(faceDoc(), 'face', 2).runs) {
+      expect(h.is_channel_letter_face).toBe(true);
+      expect(h.channel_letter_depth_mm).toBe(90);
+    }
+  });
+
+  it('raceway_id, group_id and kind survive onto BOTH offsets', () => {
+    const out = ops.neonize(faceDoc(), 'face', 20).doc;
+    const runs = emitted(out);
+    expect(runs.map((r) => r.id).sort()).toEqual(['face-inner', 'face-outer']);
+    for (const r of runs) {
+      // The tubes terminate at the same raceway the face did, and the box is
+      // sized to reach every tagged run whether or not it is a face.
+      expect(r.raceway_id).toBe('gl1');
+      // The offsets are the same logical letter — and neonize REPLACES the
+      // source, so dropping this leaves the group a member down.
+      expect(r.group_id).toBe('g1');
+      expect(r.kind).toBe('jumper');
+    }
+  });
+
+  it('the stitched variant inherits the same set', () => {
+    // One continuous run instead of two, same inheritance question.
+    const out = ops.neonize(faceDoc(), 'face', 20, { stitch: true }).doc;
+    const runs = emitted(out);
+    expect(runs.map((r) => r.id)).toEqual(['face-stitched']);
+    const r = runs[0];
+    expect(r.raceway_id).toBe('gl1');
+    expect(r.group_id).toBe('g1');
+    expect(r.kind).toBe('jumper');
+    expect('is_channel_letter_face' in r).toBe(false);
+    expect('channel_letter_depth_mm' in r).toBe(false);
+  });
+
+  it('an open source neonizes with the same inheritance as a closed one', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [{
+        id: 'face',
+        polyline: { points: [[0, 0], [50, 0], [100, 0]] as [number, number][], closed: false },
+        is_channel_letter_face: true,
+        raceway_id: 'gl1',
+        group_id: 'g1',
+      }],
+    };
+    for (const r of emitted(ops.neonize(doc, 'face', 10).doc)) {
+      expect(r.raceway_id).toBe('gl1');
+      expect(r.group_id).toBe('g1');
+      expect('is_channel_letter_face' in r).toBe(false);
+    }
+  });
+
+  it('direction never carries, even though the memberships do', () => {
+    // `direction` means something only on a closed run with two electrodes, and
+    // the offsets are not the walk the source described. Asserted alongside a
+    // field that DOES carry, so the absence is a decision the code made rather
+    // than a carry that never ran.
+    const out = ops.neonize(faceDoc({ direction: 'forward' }), 'face', 20).doc;
+    for (const r of emitted(out)) {
+      expect('direction' in r).toBe(false);
+      expect(r.raceway_id).toBe('gl1');
+    }
+  });
+
+  it('an unclassified source emits exactly the keys it always did', () => {
+    // DisallowUnknownFields is unforgiving, and so is the round trip: a key
+    // holding `undefined` disappears through JSON.stringify, so the object the
+    // editor holds would stop matching the doc the server stores. toStrictEqual
+    // is what catches that; toEqual would not.
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [{
+        id: 'plain',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 100]] as [number, number][],
+          closed: true,
+        },
+        tube_diameter_mm: 12,
+        color: 'classic-red',
+        notes: '15kV @ 60mA',
+      }],
+    };
+    for (const r of ops.neonize(doc, 'plain', 20).doc.runs) {
+      expect(Object.keys(r).sort())
+        .toEqual(['color', 'id', 'notes', 'polyline', 'tube_diameter_mm']);
+      expect(JSON.parse(JSON.stringify(r))).toStrictEqual(r);
+    }
+    // And the stitched shape, which builds its run through the same helper.
+    for (const r of ops.neonize(doc, 'plain', 20, { stitch: true }).doc.runs) {
+      expect(Object.keys(r).sort())
+        .toEqual(['color', 'id', 'notes', 'polyline', 'tube_diameter_mm']);
+      expect(JSON.parse(JSON.stringify(r))).toStrictEqual(r);
+    }
+  });
+
+  it('an empty-string kind stays empty rather than becoming a jumper', () => {
+    const out = ops.neonize(faceDoc({ kind: '' }), 'face', 20).doc;
+    for (const r of emitted(out)) expect(r.kind ?? '').toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Bug #16's neighbour audit — the ops next door that also assume raw points.
 //
 // Both of these change a run's VERTEX COUNT and left `polyline.segment_types`
