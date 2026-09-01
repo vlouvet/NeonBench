@@ -112,24 +112,37 @@ describe('the no-restricted-syntax rule behind NumericField', () => {
     expect(await lint(good, 'src/components/zz-lint-probe.tsx')).toHaveLength(0);
   });
 
-  it('keeps the exemption list to the wrapper plus the two known follow-up files', async () => {
-    // If someone adds a file here to make their lint error go away, this
-    // test fails and makes them say so out loud. The two page entries are
-    // the row 105 follow-up and are expected to shrink to zero, never grow.
-    const { NUMERIC_INPUT_EXEMPT_FILES } = await import('../../eslint.config.js');
-    expect(NUMERIC_INPUT_EXEMPT_FILES).toEqual([
+  it('exempts exactly the wrapper plus the two known follow-up files', async () => {
+    // Asserted against the RESOLVED config for every source file, not
+    // against the exported list, so it measures the rule's actual reach. If
+    // someone exempts another file to make their lint error go away, this
+    // fails and makes them say so out loud. The two page entries are the
+    // row 105 follow-up and are expected to shrink to zero, never grow.
+    const cwd = new URL('../..', import.meta.url).pathname;
+    const eslint = new ESLint({ cwd });
+    // `import.meta.glob` rather than a filesystem walk: `src` is browser
+    // code and its tsconfig deliberately excludes node types. Keys come back
+    // root-relative ('/src/...'); nothing is imported, only enumerated.
+    const files = Object.keys(import.meta.glob('/src/**/*.tsx'))
+      .map((f) => f.replace(/^\//, ''))
+      .filter((f) => !f.endsWith('.test.tsx'))
+      .sort();
+    expect(files.length).toBeGreaterThan(20); // guard against a vacuous glob
+
+    const exempt: string[] = [];
+    for (const f of files) {
+      const config = await eslint.calculateConfigForFile(f);
+      const severity = config.rules?.['no-restricted-syntax']?.[0];
+      // Severity must be error everywhere it is on: never softened to a
+      // warning, which is how the prose version of this rule failed.
+      if (severity === 0) exempt.push(f);
+      else expect(severity).toBe(2);
+    }
+
+    expect(exempt).toEqual([
+      'src/components/ArrangePanel.tsx',
       'src/components/NumericField.tsx',
       'src/pages/EditorPage.tsx',
-      'src/components/ArrangePanel.tsx',
     ]);
-  });
-
-  it('still reports the rule as an error for a normal source file', async () => {
-    // Guards the severity specifically: the failure mode this whole row
-    // exists to prevent is the rule being softened to a warning so a build
-    // can go green.
-    const eslint = new ESLint({ cwd: new URL('../..', import.meta.url).pathname });
-    const config = await eslint.calculateConfigForFile('src/pages/ProjectList.tsx');
-    expect(config.rules['no-restricted-syntax'][0]).toBe(2);
   });
 });
