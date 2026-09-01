@@ -1,6 +1,6 @@
 # Bug #16 — Neonize offsets an arc run's chords, not its curve
 
-> **Status:** active · found 2026-09-01
+> **Status:** done · PR #161 · found 2026-09-01
 
 ## Symptom
 
