@@ -1,5 +1,11 @@
 # Tier 3 #111 — Make TS run length arc-aware
 
+> **Status:** done · shipped as `runLengthMM` / `chordLengthMM` in
+> `web/src/lib/docOps.ts`. Every premise above was re-verified against the code
+> and against the running Go pipeline; see **Outcome** at the bottom for the
+> two places reality was more involved than the spec, and for the two bugs this
+> work turned up (`specs/active/bug-17`, `specs/active/bug-18`).
+
 **Filed by:** the Bug #16 agent, deliberately not fixed in PR #161.
 **Class:** Go/TS twin divergence (`CLAUDE.md` recurring bug class 4) + the
 "measure the way the consumer measures" rule.
@@ -149,3 +155,65 @@ Tier 3 #112 has since shipped (PR #173) and its edits to this file are already
 on `main`; line 651 was unaffected and is still 651. **You are the only agent
 in this round**, so no conflict is expected — but do not restructure, reformat,
 or reorder anything in that file regardless.
+
+---
+
+## Outcome (2026-09-01)
+
+Shipped as specced, with two additions the spec did not anticipate. Every
+number below was measured, not derived.
+
+### The three call sites were not three interchangeable measurements
+
+Migrating `docOps.ts:3082` naively — `const length = runLengthMM(run)` and
+nothing else — **regresses** auto-split on long curved runs. That `length` is
+used twice: once to decide whether to split, and once as the distance handed to
+`cutIntoEqualPieces`, whose walk (`splitRunAtArcLength`) sums straight chords
+over raw vertices and interpolates the inserted vertex along a chord. Feed it
+an arc length and every cut lands ~16% too far along; on a run needing several
+cuts the last one falls off the end, `cutIntoEqualPieces` returns null, all
+three retries fail and the run is left **unsplit** — silently, on exactly the
+runs the pass exists to fix. Probed: a 900mm chord marked `arc` against a 100mm
+limit went from 10 pieces to 0.
+
+So the op now carries two metrics on purpose: `runLengthMM` decides *whether*
+and *how many*, `chordLengthMM` decides *where*. The regression has its own
+test (`still cuts a long arc run into enough pieces to clear the limit`), which
+fails on both the pre-#111 code and the naive migration.
+
+### Renamed rather than added
+
+`polylineLengthMM` → `chordLengthMM`. The name was the trap: a polyline in this
+schema can contain arcs, so a caller holding a run reached for a function whose
+name promised the run's length and got its chords. `runLengthMM(run)` is now
+the obvious call and `chordLengthMM(points, closed)` says what it limits itself
+to. Call sites: two in `docOps.ts`, one in `EditorPage.tsx`, the rest in tests.
+
+### Verified end to end, not just in vitest
+
+Real build, real server, Playwright, stock 12mm spec (2500mm limit), one run of
+chord 2400 marked `arc`:
+
+- badge/button read **"Split overlong tubes (1)"** and was enabled (chord 2400
+  is under the limit; the glass, 2782mm, is not — pre-#111 this button was
+  disabled and the operator had no way to act on the validator's complaint)
+- validator on the saved doc: `tube run 2782mm exceeds max segment length
+  2500mm` before, **no `max_segment_length` issues** after. The fix the TS side
+  believes it applied is one the Go validator agrees with, which was the point.
+
+### Two bugs found, neither fixed here
+
+- **`specs/active/bug-17-splitrun-drops-arcs.md`** — `splitRun` drops
+  `segment_types`, so every cut straightens the glass: the same probe run lost
+  382mm (13.7%) of tube between `total_length_mm` 5181.90 and 4800.00.
+  `insertVertex` separately leaves the array the wrong LENGTH, which the Go
+  decoder rejects with a 400 — reachable from the canvas node menu.
+- **`specs/active/bug-18-closing-segment-arc-ignored.md`** — an arc on a closed
+  run's *closing* segment is ignored by both emitters (`indicesToD` and Go's
+  `emitPath` write a bare `Z`) but honoured by `flatRunPoints`. So on that one
+  segment this task's new length is more curve than the operator is shown or
+  the bender receives.
+
+The closed-run test the spec asked for uses `['arc','arc','arc','line']` for
+this reason: with `'arc'` in the closing slot the Go and TS numbers legitimately
+disagree, and pinning that would have pinned bug #18 as correct.
