@@ -390,6 +390,26 @@ under **Git Bash**, which ships with Git for Windows.
    Validation re-runs 500 ms after the last edit; the header badge
    shows error/warning counts.
 
+   **Merge outlines** — for connected script and overlapping lettering:
+   select two or more **closed** runs and click **Merge N outlines**.
+   They are replaced by the boundary of their union, so two letter
+   bodies that overlap become one outline Neonize can turn into a
+   single continuous tube path instead of two. (NeonWizard calls this
+   effect *Weld*; NeonBench doesn't, because `weld` already means the
+   physical glass joint the validator spaces electrodes against.)
+   Holes survive: two overlapping **O**s come back as one outer
+   boundary plus both counters, each its own closed run, so a
+   channel-letter face still gets an inner return. Three things the
+   op tells you in the toast rather than doing quietly: arc segments
+   are **flattened to straight segments** first (a union boundary has
+   no arc form, so the result carries no curve data — undo if you
+   need the curves); electrodes, blockouts, bends and annotations are
+   **dropped** with a count, because they address vertices the merge
+   dissolves; and channel-letter, raceway, group and kind settings are
+   carried only when every input agrees on them. Outlines that merely
+   touch, or don't overlap at all, are left alone. Merging is often
+   the step *before* Neonize.
+
    **Neonize** — for double-stroke channel letters: select a closed run
    (e.g. a face outline drawn with the pen tool or imported from an
    SVG), click **Neonize**, set the spacing in mm. The single closed

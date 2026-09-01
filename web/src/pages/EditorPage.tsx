@@ -1399,6 +1399,65 @@ export default function EditorPage() {
     );
   }
 
+  // Tier 2 #98 — merge overlapping closed outlines into one (NW calls the
+  // effect "Weld"; `weld` is taken here by the physical glass weld the
+  // validator spaces electrodes against, so nothing user-facing says it).
+  //
+  // The polygon-clipping library is fetched on the first click, the way
+  // PR #158 fetches opentype.js: `import()` puts booleanOps and martinez in
+  // their own chunk, so a session that never merges anything never pays for
+  // them. That is also why the button's disabled state is computed from
+  // `closedSelectedCount` above rather than by asking the module.
+  //
+  // The toast is the only place the operator learns what the op traded away
+  // — flattened curves, dropped electrodes — so it says all of it rather
+  // than "Merged.".
+  async function mergeOutlinesSelected() {
+    if (!doc) return;
+    const ids = selectedRunIds.slice();
+    const { unionOutlinesPlan, unionRuns } = await import('../lib/booleanOps');
+    const plan = unionOutlinesPlan(doc, ids);
+    if (plan.error) {
+      setStatusMessage(plan.error);
+      return;
+    }
+    const result = applyOp((prev) => unionRuns(prev, ids));
+    if (!result) return;
+    const newIds = result.doc.runs
+      .filter((r) => !doc.runs.some((old) => old.id === r.id))
+      .map((r) => r.id);
+    setSelectedRunIds(newIds);
+
+    const bits: string[] = [
+      `Merged ${plan.runIds.length} outlines into ${plan.outerCount} boundar` +
+        `${plan.outerCount === 1 ? 'y' : 'ies'}` +
+        (plan.holeCount > 0
+          ? ` and ${plan.holeCount} hole${plan.holeCount === 1 ? '' : 's'} (each its own closed run)`
+          : ''),
+    ];
+    if (plan.flattenedInputs > 0) {
+      bits.push(
+        `${plan.flattenedInputs} arc run${plan.flattenedInputs === 1 ? ' was' : 's were'} ` +
+          'FLATTENED to line segments — a union boundary has no arc form, so the result carries ' +
+          'no curve data. Undo if you need the curves.',
+      );
+    }
+    const dropped: string[] = [];
+    if (plan.droppedElectrodes) dropped.push(`${plan.droppedElectrodes} electrode(s)`);
+    if (plan.droppedBlockouts) dropped.push(`${plan.droppedBlockouts} blockout(s)`);
+    if (plan.droppedAnnotations) dropped.push(`${plan.droppedAnnotations} annotation(s)`);
+    if (plan.droppedBends) dropped.push(`${plan.droppedBends} bend(s)`);
+    if (plan.droppedDirections) dropped.push(`${plan.droppedDirections} flow direction(s)`);
+    if (dropped.length > 0) {
+      bits.push(
+        `Dropped ${dropped.join(', ')} — they address vertices the merge dissolved, and a ` +
+          'remapped index would point at the wrong glass.',
+      );
+    }
+    bits.push(...plan.warnings);
+    setStatusMessage(bits.join(' '));
+  }
+
   // Neonize replaces the selected run with parallel offset run(s) — the
   // "double-stroke" channel-letter primitive (NW #123/131/141). Default
   // spacing = 2 × tube diameter (Strattman NT Ch.7 shop default).
@@ -1715,6 +1774,13 @@ export default function EditorPage() {
     ? (doc.runs.find((r) => r.id === primaryRunId) ?? null)
     : null;
   const totalElectrodes = doc.runs.reduce((acc, r) => acc + (r.electrodes?.length ?? 0), 0);
+  // Tier 2 #98 — gate for "Merge outlines". Counted here rather than asked of
+  // `booleanOps` so the button costs nothing: importing that module to answer
+  // a disabled-state question would pull the polygon-clipping library into
+  // the main bundle and undo the whole point of loading it on demand.
+  const closedSelectedCount = doc.runs.filter(
+    (r) => selectedRunIds.includes(r.id) && r.polyline.closed,
+  ).length;
 
   return (
     <section className="editor-section">
@@ -2312,6 +2378,34 @@ export default function EditorPage() {
                 onReorder={reorderSelected}
                 onStepRepeat={stepRepeatSelected}
               />
+            </div>
+          )}
+          {/* Tier 2 #98 — merge overlapping closed outlines into one
+              joinable outline, the thing connected script needs before
+              Neonize can run. Renders only when two or more CLOSED runs are
+              picked: a union needs an inside, so an open polyline has
+              nothing to contribute, and a disabled button with nothing
+              selected is just more sidebar noise. */}
+          {closedSelectedCount >= 2 && (
+            <div className="arrange-section">
+              <div className="groups-header">
+                <h3>Merge outlines</h3>
+              </div>
+              <p className="meta">
+                Replaces {closedSelectedCount} closed outlines with the boundary of their
+                union. Holes come back as their own closed runs. Arcs are flattened to line
+                segments — a union boundary has no arc form — and electrodes, blockouts,
+                bends and annotations are dropped, because they address vertices the merge
+                dissolves.
+              </p>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={mergeOutlinesSelected}
+                title="Boolean union of the selected closed outlines (NeonWizard calls this Weld). Overlapping glyph outlines become one continuous boundary that Neonize can turn into a single tube path. Tier 2 #98."
+              >
+                Merge {closedSelectedCount} outlines
+              </button>
             </div>
           )}
           <ul className="run-list">
