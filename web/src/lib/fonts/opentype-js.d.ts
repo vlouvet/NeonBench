@@ -88,6 +88,10 @@ declare module 'opentype.js' {
     names: { unicode?: NameTable; macintosh?: NameTable; windows?: NameTable };
     kerningPairs: Record<string, number>;
     charToGlyph(c: string): Glyph;
+    /** True when the face maps this codepoint to a real glyph. An
+     *  unmapped char still returns a Glyph from charToGlyph — .notdef —
+     *  so this is the only honest "can it set this word" test. */
+    hasChar(c: string): boolean;
     getKerningValue(left: Glyph | number, right: Glyph | number): number;
     toArrayBuffer(): ArrayBuffer;
   }

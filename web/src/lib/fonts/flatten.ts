@@ -24,6 +24,15 @@
 // it costs a few extra vertices and it cannot under-sample. `flatten.test.ts`
 // checks the emitted polyline against densely sampled true-curve points,
 // which is the assertion that actually matters.
+//
+// UNITS — the one thing to get wrong here. The tolerance is in MILLIMETRES,
+// so every point handed to these functions must already be in millimetres.
+// Glyph outlines arrive in font units (2048 per em on every face measured
+// on this machine), where 0.25 would mean 0.25 *units* — about 0.012 mm on a
+// 100 mm cap, i.e. a 20x over-sample and a polyline nobody can edit. So
+// `outline.ts` applies the cap-height scale, the y-flip and the pen offset to
+// the control points BEFORE calling in here, and flattens in the operator's
+// coordinate system. Do not "optimise" that by flattening in font units.
 
 export type Pt = [number, number];
 
@@ -31,10 +40,15 @@ export type Pt = [number, number];
  *  curve. See the module comment for why 0.25 mm. */
 export const DEFAULT_CHORD_TOLERANCE_MM = 0.25;
 
-/** Hard recursion cap. 20 levels is 2^20 segments — unreachable for any
- *  sane tolerance, but a cusp (coincident control points) can otherwise
- *  spin forever because the hull distance stops shrinking. */
-const MAX_DEPTH = 20;
+/** Hard recursion cap. Each level doubles the segment count, so 12 is
+ *  4096 segments per curve — two orders of magnitude past what any
+ *  legible tolerance needs, and a HARD bound on the damage a pathological
+ *  input can do. It matters: this runs synchronously on the UI thread
+ *  while the operator types, and the old value of 20 would have allowed
+ *  a single cusp to emit 1,048,576 vertices and hang the tab. de
+ *  Casteljau halves the hull each split, so real curves terminate at
+ *  depth 3-6 and never see this. */
+const MAX_DEPTH = 12;
 
 /** Distance from `p` to the infinite line through `a`,`b`. Degenerate
  *  chord (a ≈ b) falls back to the point distance, which is the right
