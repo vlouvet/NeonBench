@@ -997,9 +997,18 @@ export default function EditorPage() {
   // the throws shouldn't surface in normal use, but we still surface
   // them to the user via setError so a stale doc state doesn't lead to
   // a silent no-op.
+  // Both go through `applyOp`, which computes the op EAGERLY and only then
+  // hands the result to `editDoc`. That is load-bearing, not tidiness: a bare
+  // `editDoc((prev) => ops.x(prev))` runs the op inside the updater, which
+  // React evaluates during the re-render — so an OperationError thrown there
+  // escapes the try/catch around this handler entirely and lands in the
+  // console instead of the error banner. Caught by driving the real editor:
+  // the Break/Move Opening tool on a non-loop stroke printed its explanation
+  // to devtools and showed the operator nothing, which is the same silence
+  // Tier 1 #127 set out to remove. Same trap as PR #140's toast bug.
   function breakOpenOnRun(runId: string, vertexIndex: number) {
     try {
-      editDoc((prev) => ops.breakOpen(prev, runId, vertexIndex));
+      applyOp((prev) => ({ doc: ops.breakOpen(prev, runId, vertexIndex) }));
       setSelectedToOne(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1008,7 +1017,7 @@ export default function EditorPage() {
 
   function moveOpeningOnRun(runId: string, newStartVertexIndex: number) {
     try {
-      editDoc((prev) => ops.moveOpening(prev, runId, newStartVertexIndex));
+      applyOp((prev) => ({ doc: ops.moveOpening(prev, runId, newStartVertexIndex) }));
       setSelectedToOne(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

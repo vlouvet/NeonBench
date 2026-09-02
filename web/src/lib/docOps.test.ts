@@ -5496,6 +5496,32 @@ describe('segment_types well-formedness across every point-count op', () => {
       const d = docOf([{ ...openArcRun(), electrodes: [{ point_index: 0 }, { point_index: 3 }] }]);
       return [d, ops.moveOpening(d, 'a', 1)];
     }],
+    // Tier 1 #127 — changes the point count (drops the trailing duplicate),
+    // so it belongs in this sweep like every other op that does.
+    ['closeGeometricLoop', () => {
+      const d = docOf([{
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+        tube_diameter_mm: 10,
+      }]);
+      return [d, ops.closeGeometricLoop(d, 'a')];
+    }],
+    ['breakOpen on a geometric loop', () => {
+      const d = docOf([{
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+        tube_diameter_mm: 10,
+      }]);
+      return [d, ops.breakOpen(d, 'a', 1)];
+    }],
   ];
 
   // The whole geometry an op could have touched, as a string: run ids, point
@@ -5521,7 +5547,7 @@ describe('segment_types well-formedness across every point-count op', () => {
     for (const op of [
       'splitRun', 'insertVertex', 'insertDoubleback', 'simplifyRun', 'reverseRun',
       'joinRuns', 'moveVertices', 'autoSplitOverlongTubes', 'splitTubesAtRaceway',
-      'deleteVertex', 'breakOpen', 'moveOpening',
+      'deleteVertex', 'breakOpen', 'moveOpening', 'closeGeometricLoop',
     ]) {
       expect(swept.has(op), `${op} is not covered by the well-formedness sweep`).toBe(true);
     }
