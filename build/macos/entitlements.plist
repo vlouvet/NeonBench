@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the NeonBench binary.
+
+  Deliberately empty: NeonBench claims NO special entitlements. It binds a
+  listener on 127.0.0.1, reads and writes its own data directory, and opens
+  the user's browser. None of that needs an entitlement, and every entry
+  added here is an exception carved out of the hardened runtime that Apple's
+  notary service — and anyone reading this file — is entitled to ask about.
+
+  If a future change needs one (JIT, unsigned executable memory, loading
+  third-party plug-ins, camera/microphone), add it here WITH a comment saying
+  which feature requires it. An unexplained entitlement is a security smell.
+-->
+<plist version="1.0">
+<dict/>
+</plist>
