@@ -134,6 +134,13 @@ jobs:
 what remains is the human half — creating the certificate and the six GitHub
 Secrets, then tagging a test release. See `docs/apple-signing-setup.md`.
 
+**Still true at v0.4.0 (2026-09-02).** `gh secret list` is empty, and that
+release's run emitted the "macOS binaries are unsigned" warning exactly once.
+`release.yml` triggers only on `push: tags: ['v*']`, so **CI has never executed
+the cert-import → codesign → notarytool path** — every green check on PR #187
+validated the Go and web suites and nothing about signing. Tag a throwaway like
+`v0.0.1-signing-test` before trusting it on a real release.
+
 **Correction to the CI block below: it called `xcrun stapler staple` on a bare
 binary, which cannot work.** `stapler --help` lists its three supported
 formats — "UDIF disk images, code-signed executable bundles, and signed 'flat'
