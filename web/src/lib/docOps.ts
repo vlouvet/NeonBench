@@ -1087,6 +1087,84 @@ export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number):
   });
 }
 
+// Tier 1 #127 — the tolerance at which two vertices are "the same point".
+// Shared with joinRuns' seam-drop, which has used this number since PR #23:
+// two ends within a hundredth of a millimetre are the same weld, and a shop
+// that could hold tighter than that would not need this software.
+export const COINCIDENT_MM = 0.01;
+
+// isGeometricLoop reports an OPEN run whose first and last vertex are the
+// same point — a loop the `closed` flag has not been told about.
+//
+// This is not a hypothetical. The inline text tool mints every run with
+// `closed: false`, and `rowmans`' `O` is a single 21-point stroke whose first
+// and last vertex are the identical coordinate. Typing "OPEN" at the bench
+// produces one, and until this predicate existed both routes to opening it
+// declined: the Break/Open tool fell through to `moveOpening` and hit an
+// electrode precondition, and the node menu gated its item on `closed`.
+//
+// Two vertices is not a loop however coincident they are — that is a
+// zero-length segment, not a shape — hence the >= 3 floor, which also matches
+// what `breakOpen` already demands of a closed run.
+export function isGeometricLoop(run: DesignRun): boolean {
+  const pts = run.polyline.points;
+  if (run.polyline.closed) return false;
+  if (pts.length < 3) return false;
+  const a = pts[0];
+  const b = pts[pts.length - 1];
+  return Math.hypot(a[0] - b[0], a[1] - b[1]) < COINCIDENT_MM;
+}
+
+// closeGeometricLoop turns such a run into a real closed one: drop the
+// trailing duplicate vertex, set `closed`. A no-op on anything else.
+//
+// DROPPING THE DUPLICATE IS THE WHOLE OP, and doing it in the wrong order is
+// the trap. Set `closed` on all n points and the closing segment runs from
+// p[n-1] to p[0], which are the same coordinate — a zero-length segment that
+// needs a segment_types entry it should never have had, and that surfaces
+// later as a phantom 0mm run in the bend list.
+//
+// Do it right and `segment_types` needs NO EDIT AT ALL: an open run of n
+// points has n-1 segments, a closed run of n-1 points has n-1 segments, and
+// dropping the duplicate makes the closing segment (p[n-2] -> p[0]) describe
+// exactly the glass that segment n-2 (p[n-2] -> p[n-1]) already described.
+//
+// THE ARRAY LENGTH IS THE SAME EITHER WAY, so `segmentTypesWellFormed` cannot
+// tell you which one you did. Only a geometry assertion can — see the tests.
+//
+// The one index that genuinely moves is any reference to the dropped vertex
+// n-1, which becomes 0. For an open run a live index IS a raw index (runArcs
+// walks the whole polyline), so electrodes, blockouts, annotations and bends
+// all remap through the same rule.
+export function closeGeometricLoop(doc: DesignDoc, runId: string): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run || !isGeometricLoop(run)) return doc;
+  const n = run.polyline.points.length;
+  const dropped = n - 1;
+  const remap = (i: number) => (i === dropped ? 0 : i);
+  return mapRun(doc, runId, (r) => {
+    const polyline = { ...r.polyline, points: r.polyline.points.slice(0, dropped), closed: true };
+    const next: DesignRun = { ...r, polyline };
+    if (r.electrodes) {
+      next.electrodes = r.electrodes.map((e) => ({ ...e, point_index: remap(e.point_index) }));
+    }
+    if (r.blockouts) {
+      next.blockouts = r.blockouts.map((b) => ({
+        ...b,
+        start_live_index: remap(b.start_live_index),
+        end_live_index: remap(b.end_live_index),
+      }));
+    }
+    if (r.annotations) {
+      next.annotations = r.annotations.map((a) => ({ ...a, live_index: remap(a.live_index) }));
+    }
+    if (r.bends) {
+      next.bends = r.bends.map((b) => ({ ...b, live_index: remap(b.live_index) }));
+    }
+    return next;
+  });
+}
+
 // breakOpen converts a closed polyline into an open one with the gap
 // (i.e. the opening between the two electrodes) at the chosen vertex
 // (Tier 3 #61 / NW #130 — Move Opening / Break Tube Open).
@@ -1108,10 +1186,27 @@ export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number):
 // Throws if the run is already open (no closed loop to break) or if
 // the vertex index is out of range.
 export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): DesignDoc {
-  const run = doc.runs.find((r) => r.id === runId);
+  let run = doc.runs.find((r) => r.id === runId);
   if (!run) return doc;
+  // Tier 1 #127 — a geometric loop is a closed run the flag forgot, so
+  // normalise it and fall through to the identical code path rather than
+  // growing a second set of semantics for it. The point count survives: an
+  // n-point loop closes to n-1 points and breaks back open to n, so this is a
+  // rotation of the same array, not a resize.
+  //
+  // The clicked vertex has to move with it. Dropping the duplicate makes index
+  // n-1 unaddressable, and it is the vertex an operator is MOST likely to have
+  // clicked — it sits exactly under vertex 0 on screen.
+  if (!run.polyline.closed && isGeometricLoop(run)) {
+    if (vertexIndex === run.polyline.points.length - 1) vertexIndex = 0;
+    doc = closeGeometricLoop(doc, runId);
+    run = doc.runs.find((r) => r.id === runId)!;
+  }
   if (!run.polyline.closed) {
-    throw new OperationError('breakOpen: run is already open');
+    throw new OperationError(
+      'breakOpen: run is already open — its ends do not meet, so there is no '
+        + 'loop to break. Place two electrodes and use Move Opening instead.',
+    );
   }
   const pts = run.polyline.points;
   const n = pts.length;
@@ -1188,7 +1283,9 @@ export function moveOpening(
   const electrodes = run.electrodes ?? [];
   if (electrodes.length !== 2) {
     throw new OperationError(
-      `moveOpening: run has ${electrodes.length} electrode(s); need exactly 2`,
+      `moveOpening: run has ${electrodes.length} electrode(s); need exactly 2. `
+        + 'This run is already open and its ends do not meet, so there is no '
+        + 'loop to break either — place two electrodes first.',
     );
   }
   const pts = run.polyline.points;

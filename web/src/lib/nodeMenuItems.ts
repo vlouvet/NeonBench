@@ -1,4 +1,5 @@
 import type { DesignDoc } from '../api';
+import { isGeometricLoop } from './docOps';
 import { runArcs } from './runArcs';
 import { isArcKind, segmentTypeAt } from './arcGeom';
 
@@ -72,6 +73,7 @@ export function availableActionsForVertex(
   if (vertexIndex < 0 || vertexIndex >= n) return [];
 
   const closed = !!run.polyline.closed;
+  const geometricLoop = isGeometricLoop(run);
   const electrodes = run.electrodes ?? [];
   const electrodeAtVertex = electrodes.findIndex((e) => e.point_index === vertexIndex);
   const hasElectrodeHere = electrodeAtVertex >= 0;
@@ -145,11 +147,18 @@ export function availableActionsForVertex(
   if (!closed && vertexIndex > 0 && vertexIndex < n - 1) {
     items.push({ id: 'split-run', label: 'Split run here', group: 'geometry' });
   }
-  if (closed && n >= 3) {
+  // Tier 1 #127 — offered for a run that IS a loop, not merely one flagged as
+  // one. The inline text tool mints every run `closed: false`, and rowmans'
+  // `O` is a single stroke whose ends coincide, so gating on the flag alone
+  // hid this item from the one glyph in "OPEN" that needs it. `breakOpen`
+  // normalises the geometric case itself, so both land on the same op.
+  if ((closed || geometricLoop) && n >= 3) {
     items.push({
       id: 'break-loop-open',
       label: 'Break loop open here',
-      hint: 'Places electrodes on both new ends',
+      hint: geometricLoop
+        ? 'Ends meet here — opens the loop and places electrodes'
+        : 'Places electrodes on both new ends',
       group: 'geometry',
     });
   }

@@ -34,6 +34,7 @@ import {
 import CanvasRulers from './CanvasRulers';
 import { formatLengthMM, formatSizeMM, type DisplayUnits } from '../lib/units';
 import { selectionMetrics } from '../lib/selectionMetrics';
+import { isGeometricLoop } from '../lib/docOps';
 import {
   RULER_PX,
   guidePositionMM,
@@ -1727,15 +1728,22 @@ export default function EditorCanvas({
         onSelectRun(run.id);
         return;
       }
-      if (run.polyline.closed) {
+      // Tier 1 #127 — dispatch on the GEOMETRY, not on the `closed` flag.
+      // A run whose ends coincide is a loop whatever the flag says, and
+      // `breakOpen` normalises that case itself.
+      if (run.polyline.closed || isGeometricLoop(run)) {
         onBreakOpen(run.id, hit);
-      } else if ((run.electrodes?.length ?? 0) === 2) {
-        onMoveOpening(run.id, hit);
       } else {
-        // Open run without two electrodes — nothing meaningful to move.
-        // Just select so the operator can place electrodes first.
-        onSelectRun(run.id);
-        return;
+        // Not a loop. Move Opening is the only thing left that makes sense,
+        // and when it can't run it throws a message naming the reason, which
+        // the parent surfaces in the error banner.
+        //
+        // This used to be a bare `onSelectRun(run.id); return;` under a
+        // comment reading "so the operator can place electrodes first" —
+        // advice that was never shown to anyone. Clicking the tool on a text
+        // glyph did nothing at all, silently, which is how this arrived as
+        // "no simple way to break a closed tube".
+        onMoveOpening(run.id, hit);
       }
       onSelectRun(run.id);
       setHoveredVertex(null);
