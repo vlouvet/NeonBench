@@ -25,6 +25,15 @@ type vectorizeReq struct {
 	MinSpurMM     float64 `json:"min_spur_mm,omitempty"`
 	Label         string  `json:"label,omitempty"`
 
+	// Curves asks for a smooth rendering of the same centerline on the
+	// response (`curves_svg`), in addition to — never instead of — the
+	// polyline. Default false; the stored design version, its design doc and
+	// its validation report are identical either way. This is deliberately
+	// NOT `smoothing_mm`: raising that knob until the faceting disappears
+	// also walks the centerline off the letterform, trading a visible defect
+	// for an invisible one.
+	Curves bool `json:"curves,omitempty"`
+
 	// Pre-binarize bitmap adjustments. All optional; pointers so we can
 	// distinguish "not sent" from "explicit zero" for the integer fields
 	// that have meaningful zero values (Brightness 0 = no change).
@@ -71,6 +80,13 @@ type sourceFrame struct {
 type vectorizeResp struct {
 	storage.DesignVersion
 	SourceFrame *sourceFrame `json:"source_frame,omitempty"`
+
+	// CurvesSVG is the smoothed centerline, present only when the request
+	// asked for `curves`. It is a separate document on purpose: the design
+	// version's own SVGData (and therefore the design doc the bender works
+	// from) stays the polyline, so asking for a picture can never move the
+	// bend geometry. Nothing persists this field.
+	CurvesSVG string `json:"curves_svg,omitempty"`
 }
 
 // frameFromResult derives the source frame from the values the vectorizer
@@ -206,6 +222,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 
 	var svg []byte
 	var frame *sourceFrame
+	var curvesSVG string
 	switch asset.MIME {
 	case "image/png", "image/jpeg":
 		threshold := uint8(req.Threshold)
@@ -232,6 +249,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 			SmoothingMM:       req.SmoothingMM,
 			MinSpurMM:         req.MinSpurMM,
 			DefaultDiameterMM: spec.DiameterMM,
+			Curves:            req.Curves,
 		}
 		if req.RotationDeg != nil {
 			vreq.RotationDeg = *req.RotationDeg
@@ -250,7 +268,12 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnprocessableEntity, "vectorize failed: "+err.Error())
 			return
 		}
+		// The polyline SVG is the fabrication source of truth — it is what
+		// gets persisted, what generateDesignDoc turns into the doc the bender
+		// works from, and what runValidation measures; the curves are for
+		// pictures and travel on their own response field, never through `svg`.
 		svg = res.SVG
+		curvesSVG = string(res.CurvesSVG)
 		frame = frameFromResult(res.WidthPx, res.HeightPx, res.WidthMM, res.HeightMM)
 	case "image/svg+xml":
 		// Pass-through: persist the SVG as-is. Normalization to mm space comes later.
@@ -279,7 +302,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, vectorizeResp{DesignVersion: dv, SourceFrame: frame})
+	writeJSON(w, http.StatusCreated, vectorizeResp{DesignVersion: dv, SourceFrame: frame, CurvesSVG: curvesSVG})
 }
 
 // generateDesignDoc converts an SVG into the structured design doc model
