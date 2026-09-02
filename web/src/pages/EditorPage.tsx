@@ -52,6 +52,11 @@ import {
 import { NumericField } from '../components/NumericField';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
+import {
+  HOP_CORRIDOR_DIAMETERS,
+  HOP_CORRIDOR_MAX_DIAMETERS,
+  HOP_SAMPLE_DIAMETERS,
+} from '../lib/onArtwork';
 
 // Tier 2 #99 — the OpenType dialog pulls in opentype.js, which is 250 kB
 // of parser (73 kB gzipped) that most editing sessions never touch.
@@ -1670,6 +1675,60 @@ export default function EditorPage() {
     setStatusMessage(bits.join(' '));
   }
 
+  // Tier 2 #134 — join fragments back into runs, ALONG THE ARTWORK.
+  //
+  // Deliberately a separate button from "Join touching runs" rather than a
+  // wider tolerance on that one. #128 welds ends that already meet and cannot
+  // change what the sign looks like; this one lets the tube TRAVEL to reach an
+  // end, which changes run count, glass and transformer count — fabrication
+  // cost. Two different decisions deserve two different clicks, and this is
+  // the one that has to be asked for.
+  //
+  // The toast leads with the refusal count, not the run count. A naive join
+  // improves every metric by cutting diagonally across blank sign face, so
+  // "13 runs" is not evidence of anything on its own; "13 runs, 6 hops
+  // refused" is the operator's cue that the design is genuinely in pieces
+  // rather than the op being shy.
+  //
+  // Through `applyOp` (eager compute), never a bare `editDoc` — see
+  // blockoutCrossings for the timing this avoids.
+  function joinAlongArtworkSelected(nearMM: number, corridorDiameters: number) {
+    if (!doc || selectedRunIds.length < 2) return;
+    const result = applyOp((prev) =>
+      ops.joinRunsAlongArtwork(prev, selectedRunIds, {
+        nearMM,
+        corridorDiameters,
+        projectDiameterMM: tubeSpec?.diameter_mm,
+      }),
+    );
+    if (!result) return;
+    const r: ops.JoinAlongArtworkResult = result;
+    // Keep whatever survived selected, so a second pass at a wider reach does
+    // not need re-picking.
+    setSelectedRunIds(result.doc.runs.filter((x) => selectedRunIds.includes(x.id)).map((x) => x.id));
+
+    const bits: string[] = [];
+    bits.push(
+      r.joined === 0
+        ? 'Nothing joined'
+        : `Joined ${r.joined} hop${r.joined === 1 ? '' : 's'} — ${r.runsBefore} runs into ${r.runsAfter}`,
+    );
+    if (r.refusedOffArtwork > 0) {
+      const worst = r.refused[0];
+      bits.push(
+        `${r.refusedOffArtwork} hop${r.refusedOffArtwork === 1 ? '' : 's'} REFUSED — the tube `
+          + `would have left the artwork (worst: ${worst.worstOffsetMM.toFixed(0)}mm off the `
+          + `nearest glass, corridor is ${r.corridorMM.toFixed(1)}mm)`,
+      );
+    } else if (r.joined === 0) {
+      bits.push(`no two selected ends are within ${nearMM}mm of each other`);
+    }
+    if (r.skippedClosed > 0) {
+      bits.push(`${r.skippedClosed} closed run${r.skippedClosed === 1 ? '' : 's'} skipped (no ends)`);
+    }
+    setStatusMessage(`${bits.join(' · ')}.`);
+  }
+
   async function mergeOutlinesSelected() {
     if (!doc) return;
     const ids = selectedRunIds.slice();
@@ -2955,6 +3014,21 @@ export default function EditorPage() {
                 count={selectedRunIds.length}
                 onJoin={joinTouchingSelected}
               />
+              {/* Tier 2 #134 — the second, more expensive gesture: let the
+                  tube TRAVEL to reach an end, but only over glass that is
+                  already drawn. Separate from the row above because it changes
+                  fabrication cost and must be asked for explicitly. */}
+              <p className="meta">
+                Or let the tube travel to reach an end — but only along artwork you
+                already drew. A hop across blank sign face is refused and counted;
+                that refusal is the point, because a join that cuts the corner
+                improves every number in the takeoff.
+              </p>
+              <JoinAlongArtworkRow
+                count={selectedRunIds.length}
+                tubeDiameterMM={projDiam}
+                onJoin={joinAlongArtworkSelected}
+              />
             </div>
           )}
           {closedSelectedCount >= 2 && (
@@ -3523,6 +3597,69 @@ function JoinTouchingRow({
           title={`Weld every pair among the ${count} selected runs whose endpoints are within ${tol}mm of each other, folding them into continuous tubes. One undo step. T-junctions (an end landing partway along another tube) are not welded.`}
         >
           Join touching runs
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Tier 2 #134 — reach + corridor, and the derived millimetres stated next to
+// them. Both parameters are TUBE-RELATIVE by design: an absolute corridor is
+// wrong the moment the tube spec changes, and "1 x tube ø" is a number a
+// bender can argue with, where "10mm" is a number nobody can source.
+//
+// The corridor is capped in the op (HOP_CORRIDOR_MAX_DIAMETERS), and `max` on
+// the field says so before the operator finds out by typing 1000. The cap is
+// not politeness: the corridor is the only thing between this button and the
+// cheating join, and "the run count is still too high" has an obvious wrong
+// fix.
+function JoinAlongArtworkRow({
+  count,
+  tubeDiameterMM,
+  onJoin,
+}: {
+  count: number;
+  tubeDiameterMM: number;
+  onJoin: (nearMM: number, corridorDiameters: number) => void;
+}) {
+  const [near, setNear] = useState(ops.JOIN_ALONG_NEAR_DEFAULT_MM);
+  const [corridor, setCorridor] = useState(HOP_CORRIDOR_DIAMETERS);
+  const effCorridor = Math.min(corridor, HOP_CORRIDOR_MAX_DIAMETERS) * tubeDiameterMM;
+  const sampleMM = HOP_SAMPLE_DIAMETERS * tubeDiameterMM;
+  return (
+    <div className="path-ops-row">
+      <label className="diameter-picker">
+        Reach (mm)
+        {/* NumericField, not a raw number input — a millimetre value in an
+            imperial trade has to accept 1/64" style fractions. */}
+        <NumericField
+          min="0"
+          value={near}
+          onChange={(e) => setNear(Number(e.target.value))}
+        />
+      </label>
+      <label className="diameter-picker">
+        Corridor (× tube ø)
+        <NumericField
+          min="0"
+          max={String(HOP_CORRIDOR_MAX_DIAMETERS)}
+          value={corridor}
+          onChange={(e) => setCorridor(Number(e.target.value))}
+        />
+      </label>
+      <p className="meta">
+        Corridor {effCorridor.toFixed(1)}mm, sampled every {sampleMM.toFixed(1)}mm
+        (tube ø {tubeDiameterMM}mm). Capped at {HOP_CORRIDOR_MAX_DIAMETERS}× — widening
+        it past that would just re-admit the joins this refuses.
+      </p>
+      <div className="path-ops-buttons">
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => onJoin(near, corridor)}
+          title={`Join the ${count} selected runs wherever an end is within ${near}mm of another AND the straight hop between them stays within ${effCorridor.toFixed(1)}mm of glass already on the sheet. Hops across blank sign face are refused and counted. One undo step; changes run count, glass and transformer count.`}
+        >
+          Join along artwork
         </button>
       </div>
     </div>
