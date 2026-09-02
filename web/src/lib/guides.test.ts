@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { DesignDoc, Guideline } from '../api';
+import { MM_PER_INCH } from './units';
 import {
+  MIN_LABEL_SPACING_IN_PX,
   MIN_LABEL_SPACING_PX,
   MIN_MINOR_SPACING_PX,
+  TICK_LADDER_IN_MM,
   TICK_LADDER_MM,
   addConstructionGuide,
   chooseTickSteps,
@@ -167,6 +170,115 @@ describe('formatTickLabel', () => {
 // ---------------------------------------------------------------------------
 // Guide CRUD
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Tier 1 #130 — inch ruler
+// ---------------------------------------------------------------------------
+
+describe('inch tick ladder', () => {
+  // The ladder is in MILLIMETRES so rulerTicks keeps one copy of the
+  // px = offset + mm * scale formula. If an entry ever stops being an exact
+  // inch fraction, ticks stop landing on tape-measure marks.
+  it('is exactly the tape-measure rungs, expressed in mm', () => {
+    // Asserted as mm, which is what the ladder actually holds and what the
+    // ticks are computed from. Dividing back out by 25.4 is NOT exact in
+    // binary float (76.2 / 25.4 is 2.9999999999999996), so a round-trip
+    // comparison would be testing IEEE 754 rather than the ladder.
+    expect([...TICK_LADDER_IN_MM]).toEqual([
+      1.5875, 3.175, 6.35, 12.7, 25.4, 50.8, 76.2, 152.4, 304.8, 609.6, 1524,
+      3048, 6096, 15240, 30480,
+    ]);
+    const inches = [1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 3, 6, 12, 24, 60, 120, 240, 600, 1200];
+    TICK_LADDER_IN_MM.forEach((mm, i) => {
+      expect(mm / MM_PER_INCH).toBeCloseTo(inches[i], 9);
+    });
+  });
+
+  it('rises monotonically, like the mm ladder', () => {
+    for (let i = 1; i < TICK_LADDER_IN_MM.length; i++) {
+      expect(TICK_LADDER_IN_MM[i]).toBeGreaterThan(TICK_LADDER_IN_MM[i - 1]);
+    }
+  });
+
+  it('picks a rung off the inch ladder, never the mm one', () => {
+    for (const scale of [0.05, 0.2, 1, 3, 10, 40, 200]) {
+      const { majorMM, minorMM } = chooseTickSteps(scale, undefined, 'in');
+      expect(TICK_LADDER_IN_MM).toContain(majorMM);
+      expect(TICK_LADDER_IN_MM).toContain(minorMM);
+    }
+  });
+
+  it('clears the wider inch label spacing at every zoom', () => {
+    for (const scale of [0.05, 0.2, 1, 3, 10, 40, 200]) {
+      const { majorMM } = chooseTickSteps(scale, undefined, 'in');
+      const coarsest = TICK_LADDER_IN_MM[TICK_LADDER_IN_MM.length - 1];
+      if (majorMM !== coarsest) {
+        expect(majorMM * scale).toBeGreaterThanOrEqual(MIN_LABEL_SPACING_IN_PX);
+      }
+    }
+  });
+
+  it('leaves mm callers on the mm ladder and the narrower spacing', () => {
+    expect(MIN_LABEL_SPACING_IN_PX).toBeGreaterThan(MIN_LABEL_SPACING_PX);
+    for (const scale of [0.05, 1, 10, 200]) {
+      expect(TICK_LADDER_MM).toContain(chooseTickSteps(scale).majorMM);
+      expect(TICK_LADDER_MM).toContain(chooseTickSteps(scale, undefined, 'mm').majorMM);
+    }
+  });
+
+  // At one inch per ~76px the rung is 1", so ticks land on whole inches and
+  // the geometry at 4" sits under the tick labelled 4.
+  it('puts ticks on whole inches at a one-inch rung', () => {
+    const scale = MIN_LABEL_SPACING_IN_PX / MM_PER_INCH; // just clears 1"
+    const { ticks, majorMM } = rulerTicks({
+      scale,
+      offsetPx: 0,
+      startPx: 0,
+      endPx: 800,
+      units: 'in',
+    });
+    expect(majorMM).toBeCloseTo(MM_PER_INCH, 9);
+    const majors = ticks.filter((t) => t.major).slice(0, 5);
+    majors.forEach((t, i) => {
+      expect(t.mm / MM_PER_INCH).toBeCloseTo(i, 6);
+      expect(t.px).toBeCloseTo(i * MM_PER_INCH * scale, 6);
+    });
+  });
+});
+
+describe('formatTickLabel in inches', () => {
+  it('reduces to whole inches on a coarse rung', () => {
+    expect(formatTickLabel(MM_PER_INCH * 4, MM_PER_INCH, 'in')).toBe('4');
+    expect(formatTickLabel(MM_PER_INCH * 48, MM_PER_INCH * 12, 'in')).toBe('48');
+  });
+
+  // A fixed sixteenth denominator plus reduction replaces the mm
+  // decimals-per-step rule: no rung needs its own case.
+  it('reduces sub-inch rungs to their own fraction', () => {
+    expect(formatTickLabel(MM_PER_INCH / 4, MM_PER_INCH / 4, 'in')).toBe('1/4');
+    expect(formatTickLabel(MM_PER_INCH / 2, MM_PER_INCH / 4, 'in')).toBe('1/2');
+    expect(formatTickLabel((MM_PER_INCH * 3) / 4, MM_PER_INCH / 4, 'in')).toBe('3/4');
+    expect(formatTickLabel(MM_PER_INCH, MM_PER_INCH / 4, 'in')).toBe('1');
+    expect(formatTickLabel(MM_PER_INCH * 2.0625, MM_PER_INCH / 16, 'in')).toBe('2 1/16');
+  });
+
+  it('shows negative ticks without a negative zero', () => {
+    expect(formatTickLabel(-MM_PER_INCH * 2, MM_PER_INCH, 'in')).toBe('-2');
+    expect(formatTickLabel(-0, MM_PER_INCH, 'in')).toBe('0');
+  });
+
+  // Feet are a deliberate non-goal: one unit on one rule.
+  it('never prints feet, however coarse the rung', () => {
+    const label = formatTickLabel(MM_PER_INCH * 120, MM_PER_INCH * 120, 'in');
+    expect(label).toBe('120');
+    expect(label).not.toContain("'");
+  });
+
+  it('leaves the mm form untouched when units are omitted', () => {
+    expect(formatTickLabel(100, 10)).toBe('100');
+    expect(formatTickLabel(10.5, 0.5)).toBe('10.5');
+  });
+});
 
 describe('guide CRUD', () => {
   it('adds a horizontal guide with no x_mm or axis key at all', () => {

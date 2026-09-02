@@ -32,6 +32,7 @@ import {
   type InlineTextSession,
 } from '../lib/inlineTextState';
 import CanvasRulers from './CanvasRulers';
+import { formatLengthMM, formatSizeMM, type DisplayUnits } from '../lib/units';
 import {
   RULER_PX,
   guidePositionMM,
@@ -114,6 +115,7 @@ export default function EditorCanvas({
   onDragRacewayEnd,
   onAddGuide,
   showRulers = true,
+  units = 'mm',
   onPlaceBlockout,
   onPlaceAnnotation,
   onDeleteAnnotation,
@@ -250,6 +252,11 @@ export default function EditorCanvas({
   // Tier 2 #91 — ruler gutter visibility. Defaults on; EditorPage's
   // "Rulers" toggle drives it.
   showRulers?: boolean;
+  // Tier 1 #130 — the project's display unit for DIMENSIONS. Ruler ticks,
+  // dimension annotations, guide positions and the raceway callout render
+  // through it. Glass does not: tube diameter and wall thickness stay mm
+  // wherever they appear, because that is how the trade buys them.
+  units?: DisplayUnits;
   onPlaceBlockout: (runId: string, startLiveIndex: number, endLiveIndex: number) => void;
   onPlaceAnnotation: (runId: string, kind: AnnotationKind, liveIndex: number) => void;
   onDeleteAnnotation: (runId: string, annotationIndex: number) => void;
@@ -2417,8 +2424,7 @@ export default function EditorCanvas({
                   textAnchor="middle"
                   pointerEvents="none"
                 >
-                  raceway {rw.id} · {rw.length_mm.toFixed(1)}mm ×{' '}
-                  {h.toFixed(1)}mm
+                  raceway {rw.id} · {formatSizeMM(rw.length_mm, h, units)}
                 </text>
                 {/* End handles. Wider than they look, because a 1px edge is
                     not a click target at any zoom. */}
@@ -2514,7 +2520,7 @@ export default function EditorCanvas({
                   pointerEvents="none"
                 >
                   {g.id} · {construction ? 'guide' : 'raceway'}{' '}
-                  {vertical ? 'x' : 'y'}={pos.toFixed(1)}mm
+                  {vertical ? 'x' : 'y'}={formatLengthMM(pos, units)}
                 </text>
               </g>
             );
@@ -2707,6 +2713,7 @@ export default function EditorCanvas({
               y2={d.y2}
               note={d.note}
               k={transform.k}
+              units={units}
               onClick={(e) => {
                 e.stopPropagation();
                 if (e.shiftKey || e.altKey) onDeleteDimension(di);
@@ -3492,13 +3499,15 @@ export default function EditorCanvas({
           ty={transform.ty}
           cursor={rulerCursor}
           guidelines={doc.guidelines ?? []}
+          units={units}
           onRulerPointerDown={beginGuideFromRuler}
         />
       )}
       <div className="canvas-toolbar">
         <button type="button" onClick={fitToView}>Fit</button>
         <span className="meta">
-          zoom {transform.k.toFixed(2)}× · {doc.runs.length} runs · {Math.round(doc.view_box_mm[2])} × {Math.round(doc.view_box_mm[3])}mm
+          zoom {transform.k.toFixed(2)}× · {doc.runs.length} runs ·{' '}
+          {formatSizeMM(doc.view_box_mm[2], doc.view_box_mm[3], units, { mmDecimals: 0 })}
         </span>
         {tool === 'electrode' && (
           <span className="meta hint">Click on a path to place an electrode</span>
@@ -3876,6 +3885,7 @@ function DimensionMarker({
   y2,
   note,
   k,
+  units,
   onClick,
 }: {
   x1: number;
@@ -3884,6 +3894,7 @@ function DimensionMarker({
   y2: number;
   note?: string;
   k: number;
+  units: DisplayUnits;
   onClick: (e: React.MouseEvent) => void;
 }) {
   const dx = x2 - x1;
@@ -3897,7 +3908,11 @@ function DimensionMarker({
   const px = -Math.sin(angle) * tick;
   const py = Math.cos(angle) * tick;
   const fontSize = 12 / k;
-  const label = note ? `${length.toFixed(1)}mm · ${note}` : `${length.toFixed(1)}mm`;
+  // The measured length is stored in mm and only ever DISPLAYED through the
+  // project's unit. `d.x1..y2` stay mm in the doc, so switching a project to
+  // inches re-labels every dimension line without touching one of them.
+  const shown = formatLengthMM(length, units);
+  const label = note ? `${shown} · ${note}` : shown;
   return (
     <g onClick={onClick} style={{ cursor: 'pointer' }}>
       <line x1={x1} y1={y1} x2={x2} y2={y2} stroke="#1f6feb" strokeWidth={1 / k} />

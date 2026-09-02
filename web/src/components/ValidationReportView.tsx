@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { formatFootageMM, formatSizeMM, type DisplayUnits } from '../lib/units';
 import type { ValidationIssue, ValidationReport } from '../api';
 
 const RULE_LABELS: Record<ValidationIssue['rule'], string> = {
@@ -33,8 +34,12 @@ export default function ValidationReportView({
   selectedIssueIndex,
   severityFilter,
   onSeverityFilterChange,
+  units = 'mm',
 }: {
   report: ValidationReport;
+  // Tier 1 #130 — display unit for the summary chips. Nothing in the report
+  // itself changes: `total_length_mm` and the bbox stay millimetres.
+  units?: DisplayUnits;
   onRevalidate?: () => void;
   revalidating?: boolean;
   // Index INTO `report.issues`. When set, the matching row gets the
@@ -141,10 +146,15 @@ export default function ValidationReportView({
           <Chip tone="warning" label={`${warnings.length} warning${warnings.length === 1 ? '' : 's'}`} />
         )}
         <Chip tone="info" label={`${report.tube_runs} tube run${report.tube_runs === 1 ? '' : 's'}`} />
-        <Chip tone="info" label={`${Math.round(report.total_length_mm)}mm total length`} />
+        {/* Tier 1 #130 — total length is BULK GLASS, so it follows the unit
+            the material is bought in (m / ft), while the bbox beside it is a
+            DIMENSION and follows the rule (mm / in). Two different units on
+            two adjacent chips is correct here, not an oversight: one is what
+            you order, the other is what you measure. */}
+        <Chip tone="info" label={`${formatFootageMM(report.total_length_mm, units)} total length`} />
         <Chip
           tone="info"
-          label={`${Math.round(widthMM)} × ${Math.round(heightMM)}mm`}
+          label={formatSizeMM(widthMM, heightMM, units, { mmDecimals: 0 })}
         />
         {onRevalidate && (
           <button type="button" onClick={onRevalidate} disabled={revalidating} className="report-revalidate">
