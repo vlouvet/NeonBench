@@ -1026,9 +1026,19 @@ func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 	var issues []Issue
 	for _, pl := range polylines {
 		// Resample so the hairpin detector's K-step look-around has stable
-		// spacing. Use the same step heuristic as checkBendRadius for
-		// consistency: tied to the bend-radius limit when present, else
-		// a sensible mm value that survives short straight legs.
+		// spacing: tied to the bend-radius limit when present, else a
+		// sensible mm value that survives short straight legs.
+		//
+		// This USED to be shared with checkBendRadius and the comment here
+		// said so. It no longer is — Tier 1 #131 moved that rule off any
+		// limit-derived spacing, because deriving the measurement from the
+		// threshold it is compared against makes a stricter spec measure
+		// more coarsely and cancel itself out. This rule has the same
+		// shape of problem (its cluster radius below is 1.5 × the limit
+		// too) but it is a warning about interior ANGLE, which is
+		// scale-free in a way a radius is not, so it is left alone here
+		// rather than changed in a bend-radius PR. Filed as a follow-up;
+		// do not "restore consistency" by copying the old heuristic back.
 		step := 1.0
 		if limits.MinBendRadiusMM > 0 {
 			step = math.Max(0.5, math.Min(limits.MinBendRadiusMM/4, 5))
