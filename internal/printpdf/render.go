@@ -625,19 +625,25 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 						if path.Dashed {
 							pdf.SetDashPattern([]float64{2, 1}, 0)
 						}
+						// Every pathOpKind needs a case here. There is
+						// deliberately no default: a kind that falls
+						// through would be drawn as whichever operator
+						// the default happened to be, which is how you
+						// ship a curve as a line. Add the kind to
+						// runpath.go and to this switch together.
 						for _, op := range path.Ops {
 							switch op.Kind {
 							case opMoveTo:
 								x, y := toPage(op.X, op.Y)
 								pdf.MoveTo(x, y)
+							case opLineTo:
+								x, y := toPage(op.X, op.Y)
+								pdf.LineTo(x, y)
 							case opCubicTo:
 								c1x, c1y := toPage(op.C1X, op.C1Y)
 								c2x, c2y := toPage(op.C2X, op.C2Y)
 								ex, ey := toPage(op.X, op.Y)
 								pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
-							default:
-								x, y := toPage(op.X, op.Y)
-								pdf.LineTo(x, y)
 							}
 						}
 						pdf.DrawPath("D")
