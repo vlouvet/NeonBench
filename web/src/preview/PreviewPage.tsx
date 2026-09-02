@@ -10,6 +10,15 @@ import SceneControls, {
 } from './SceneControls';
 import { captureCanvasToPNG, screenshotFilename } from './screenshot';
 import {
+  AUTOCAPTURE_POLL_MS,
+  AUTOCAPTURE_TIMEOUT_MS,
+  captureReadiness,
+  installAutocaptureGlobal,
+  makeDomCaptureDeps,
+  performCapture,
+} from './autocapture';
+import { applyRenderParams, parseRenderParams } from './renderParams';
+import {
   DEFAULT_SCENE_PREFS,
   clearScenePrefs,
   loadScenePrefs,
@@ -132,6 +141,20 @@ export default function PreviewPage() {
     return v;
   }, [location.search]);
 
+  // Tier 3 #137 — the rest of the URL contract: `?preset=`, `?wall=`,
+  // `?bg=`, `?autocapture=`, `?timeout=`. Parsed once per search-string
+  // change; see `renderParams.ts` for why the URL deliberately beats the
+  // persisted scene prefs (two machines, one URL, one image).
+  const renderParams = useMemo(
+    () => parseRenderParams(location.search),
+    [location.search],
+  );
+  useEffect(() => {
+    for (const w of renderParams.warnings) {
+      console.warn(`[Preview] ${w}`);
+    }
+  }, [renderParams]);
+
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
@@ -158,8 +181,14 @@ export default function PreviewPage() {
   // baked-in defaults if storage is empty / corrupt / SSR). The lazy
   // initializer form means `loadScenePrefs()` only runs once at mount
   // — subsequent re-renders of PreviewPage don't re-read storage.
+  //
+  // Tier 3 #137 layers the URL overrides on top at mount. Order matters:
+  // persisted prefs are a per-machine convenience, the URL is the
+  // caller's explicit instruction, so the URL wins. Only the fields
+  // actually named in the query are overridden — everything else still
+  // falls through to the user's saved feel.
   const [sceneState, setSceneState] = useState<SceneControlsState>(() =>
-    prefsToControlsState(loadScenePrefs()),
+    applyRenderParams(prefsToControlsState(loadScenePrefs()), renderParams),
   );
 
   // Debounced persistence (Tier 3 #56). We stash the timer id in a
@@ -222,6 +251,122 @@ export default function PreviewPage() {
     },
     [],
   );
+
+  // Tier 3 #137 — mirrors of the state the headless capture loop polls.
+  // The loop runs on a timer rather than as a React effect dependency
+  // chain on purpose: re-running the effect would build a *second*
+  // deferred promise and publish it over the one the driver is already
+  // awaiting, so the first driver would hang forever. Refs let the loop
+  // read fresh values without ever being torn down and rebuilt.
+  const docRef = useRef<DesignDoc | null>(null);
+  const errorRef = useRef<string | null>(null);
+  const sceneStateRef = useRef<SceneControlsState>(sceneState);
+  const renderParamsRef = useRef(renderParams);
+  useEffect(() => {
+    docRef.current = doc;
+  }, [doc]);
+  useEffect(() => {
+    errorRef.current = error;
+  }, [error]);
+  useEffect(() => {
+    sceneStateRef.current = sceneState;
+  }, [sceneState]);
+  useEffect(() => {
+    renderParamsRef.current = renderParams;
+  }, [renderParams]);
+
+  // The headless entry point. When `?autocapture` is present we publish
+  // a promise on `window` and settle it with one composer-path capture
+  // as soon as the scene is genuinely ready. `scripts/render-preview.mjs`
+  // awaits that promise; nothing screen-scrapes the sidebar.
+  //
+  // Depends only on the primitive query flags, so a `?groupId=` change
+  // from the sidebar (which rewrites `location.search`) cannot restart
+  // it mid-capture.
+  const autocapture = renderParams.autocapture;
+  const noBloom = renderParams.noBloom;
+  const capturePreset = renderParams.preset;
+  const captureTimeoutMs = renderParams.timeoutMs;
+  useEffect(() => {
+    if (!autocapture) return;
+    if (typeof window === 'undefined') return;
+    const { settle, fail } = installAutocaptureGlobal(
+      window as unknown as Record<string, unknown>,
+    );
+    const deadline = Date.now() + (captureTimeoutMs ?? AUTOCAPTURE_TIMEOUT_MS);
+    let finished = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      finished = true;
+      if (timer !== null) clearInterval(timer);
+      timer = null;
+    };
+
+    const capture = () => {
+      try {
+        const ctx = captureCtxRef.current;
+        if (!ctx) throw new Error('capture context went away before the capture');
+        const out = performCapture(
+          makeDomCaptureDeps(
+            ctx.gl,
+            ctx.scene,
+            ctx.camera,
+            ctx.composer ?? null,
+            sceneStateRef.current.bloomThreshold,
+          ),
+        );
+        settle({
+          dataURL: out.dataURL,
+          bloom: out.bloom,
+          bloomDelta: out.bloomDelta,
+          bloomEnforced: out.verdict.enforced,
+          bloomReason: out.verdict.reason,
+          preset: capturePreset,
+          width: ctx.gl.domElement.width,
+          height: ctx.gl.domElement.height,
+          warnings: renderParamsRef.current.warnings,
+        });
+      } catch (e) {
+        fail(e as Error);
+      }
+    };
+
+    const tick = () => {
+      if (finished) return;
+      const readiness = captureReadiness({
+        docLoaded: docRef.current !== null,
+        error: errorRef.current,
+        captureContext: captureCtxRef.current,
+        expectBloom: !noBloom,
+      });
+      if (readiness.fatal) {
+        stop();
+        fail(new Error(readiness.reason));
+        return;
+      }
+      if (!readiness.ready) {
+        if (Date.now() > deadline) {
+          stop();
+          fail(
+            new Error(
+              `autocapture timed out after ${captureTimeoutMs ?? AUTOCAPTURE_TIMEOUT_MS} ms: ${readiness.reason}`,
+            ),
+          );
+        }
+        return;
+      }
+      stop();
+      // Two frames of headroom so the initial camera fit and the first
+      // composer pass have both been through the render loop. The
+      // capture itself forces its own synchronous render, so this is
+      // about scene state settling, not about the backbuffer.
+      requestAnimationFrame(() => requestAnimationFrame(capture));
+    };
+
+    timer = setInterval(tick, AUTOCAPTURE_POLL_MS);
+    tick();
+    return stop;
+  }, [autocapture, noBloom, capturePreset, captureTimeoutMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -353,6 +498,11 @@ export default function PreviewPage() {
               doc={doc}
               defaultDiameterMM={defaultDiameterMM ?? undefined}
               presetRequest={presetRequest ?? undefined}
+              // `?preset=iso` frames the camera on first fit rather than
+              // animating into it, so a shared link opens where it says
+              // it does and the headless capture never has to wait out
+              // a fly-in. Tier 3 #137.
+              initialPreset={capturePreset ?? undefined}
               selectedGroupId={selectedGroupId}
               backgroundColor={sceneState.backgroundColor}
               ambientIntensity={sceneState.ambientIntensity}

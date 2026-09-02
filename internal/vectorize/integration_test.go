@@ -439,3 +439,94 @@ func absInt(v int) int {
 }
 
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
+
+// TestBendRadiusCountTracksTubeNotSmoothing is the Tier 1 #131 regression
+// guard, run end to end on a real raster rather than a hand-built
+// polyline. The row opened because on the Chachi's job the min_bend_radius
+// error count barely moved across four tube specs (41/40/40/41) while
+// swinging 86 → 23 as the vectorizer's smoothing_mm went 0.5 → 30. The
+// number tracked how the raster had been prepared instead of what would be
+// bent.
+//
+// Both halves are asserted here against the OPEN fixture:
+//
+//   - smoothing_mm across the range that does not restyle the letterform
+//     must not move the count (measured before the fix: 12, 12, 12, 12,
+//     11, 10 at 0.5/1/2/4/6/10 mm; after: 5, 5, 6, 5, 6, 6)
+//   - min_bend_radius_mm on a fixed doc may only raise the count
+//     (measured before the fix: 14, 14, 14, 12, 10, 10, 9, 8, 6, 6, 6
+//     across 10..60 mm — a stricter tube reported less than half as many
+//     errors as a loose one)
+//
+// No golden count is asserted — that would freeze whatever the rule
+// happens to do today. What is pinned is the shape of the response, which
+// is what makes the figure quotable on a proof sheet.
+func TestBendRadiusCountTracksTubeNotSmoothing(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "open_neon.png"))
+	if err != nil {
+		t.Fatalf("read test image: %v", err)
+	}
+	count := func(svg []byte, diameter, limit float64) int {
+		report, err := validate.ValidateSVG(svg, validate.Limits{
+			DiameterMM:         diameter,
+			MinBendRadiusMM:    limit,
+			MaxSegmentLengthMM: 2400,
+			MinSpacingMM:       18,
+		})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		n := 0
+		for _, iss := range report.Issues {
+			if iss.Rule == validate.RuleMinBendRadius {
+				n++
+			}
+		}
+		return n
+	}
+	vectorizeAt := func(smoothingMM float64) []byte {
+		res, err := VectorizeRaster(context.Background(), Request{
+			SourceBytes:       data,
+			TargetWidthMM:     600,
+			Threshold:         128,
+			DefaultDiameterMM: 12,
+			SmoothingMM:       smoothingMM,
+		})
+		if err != nil {
+			t.Fatalf("vectorize at smoothing %v: %v", smoothingMM, err)
+		}
+		return res.SVG
+	}
+
+	// Half one: input preparation. RDP epsilons up to ~10 mm simplify the
+	// traced centerline without restyling the letters; past that the
+	// smoothing is redrawing the artwork and the count SHOULD move.
+	base := count(vectorizeAt(1), 12, 27)
+	if base == 0 {
+		t.Fatal("fixture produced no bend errors at all — it can no longer detect a regression")
+	}
+	for _, smoothingMM := range []float64{0.5, 2, 4, 6, 10} {
+		got := count(vectorizeAt(smoothingMM), 12, 27)
+		if absInt(got-base) > 1 {
+			t.Errorf("smoothing %.1fmm gave %d bend errors vs %d at 1mm — the count is "+
+				"tracking the vectorizer's smoothing knob rather than the drawn shape",
+				smoothingMM, got, base)
+		}
+	}
+
+	// Half two: monotonicity in the tube's own limit, on one fixed doc.
+	svg := vectorizeAt(6)
+	prev, prevLimit := -1, 0.0
+	for limit := 10.0; limit <= 60; limit += 5 {
+		got := count(svg, 12, limit)
+		if prev >= 0 && got < prev {
+			t.Errorf("min_bend_radius_mm %.0fmm reported %d errors but the looser %.0fmm "+
+				"reported %d — a stricter tube spec must never report fewer",
+				limit, got, prevLimit, prev)
+		}
+		prev, prevLimit = got, limit
+	}
+	if loose, tight := count(svg, 12, 10), count(svg, 12, 60); tight <= loose {
+		t.Errorf("count did not respond to the limit: %d at 10mm vs %d at 60mm", loose, tight)
+	}
+}
