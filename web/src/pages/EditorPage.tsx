@@ -2795,7 +2795,16 @@ export default function EditorPage() {
           {(doc.circuits?.length ?? 0) > 0 && (
             <ul className="group-list">
               {(doc.circuits ?? []).map((c) => {
-                const memberCount = doc.runs.filter((r) => r.circuit_id === c.id).length;
+                const members = doc.runs.filter((r) => r.circuit_id === c.id);
+                const memberCount = members.length;
+                // A circuit only implies a transformer once its glass has a
+                // pair of electrodes to drive. Saying "1 transformer" on a
+                // circuit that derives none is exactly the kind of label the
+                // takeoff exists to stop believing.
+                const memberElectrodes = members.reduce(
+                  (n, r) => n + (r.electrodes?.length ?? 0),
+                  0,
+                );
                 const selectedInside = selectedRunIds.filter(
                   (id) => doc.runs.find((r) => r.id === id)?.circuit_id === c.id,
                 ).length;
@@ -2816,7 +2825,8 @@ export default function EditorPage() {
                       {c.name || c.id}
                     </button>
                     <span className="meta">
-                      {' '}({memberCount} {memberCount === 1 ? 'run' : 'runs'} · 1 transformer)
+                      {' '}({memberCount} {memberCount === 1 ? 'run' : 'runs'} ·{' '}
+                      {memberElectrodes >= 2 ? '1 transformer' : 'no electrodes yet'})
                     </span>
                     <button
                       type="button"
