@@ -17,6 +17,7 @@ import {
   isVerticalGuide,
   rulerTicks,
 } from '../lib/guides';
+import { UNIT_SUFFIX, type DisplayUnits } from '../lib/units';
 import type { Guideline } from '../api';
 
 // Tick lengths in px, measured from the ruler's inner edge (the edge
@@ -32,6 +33,7 @@ export default function CanvasRulers({
   ty,
   cursor,
   guidelines,
+  units = 'mm',
   onRulerPointerDown,
 }: {
   // Canvas container size in CSS px.
@@ -47,13 +49,16 @@ export default function CanvasRulers({
   // Guides get a tick mark on their ruler too, so a guide scrolled off
   // the visible area still announces where it is.
   guidelines: ReadonlyArray<Guideline>;
+  // Tier 1 #130 — the project's display unit. Changes the tick ladder and the
+  // label text only; every number crossing this boundary is still mm.
+  units?: DisplayUnits;
   onRulerPointerDown: (axis: 'h' | 'v', e: React.PointerEvent<SVGSVGElement>) => void;
 }) {
   // Horizontal ruler: world x maps through tx. Start the visible span at
   // RULER_PX because the corner box covers everything to its left.
-  const h = rulerTicks({ scale, offsetPx: tx, startPx: RULER_PX, endPx: width });
+  const h = rulerTicks({ scale, offsetPx: tx, startPx: RULER_PX, endPx: width, units });
   // Vertical ruler: world y maps through ty.
-  const v = rulerTicks({ scale, offsetPx: ty, startPx: RULER_PX, endPx: height });
+  const v = rulerTicks({ scale, offsetPx: ty, startPx: RULER_PX, endPx: height, units });
 
   const guideMarks = guidelines.map((g) => ({
     id: g.id,
@@ -86,7 +91,7 @@ export default function CanvasRulers({
           .filter((t) => t.major)
           .map((t) => (
             <text key={`l${t.mm}`} x={t.px + 2} y={9} className="ruler-label">
-              {formatTickLabel(t.mm, h.majorMM)}
+              {formatTickLabel(t.mm, h.majorMM, units)}
             </text>
           ))}
         {guideMarks
@@ -143,7 +148,7 @@ export default function CanvasRulers({
               transform={`translate(9,${t.px - 2}) rotate(-90)`}
               className="ruler-label"
             >
-              {formatTickLabel(t.mm, v.majorMM)}
+              {formatTickLabel(t.mm, v.majorMM, units)}
             </text>
           ))}
         {guideMarks
@@ -166,8 +171,11 @@ export default function CanvasRulers({
 
       {/* Corner box — covers the overlap so neither ruler's ticks bleed
           into the other's gutter. */}
+      {/* The corner box names the unit both rules are reading in — the only
+          place a bare "mm" / "in" belongs, since every tick label is a bare
+          number. */}
       <div className="canvas-ruler-corner" aria-hidden>
-        mm
+        {UNIT_SUFFIX[units]}
       </div>
     </>
   );

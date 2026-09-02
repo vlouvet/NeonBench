@@ -18,6 +18,12 @@
 
 import type { DesignDoc, Guideline, GuidelineAxis } from '../api';
 import { nextGuidelineId } from './docOps';
+import {
+  INCH_DENOMINATOR,
+  formatInchesFraction,
+  mmToInches,
+  type DisplayUnits,
+} from './units';
 
 // ---------------------------------------------------------------------------
 // Ruler ticks
@@ -36,10 +42,57 @@ export const TICK_LADDER_MM = [
   20000, 50000,
 ] as const;
 
+// Tier 1 #130 — the same ladder for a project displaying inches, still
+// expressed in MILLIMETRES. That is the point: `rulerTicks` keeps doing all
+// of its arithmetic in mm against the canvas transform, and only the rung
+// spacing and the label text change. A ladder in inch units would need a
+// second copy of the px = offset + mm * scale formula, and the one thing
+// holding the rulers onto the geometry is that there is exactly one copy.
+//
+// The rungs are the ones a tape measure has, not a 1/2/5 decade: sixteenths
+// up to an inch, then the useful whole-inch and foot stops.
+//
+// Written as exact decimal LITERALS, not as `MM_PER_INCH * 3`. Every inch
+// fraction has an exact decimal in mm, but the multiplication does not
+// preserve it — `25.4 * 3` is 76.19999999999999, and 76.2 is a trade constant
+// this codebase has already been bitten by once (Tier 3 #105: 3" is one of
+// the values a numeric field silently refused). A ladder rung that is not the
+// number it claims to be is the same bug one layer down.
+export const TICK_LADDER_IN_MM = [
+  1.5875, // 1/16"
+  3.175, // 1/8"
+  6.35, // 1/4"
+  12.7, // 1/2"
+  25.4, // 1"
+  50.8, // 2"
+  76.2, // 3"
+  152.4, // 6"
+  304.8, // 1 ft
+  609.6, // 2 ft
+  1524, // 5 ft
+  3048, // 10 ft
+  6096, // 20 ft
+  15240, // 50 ft
+  30480, // 100 ft
+] as const;
+
+export function tickLadderFor(units: DisplayUnits): readonly number[] {
+  return units === 'in' ? TICK_LADDER_IN_MM : TICK_LADDER_MM;
+}
+
 // Minimum screen distance between two LABELLED ticks. Sized for the ~40px a
 // five-digit mm label occupies at 10px type plus breathing room, so labels
 // never collide — which is the whole reason the ladder exists.
 export const MIN_LABEL_SPACING_PX = 56;
+
+// Inch labels are wider than mm ones at the same rung — "3 15/16" is half
+// again the glyphs of "100" — so they need more room or they collide at the
+// exact zooms the fine rungs exist for.
+export const MIN_LABEL_SPACING_IN_PX = 76;
+
+export function minLabelSpacingFor(units: DisplayUnits): number {
+  return units === 'in' ? MIN_LABEL_SPACING_IN_PX : MIN_LABEL_SPACING_PX;
+}
 
 // Minimum screen distance between two unlabelled ticks. Below this the ruler
 // turns into a grey bar and stops communicating anything.
@@ -61,24 +114,27 @@ export type TickSteps = { majorMM: number; minorMM: number };
 // major and the ruler simply shows fewer ticks — never zero, never negative.
 export function chooseTickSteps(
   scale: number,
-  minLabelPx: number = MIN_LABEL_SPACING_PX,
+  minLabelPx?: number,
+  units: DisplayUnits = 'mm',
 ): TickSteps {
-  const last = TICK_LADDER_MM[TICK_LADDER_MM.length - 1];
+  const ladder = tickLadderFor(units);
+  const minPx = minLabelPx ?? minLabelSpacingFor(units);
+  const last = ladder[ladder.length - 1];
   if (!Number.isFinite(scale) || scale <= 0) {
     return { majorMM: last, minorMM: last };
   }
-  let majorIdx = TICK_LADDER_MM.length - 1;
-  for (let i = 0; i < TICK_LADDER_MM.length; i++) {
-    if (TICK_LADDER_MM[i] * scale >= minLabelPx) {
+  let majorIdx = ladder.length - 1;
+  for (let i = 0; i < ladder.length; i++) {
+    if (ladder[i] * scale >= minPx) {
       majorIdx = i;
       break;
     }
   }
-  const majorMM = TICK_LADDER_MM[majorIdx];
+  const majorMM = ladder[majorIdx];
   let minorMM = majorMM;
   for (let i = majorIdx - 1; i >= 0; i--) {
-    if (TICK_LADDER_MM[i] * scale >= MIN_MINOR_SPACING_PX) {
-      minorMM = TICK_LADDER_MM[i];
+    if (ladder[i] * scale >= MIN_MINOR_SPACING_PX) {
+      minorMM = ladder[i];
       break;
     }
   }
@@ -110,9 +166,10 @@ export function rulerTicks(args: {
   startPx: number;
   endPx: number;
   minLabelPx?: number;
+  units?: DisplayUnits;
 }): RulerTicksResult {
-  const { scale, offsetPx, startPx, endPx, minLabelPx } = args;
-  const steps = chooseTickSteps(scale, minLabelPx);
+  const { scale, offsetPx, startPx, endPx, minLabelPx, units = 'mm' } = args;
+  const steps = chooseTickSteps(scale, minLabelPx, units);
   if (!Number.isFinite(scale) || scale <= 0 || !(endPx > startPx)) {
     return { ...steps, ticks: [] };
   }
@@ -149,7 +206,18 @@ export function rulerTicks(args: {
 // Format a tick label. Whole millimetres render bare; sub-mm steps keep just
 // enough decimals to distinguish adjacent ticks, so a 0.5 mm ladder does not
 // print "10.0" next to "10.5000".
-export function formatTickLabel(mm: number, stepMM: number): string {
+//
+// Tier 1 #130 — in inch mode the label is a reduced fraction, and the fixed
+// sixteenth denominator does the work a decimals-per-step rule does in mm: a
+// 1" rung reduces to "1", "2", "3", a 1/4" rung to "1/4", "1/2", "3/4", "1".
+// No per-rung table is needed because reduction already collapses the rungs
+// coarser than a sixteenth. Feet are deliberately absent — see units.ts.
+export function formatTickLabel(
+  mm: number,
+  stepMM: number,
+  units: DisplayUnits = 'mm',
+): string {
+  if (units === 'in') return formatInchesFraction(mmToInches(mm), INCH_DENOMINATOR);
   const decimals = stepMM >= 1 ? 0 : stepMM >= 0.1 ? 1 : 2;
   const s = mm.toFixed(decimals);
   // Normalize "-0" — a tick sitting exactly on the origin from the negative

@@ -35,6 +35,7 @@ import * as ops from '../lib/docOps';
 import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepRepeat';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
+import { formatFootageMM, normalizeUnits, type DisplayUnits } from '../lib/units';
 import { FONTS, type FontKey } from '../lib/hershey/fonts';
 import {
   isSessionEmpty,
@@ -65,6 +66,14 @@ export default function EditorPage() {
   const [tubeSpec, setTubeSpec] = useState<TubeSpec | null>(null);
   const [allSpecs, setAllSpecs] = useState<TubeSpec[]>([]);
   const [specSwitching, setSpecSwitching] = useState(false);
+  // Tier 1 #130 — in flight while the display unit PATCH is saving.
+  const [unitsSwitching, setUnitsSwitching] = useState(false);
+  // The project's display unit, coerced. Derived rather than mirrored in
+  // state so it can never drift from the project the header is editing, and
+  // defaulted through `normalizeUnits` so the pre-load render (project still
+  // null) shows millimetres — the unit the doc is actually in — rather than
+  // flashing inches at someone whose project is metric.
+  const displayUnits: DisplayUnits = normalizeUnits(project?.units);
   const [version, setVersion] = useState<DesignVersion | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setToolRaw] = useState<EditorTool>('select');
@@ -1811,6 +1820,25 @@ export default function EditorPage() {
   // limits. Without the revalidate the user would silently see a stale
   // (and possibly falsely-green) report. The dropdown is disabled while
   // either request is in flight to avoid double-fires.
+  // Tier 1 #130 — switch the project's DISPLAY unit. Unlike changeTubeSpec
+  // this touches no geometry and triggers no revalidation: `units` is a
+  // display preference, the doc stays millimetres, and the validator has
+  // never read it. That is the whole reason this is a one-line PATCH and the
+  // spec switch is forty lines.
+  async function changeDisplayUnits(next: DisplayUnits) {
+    if (unitsSwitching) return;
+    if (!project || next === normalizeUnits(project.units)) return;
+    setUnitsSwitching(true);
+    setError(null);
+    try {
+      setProject(await api.updateProject(projectId, { units: next }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setUnitsSwitching(false);
+    }
+  }
+
   async function changeTubeSpec(nextSpecId: number) {
     if (specSwitching) return;
     if (!project || nextSpecId === project.tube_spec_id) return;
@@ -2284,6 +2312,20 @@ export default function EditorPage() {
             {specSwitching && <span className="meta"> · Saving…</span>}
           </label>
           {' · '}
+          <label className="editor-display-units">
+            Show sizes in:{' '}
+            <select
+              value={displayUnits}
+              disabled={unitsSwitching}
+              onChange={(e) => changeDisplayUnits(e.target.value as DisplayUnits)}
+              title="Display unit for DIMENSIONS — rulers, dimension lines, guide positions, canvas size. Glass stays millimetres everywhere (tube ø, wall, bend radius), and the design itself is stored in mm whichever you pick."
+            >
+              <option value="mm">millimetres</option>
+              <option value="in">inches</option>
+            </select>
+            {unitsSwitching && <span className="meta"> · Saving…</span>}
+          </label>
+          {' · '}
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
         {statusMessage && (
@@ -2291,7 +2333,11 @@ export default function EditorPage() {
           // ops (doubleback-all / housing-all). Auto-clears after 5s.
           <p className="meta" role="status" aria-live="polite">{statusMessage}</p>
         )}
-        <ValidationBadge report={report} validating={validating || specSwitching} />
+        <ValidationBadge
+          report={report}
+          validating={validating || specSwitching}
+          units={displayUnits}
+        />
       </header>
       <div className="editor-layout">
         <EditorCanvas
@@ -2313,6 +2359,7 @@ export default function EditorPage() {
           onDragRacewayEnd={dragRacewayEnd}
           onAddGuide={addConstructionGuide}
           showRulers={showRulers}
+          units={displayUnits}
           onPlaceBlockout={placeBlockout}
           onPlaceAnnotation={placeAnnotation}
           onDeleteAnnotation={deleteAnnotation}
@@ -2376,6 +2423,7 @@ export default function EditorPage() {
           {report && (
             <ValidationReportView
               report={report}
+              units={displayUnits}
               hoveredIssueIndex={hoveredIssueIndex}
               selectedIssueIndex={selectedIssueIndex}
               onIssueHover={setHoveredIssueIndex}
@@ -3309,9 +3357,11 @@ function PathOpsRow({
 function ValidationBadge({
   report,
   validating,
+  units,
 }: {
   report: ValidationReport | null;
   validating: boolean;
+  units: DisplayUnits;
 }) {
   if (!report) {
     return (
@@ -3330,7 +3380,7 @@ function ValidationBadge({
   return (
     <p className={`meta validation-badge ${cls}`}>
       {validating ? 'Re-validating… ' : ''}
-      {summary} · {report.tube_runs} runs · {(report.total_length_mm / 1000).toFixed(2)}m total tube
+      {summary} · {report.tube_runs} runs · {formatFootageMM(report.total_length_mm, units)} total tube
     </p>
   );
 }
