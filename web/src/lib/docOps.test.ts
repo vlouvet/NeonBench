@@ -5,7 +5,9 @@ import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
 import {
   flatRunPoints,
+  flattenSegment,
   isArcKind,
+  segmentCount,
   segmentLengthMM,
   segmentTypeAt,
   walkSegmentLengthMM,
@@ -5377,14 +5379,18 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
 //
 // The point of a shared helper is that it can be pointed at everything, and
 // pointing it at everything is what turns "splitRun forgot segment_types" from
-// a bug report into a list. The three ops below that fail are not fixed here
-// (Bug #17's scope is the split path) — they are pinned failing, with the
-// symptom named, so that fixing one makes THIS test fail and tells whoever
-// does it to move the op up into the passing list.
+// a bug report into a list. Bug #17 fixed the split path and left three ops
+// pinned FAILING here — deleteVertex, breakOpen and moveOpening — so that
+// fixing one would make this block go red and say which list to move it to.
+// Tier 3 #119 fixed all three, so the KNOWN BROKEN list is now empty and every
+// op that changes a run's point count or point order is in `passing` below.
+// Keep it that way: a new op belongs in this sweep on the day it lands.
 //
-// A known-limitation test that has to be deleted when the limitation goes is
-// the repo's existing pattern (see the reverseRun block above, whose
-// mirroring test was replaced by a geometric invariant when #87 landed).
+// The vacuity guard is the load-bearing part (CLAUDE.md bug class 7). Each
+// case hands back the doc BEFORE and AFTER and asserts the geometry actually
+// moved, because an op that quietly did nothing satisfies the invariant for
+// free — and `expectWellFormedRun` is deliberately silent about a run with no
+// array at all, so a case whose op simply dropped segment_types would pass.
 // ---------------------------------------------------------------------------
 describe('segment_types well-formedness across every point-count op', () => {
   function openArcRun(id = 'a'): DesignRun {
@@ -5481,6 +5487,15 @@ describe('segment_types well-formedness across every point-count op', () => {
       };
       return [d, ops.splitTubesAtRaceway(d, 'rw1').doc];
     }],
+    // Tier 3 #119 — the three that used to be pinned as KNOWN BROKEN below.
+    ['deleteVertex (merges two segments)', () => { const d = before1(); return [d, ops.deleteVertex(d, 'a', 1)]; }],
+    ['deleteVertex (drops the first segment)', () => { const d = before1(); return [d, ops.deleteVertex(d, 'a', 0)]; }],
+    ['deleteVertex on a closed run', () => { const d = beforeClosed(); return [d, ops.deleteVertex(d, 'a', 0)]; }],
+    ['breakOpen', () => { const d = beforeClosed(); return [d, ops.breakOpen(d, 'a', 1)]; }],
+    ['moveOpening', () => {
+      const d = docOf([{ ...openArcRun(), electrodes: [{ point_index: 0 }, { point_index: 3 }] }]);
+      return [d, ops.moveOpening(d, 'a', 1)];
+    }],
   ];
 
   // The whole geometry an op could have touched, as a string: run ids, point
@@ -5498,47 +5513,408 @@ describe('segment_types well-formedness across every point-count op', () => {
     });
   }
 
-  // KNOWN BROKEN — the same bug class, off Bug #17's split path. Each is
-  // asserted to fail so the list cannot quietly grow stale: fix one and this
-  // test goes red, which is the reminder to move it into `passing` above.
-  const knownBroken: [string, string, () => DesignRun][] = [
-    [
-      'deleteVertex',
-      'leaves the array at its old length — one entry too many, so the next save is a 400',
-      () => ops.deleteVertex(docOf([openArcRun()]), 'a', 1).runs[0],
-    ],
-  ];
+  // The list that used to sit here is empty. Anything added to it later is a
+  // regression, not a backlog item: every op in this file that changes a run's
+  // point count or point order now carries segment_types with it.
+  it('the KNOWN BROKEN list is empty — every point-count op is in the sweep', () => {
+    const swept = new Set(passing.map(([name]) => name.replace(/ .*/, '')));
+    for (const op of [
+      'splitRun', 'insertVertex', 'insertDoubleback', 'simplifyRun', 'reverseRun',
+      'joinRuns', 'moveVertices', 'autoSplitOverlongTubes', 'splitTubesAtRaceway',
+      'deleteVertex', 'breakOpen', 'moveOpening',
+    ]) {
+      expect(swept.has(op), `${op} is not covered by the well-formedness sweep`).toBe(true);
+    }
+  });
+});
 
-  for (const [name, symptom, run] of knownBroken) {
-    it(`KNOWN BROKEN: ${name} ${symptom}`, () => {
-      expect(ops.segmentTypesWellFormed(run())).toBe(false);
-    });
-  }
-
-  // breakOpen and moveOpening keep the LENGTH correct and get the ORDER wrong,
-  // which segmentTypesWellFormed cannot see — the array is the right size, the
-  // arcs are just on the wrong glass. Pinned by shape instead.
-  it('KNOWN BROKEN: breakOpen does not rotate segment_types with the walk', () => {
-    const out = ops.breakOpen(docOf([closedArcRun()]), 'a', 1).runs[0];
-    expectWellFormedRun(out); // length is fine, which is why this hides
-    // Breaking at vertex 1 rotates the walk by one, so the array should read
-    // ['line','arc_r','line','arc']. It comes back untouched, which puts the
-    // first arc on the segment that used to be straight.
-    expect(out.polyline.points[0]).toEqual([100, 0]); // the walk really rotated
-    expect(out.polyline.segment_types).toEqual(['arc', 'line', 'arc_r', 'line']);
-    expect(out.polyline.segment_types).not.toEqual(['line', 'arc_r', 'line', 'arc']);
+// ---------------------------------------------------------------------------
+// Tier 3 #119 — segment_types through deleteVertex, breakOpen and moveOpening.
+//
+// The fifth, sixth and seventh instances of CLAUDE.md bug class 1, all with
+// the same shape as Bug #17: `{ ...run.polyline, points }` replaces the points
+// and leaves the sibling array behind. Only the FIRST of them produces an
+// error — deleteVertex leaves the array one entry too long and the Go decoder
+// 400s the next save. The other two keep the array the right LENGTH (breakOpen
+// emits n+1 points, so a closed run's n segments become n open segments) and
+// get the ORDER wrong, which no length check can see and which the operator
+// discovers as a curve that moved to a different part of the tube.
+//
+// So the assertions here are geometric, per CLAUDE.md: `drawnSegments` is the
+// whole of what a run puts on the glass — every segment's two endpoints AND
+// its bow side — and comparing that list before and after says "the same
+// glass, re-indexed" in a way a field assertion cannot.
+// ---------------------------------------------------------------------------
+describe('Tier 3 #119 — segment_types through the last three point-count ops', () => {
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1, view_box_mm: [0, 0, 400, 400], runs,
   });
 
-  it('KNOWN BROKEN: moveOpening rotates the points and leaves the arcs behind', () => {
-    const doc = docOf([{
-      ...openArcRun(),
+  // Every segment a run draws, as a comparable string: the two endpoints and
+  // the bow. Two runs whose lists are rotations of each other draw the same
+  // shape starting in different places, which is exactly what breakOpen and
+  // moveOpening claim to do.
+  const drawnSegments = (run: DesignRun): string[] => {
+    const pts = run.polyline.points;
+    const n = pts.length;
+    const out: string[] = [];
+    for (let i = 0; i < segmentCount(run); i++) {
+      out.push(JSON.stringify([pts[i], pts[(i + 1) % n], segmentTypeAt(run, i)]));
+    }
+    return out;
+  };
+  const rotate = <T,>(xs: T[], k: number): T[] => xs.slice(k).concat(xs.slice(0, k));
+
+  // glassMM measures ONE segment the way the Go validator measures it: flatten
+  // first, then sum chords. Do NOT reach for segmentLengthMM here — that is
+  // the ideal circular arc, and the two differ by ~0.2% (115.8776 vs 115.9104
+  // on a 100mm chord), which is enough to fail every total-length assertion
+  // below by exactly that sampling difference. Bug #17 hit this; the spec for
+  // this task calls it out; this helper is where it stays fixed.
+  const glassMM = (a: [number, number], b: [number, number], t: SegmentKind): number =>
+    ops.runLengthMM({ id: 'probe', polyline: { points: [a, b], closed: false, segment_types: [t] } });
+
+  // The glass an 'arc' over a 100mm chord draws beyond its chord. Measured,
+  // not derived.
+  const BOW_100 = glassMM([0, 0], [100, 0], 'arc') - 100;
+
+  describe('deleteVertex', () => {
+    // Collinear on purpose. Dropping a vertex between two straights shortens a
+    // run whenever the three points are NOT collinear, and that has nothing to
+    // do with segment_types — it is the operator asking for a straighter path.
+    // Collinear isolates the ONLY glass this fix is answerable for: the bow of
+    // a merged arc.
+    const threeInARow = (types: SegmentKind[]): DesignRun => ({
+      id: 'a',
+      polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false, segment_types: types },
+    });
+
+    it('merging two lines loses exactly nothing', () => {
+      const src = threeInARow(['line', 'line']);
+      const out = ops.deleteVertex(docOf([src]), 'a', 1).runs[0];
+      expectWellFormedRun(out);
+      expect(out.polyline.segment_types).toEqual(['line']);
+      expect(ops.runLengthMM(out)).toBe(ops.runLengthMM(src));
+    });
+
+    // Bug #17's decision, not a fresh one: an edit straightens only the glass
+    // it touches. Two arcs merged across a dropped vertex are not one arc, and
+    // no value of a fixed ARC_BULGE draws the pair, so the merge becomes a
+    // line — and the bow it drew is gone. That number is computable, so it is
+    // computed rather than tolerated.
+    it('merging an arc with a line loses exactly the arc bow', () => {
+      for (const types of [['arc', 'line'], ['line', 'arc_r']] as SegmentKind[][]) {
+        const src = threeInARow(types);
+        const out = ops.deleteVertex(docOf([src]), 'a', 1).runs[0];
+        expectWellFormedRun(out);
+        expect(out.polyline.segment_types).toEqual(['line']);
+        expect(ops.runLengthMM(src) - ops.runLengthMM(out)).toBeCloseTo(BOW_100, 9);
+      }
+    });
+
+    it('merging two arcs loses exactly both bows', () => {
+      const src = threeInARow(['arc', 'arc_r']);
+      const out = ops.deleteVertex(docOf([src]), 'a', 1).runs[0];
+      expectWellFormedRun(out);
+      expect(out.polyline.segment_types).toEqual(['line']);
+      expect(ops.runLengthMM(src) - ops.runLengthMM(out)).toBeCloseTo(2 * BOW_100, 9);
+    });
+
+    it('deleting an END vertex drops that segment whole and merges nothing', () => {
+      const src: DesignRun = {
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [200, 0], [300, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+      };
+      // Vertex 0: the leading 'arc' disappears with it; the survivors keep
+      // their types AND their sides.
+      const head = ops.deleteVertex(docOf([src]), 'a', 0).runs[0];
+      expectWellFormedRun(head);
+      expect(head.polyline.segment_types).toEqual(['line', 'arc_r']);
+      expect(drawnSegments(head)).toEqual(drawnSegments(src).slice(1));
+      // Vertex 3, same from the other end.
+      const tail = ops.deleteVertex(docOf([src]), 'a', 3).runs[0];
+      expectWellFormedRun(tail);
+      expect(tail.polyline.segment_types).toEqual(['arc', 'line']);
+      expect(drawnSegments(tail)).toEqual(drawnSegments(src).slice(0, 2));
+    });
+
+    it('leaves every arc the delete did not touch exactly where it was', () => {
+      const src: DesignRun = {
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [200, 0], [300, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+      };
+      // Deleting vertex 2 merges segments 1 ('line') and 2 ('arc_r'); segment
+      // 0's arc is untouched, on the same two points, bowed the same way.
+      const out = ops.deleteVertex(docOf([src]), 'a', 2).runs[0];
+      expectWellFormedRun(out);
+      expect(out.polyline.segment_types).toEqual(['arc', 'line']);
+      expect(drawnSegments(out)[0]).toBe(drawnSegments(src)[0]);
+      expect(ops.runLengthMM(src) - ops.runLengthMM(out)).toBeCloseTo(BOW_100, 9);
+    });
+
+    it('a closed run keeps one entry per segment, closing chord included', () => {
+      const sq: DesignRun = {
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+          closed: true,
+          segment_types: ['arc', 'line', 'arc_r', 'line'],
+        },
+      };
+      // Deleting vertex 0 merges the CLOSING segment with segment 0, and the
+      // merged entry has to land at the END of the array where the new closing
+      // segment lives — the case an "array.splice(i, 2, 'line')" would get
+      // wrong.
+      const at0 = ops.deleteVertex(docOf([sq]), 'a', 0).runs[0];
+      expectWellFormedRun(at0);
+      expect(at0.polyline.points).toEqual([[100, 0], [100, 100], [0, 100]]);
+      expect(at0.polyline.segment_types).toEqual(['line', 'arc_r', 'line']);
+      // Deleting an interior vertex merges in place.
+      const at2 = ops.deleteVertex(docOf([sq]), 'a', 2).runs[0];
+      expectWellFormedRun(at2);
+      expect(at2.polyline.segment_types).toEqual(['arc', 'line', 'line']);
+      expect(drawnSegments(at2)[0]).toBe(drawnSegments(sq)[0]);
+    });
+
+    it('does not grow a segment_types array on a pre-#78 run', () => {
+      const plain: DesignRun = {
+        id: 'a',
+        polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+      };
+      const out = ops.deleteVertex(docOf([plain]), 'a', 1).runs[0];
+      expect('segment_types' in out.polyline).toBe(false);
+    });
+
+    it('leaves the run alone when the index is out of range', () => {
+      const src = threeInARow(['arc', 'line']);
+      const out = ops.deleteVertex(docOf([src]), 'a', 9).runs[0];
+      expect(out).toBe(src);
+    });
+
+    // NEGATIVE CONTROL. `expectWellFormedRun` only means something if it has
+    // been seen to fail, so build the pre-fix output — points replaced, array
+    // left behind — and assert the decoder's twin refuses it. Without this,
+    // "the array is well-formed" is a claim about a check that has never said
+    // no (CLAUDE.md bug class 7).
+    it('NEGATIVE CONTROL: the pre-fix spread leaves the run unsaveable', () => {
+      const src = threeInARow(['arc', 'line']);
+      const preFix: DesignRun = {
+        ...src,
+        polyline: { ...src.polyline, points: src.polyline.points.filter((_, i) => i !== 1) },
+      };
+      expect(ops.segmentTypesWellFormed(preFix)).toBe(false);
+      expect(preFix.polyline.segment_types).toHaveLength(2);
+      expect(segmentCount(preFix)).toBe(1);
+    });
+
+    // The exact bytes internal/server/segment_types_integration_test.go POSTs.
+    // The Go side cannot call this function, so the two are pinned to each
+    // other here: change the op's output and this fails, pointing at the
+    // fixture that has to move with it.
+    it('emits the polyline the API round-trip test posts', () => {
+      const src: DesignRun = {
+        id: 'r1',
+        polyline: {
+          points: [[0, 0], [300, 0], [600, 0], [900, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+      };
+      const out = ops.deleteVertex(docOf([src]), 'r1', 1).runs[0];
+      expect(JSON.stringify(out.polyline)).toBe(
+        '{"points":[[0,0],[600,0],[900,0]],"closed":false,'
+        + '"segment_types":["line","arc_r"]}',
+      );
+    });
+  });
+
+  describe('breakOpen', () => {
+    const closedSq = (): DesignRun => ({
+      id: 'a',
+      polyline: {
+        points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+        closed: true,
+        segment_types: ['arc', 'line', 'arc_r', 'line'],
+      },
+    });
+
+    // THE invariant. Breaking a loop open is pure bookkeeping: the same loop,
+    // walked from a different vertex. No glass is lost and no arc changes
+    // kind, so the drawn-segment list must come back as an exact rotation —
+    // from EVERY break vertex, because a fix that only works for one is a
+    // coincidence.
+    it('draws the same glass from every break vertex — the loop, re-indexed', () => {
+      const src = closedSq();
+      const before = drawnSegments(src);
+      for (let k = 0; k < src.polyline.points.length; k++) {
+        const out = ops.breakOpen(docOf([src]), 'a', k).runs[0];
+        expectWellFormedRun(out);
+        expect(out.polyline.closed).toBe(false);
+        expect(drawnSegments(out), `break at ${k}`).toEqual(rotate(before, k));
+        expect(ops.runLengthMM(out), `break at ${k}`)
+          .toBeCloseTo(ops.runLengthMM(src), 9);
+      }
+    });
+
+    // The same statement one level lower, against the points the validator,
+    // the pattern and the DXF are all derived from: the flattened curve is the
+    // same curve, entered at the break vertex.
+    it('flattens to the same curve, walked from the break vertex', () => {
+      const src = closedSq();
+      const pts = src.polyline.points;
+      const n = pts.length;
+      for (let k = 0; k < n; k++) {
+        const out = ops.breakOpen(docOf([src]), 'a', k).runs[0];
+        const expected: [number, number][] = [pts[k]];
+        for (let j = 0; j < n; j++) {
+          expected.push(...flattenSegment(
+            pts[(k + j) % n], pts[(k + j + 1) % n], segmentTypeAt(src, (k + j) % n),
+          ));
+        }
+        expect(flatRunPoints(out), `break at ${k}`).toEqual(expected);
+      }
+    });
+
+    // NEGATIVE CONTROL, and a demonstration of why the invariant above has to
+    // be per-segment. The pre-fix run — points rotated, array left behind — is
+    // accepted by the decoder's twin AND measures the same total glass, on
+    // this fixture to within float noise. Every cheap check passes. Only
+    // comparing what each segment draws finds the two arcs sitting on the
+    // straight sides of the square.
+    it('NEGATIVE CONTROL: an unrotated array passes every check except shape', () => {
+      const src = closedSq();
+      const out = ops.breakOpen(docOf([src]), 'a', 1).runs[0];
+      const preFix: DesignRun = {
+        ...out,
+        polyline: { ...out.polyline, segment_types: src.polyline.segment_types },
+      };
+      expect(ops.segmentTypesWellFormed(preFix)).toBe(true);
+      expect(ops.runLengthMM(preFix)).toBeCloseTo(ops.runLengthMM(src), 9);
+      // …and draws a different tube.
+      expect(drawnSegments(preFix)).not.toEqual(drawnSegments(out));
+      expect(flatRunPoints(preFix)).not.toEqual(flatRunPoints(out));
+    });
+
+    it('does not grow a segment_types array on a pre-#78 run', () => {
+      const plain: DesignRun = {
+        id: 'a',
+        polyline: { points: [[0, 0], [100, 0], [100, 100]], closed: true },
+      };
+      const out = ops.breakOpen(docOf([plain]), 'a', 1).runs[0];
+      expect('segment_types' in out.polyline).toBe(false);
+    });
+  });
+
+  describe('moveOpening', () => {
+    const openArcRun = (): DesignRun => ({
+      id: 'a',
+      polyline: {
+        points: [[0, 0], [100, 0], [200, 0], [300, 0]],
+        closed: false,
+        segment_types: ['arc', 'line', 'arc_r'],
+      },
       electrodes: [{ point_index: 0 }, { point_index: 3 }],
-    }]);
-    const out = ops.moveOpening(doc, 'a', 1).runs[0];
-    // The points rotated…
-    expect(out.polyline.points).toEqual([[100, 0], [200, 0], [300, 0], [0, 0]]);
-    // …and the arcs did not follow them.
-    expect(out.polyline.segment_types).toEqual(['arc', 'line', 'arc_r']);
-    expect(out.polyline.segment_types).not.toEqual(['line', 'arc_r', 'line']);
+    });
+
+    it('rotates the array with the walk from every vertex on it', () => {
+      const src = openArcRun();
+      const pts = src.polyline.points;
+      const n = pts.length;
+      for (let k = 0; k < n; k++) {
+        const out = ops.moveOpening(docOf([src]), 'a', k).runs[0];
+        expectWellFormedRun(out);
+        // New segment j is old segment (k+j) % n. Old index n-1 is not a
+        // segment — it is the opening — so it enters as a line.
+        const want: SegmentKind[] = [];
+        for (let j = 0; j < n - 1; j++) {
+          const from = (k + j) % n;
+          want.push(from === n - 1 ? 'line' : segmentTypeAt(src, from));
+        }
+        expect(out.polyline.segment_types, `opening at ${k}`).toEqual(want);
+      }
+    });
+
+    // The length statement, computed rather than tolerated. Rotating the
+    // opening trades exactly one segment for exactly one other: old segment
+    // k-1 becomes the new gap, and the old gap (last vertex -> first) becomes
+    // drawn glass, as a straight line because the operator drew no curve
+    // across the opening.
+    it('trades exactly one segment of glass for exactly one other', () => {
+      const src = openArcRun();
+      const pts = src.polyline.points;
+      const n = pts.length;
+      const srcLen = ops.runLengthMM(src);
+      for (let k = 1; k < n; k++) {
+        const out = ops.moveOpening(docOf([src]), 'a', k).runs[0];
+        const lost = glassMM(pts[k - 1], pts[k], segmentTypeAt(src, k - 1));
+        const gained = glassMM(pts[n - 1], pts[0], 'line');
+        expect(ops.runLengthMM(out), `opening at ${k}`)
+          .toBeCloseTo(srcLen - lost + gained, 9);
+        // Every segment that SURVIVED the rotation is byte-identical: same
+        // endpoints, same bow, same side.
+        const survivors = drawnSegments(out).filter((s) => drawnSegments(src).includes(s));
+        expect(survivors, `opening at ${k}`).toHaveLength(n - 2);
+      }
+    });
+
+    it('does not grow a segment_types array on a pre-#78 run', () => {
+      const plain: DesignRun = {
+        id: 'a',
+        polyline: { points: [[0, 0], [100, 0], [200, 0]], closed: false },
+        electrodes: [{ point_index: 0 }, { point_index: 2 }],
+      };
+      const out = ops.moveOpening(docOf([plain]), 'a', 1).runs[0];
+      expect('segment_types' in out.polyline).toBe(false);
+    });
+
+    // SPEC CORRECTION, pinned so it is not re-litigated from prose.
+    //
+    // Tier 3 #119's spec asks for the same geometric invariant on moveOpening
+    // that breakOpen satisfies — "the result must draw the same glass as the
+    // source, it is the same loop re-indexed". It is not, and the reason is in
+    // the POINTS, not in segment_types: moveOpening treats an open polyline as
+    // a cycle whose missing segment IS the opening, so rotating it necessarily
+    // trades one segment of glass for another (asserted exactly, above). That
+    // is the op's documented behaviour and its existing tests assert it.
+    //
+    // Feeding it a breakOpen output — the case its own doc comment names as
+    // the common one — is where that reading gets expensive: breakOpen ends
+    // the walk on a DUPLICATE of the start vertex (zero-width opening, full
+    // perimeter), so moveOpening drops a real segment of glass and leaves the
+    // duplicate stranded mid-polyline as a zero-length segment. Measured here
+    // rather than described. Reconciling the two ops is a shape decision for
+    // the repo owner and a change to the point handling, which #119 explicitly
+    // scopes out — this test exists so the next person finds the numbers.
+    it('KNOWN LIMIT: on a breakOpen output it drops a segment and strands the duplicate', () => {
+      const loop: DesignRun = {
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+          closed: true,
+          segment_types: ['arc', 'line', 'arc_r', 'line'],
+        },
+      };
+      const opened = ops.breakOpen(docOf([loop]), 'a', 0);
+      // breakOpen itself is exact: the full perimeter, ending on a duplicate.
+      expect(ops.runLengthMM(opened.runs[0])).toBeCloseTo(ops.runLengthMM(loop), 9);
+      expect(opened.runs[0].polyline.points[0])
+        .toEqual(opened.runs[0].polyline.points[4]);
+
+      const moved = ops.moveOpening(opened, 'a', 2).runs[0];
+      expectWellFormedRun(moved);
+      // The duplicate is now stranded in the middle as a zero-length segment…
+      expect(moved.polyline.points[2]).toEqual(moved.polyline.points[3]);
+      // …and old segment 1 (the 100mm straight) is gone from the takeoff.
+      expect(ops.runLengthMM(opened.runs[0]) - ops.runLengthMM(moved))
+        .toBeCloseTo(100, 9);
+    });
   });
 });

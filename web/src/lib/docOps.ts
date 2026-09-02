@@ -1034,16 +1034,54 @@ function reversedRun(run: DesignRun): DesignRun {
 
 export function deleteVertex(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
   return mapRun(doc, runId, (run) => {
+    const pts = run.polyline.points;
+    const n = pts.length;
     const minPts = run.polyline.closed ? 3 : 2;
-    if (run.polyline.points.length <= minPts) return run;
-    const points = run.polyline.points.filter((_, i) => i !== pointIndex);
+    if (n <= minPts) return run;
+    // An index off the end used to leave the points alone while `shift` below
+    // quietly renumbered every electrode, so bound it explicitly.
+    if (pointIndex < 0 || pointIndex >= n) return run;
+    const points = pts.filter((_, i) => i !== pointIndex);
     const shift = (i: number) => (i > pointIndex ? i - 1 : i);
     const electrodes = (run.electrodes ?? [])
       .filter((e) => e.point_index !== pointIndex)
       .map((e) => ({ ...e, point_index: shift(e.point_index) }));
+    const polyline = { ...run.polyline, points };
+    // Dropping a vertex MERGES the two segments either side of it into one, so
+    // the array has to shrink by one. Leaving it as found made it one entry
+    // too LONG — the mirror image of the pre-#17 insertVertex — and
+    // (*Polyline).UnmarshalJSON in internal/designdoc/types.go rejects the
+    // length at the door, so the next save was a 400 the operator had no way
+    // to connect to the vertex they deleted. Built only when an array existed,
+    // so a pre-#78 run round-trips without growing the key.
+    //
+    // What the merged segment BECOMES is not a fresh decision: Bug #17
+    // (specs/done/bug-17-splitrun-drops-arcs.md → "The decision") settled that
+    // an edit straightens only the glass it touches. Two merged lines are a
+    // line and lose nothing; if either side was an arc the merge becomes a
+    // line, because two arcs joined across a dropped vertex are not one arc
+    // and no value of a fixed ARC_BULGE draws the pair. Every other arc on the
+    // run keeps its type and its side. Same span-merge shape as simplifyRun,
+    // which faces the identical question one vertex at a time.
+    if (run.polyline.segment_types) {
+      const origOf: number[] = [];
+      for (let i = 0; i < n; i++) if (i !== pointIndex) origOf.push(i);
+      const m = origOf.length;
+      const segs = run.polyline.closed ? m : m - 1;
+      const nextTypes: SegmentKind[] = [];
+      for (let j = 0; j < segs; j++) {
+        const from = origOf[j];
+        const to = origOf[(j + 1) % m];
+        // A new segment still spanning exactly one old segment keeps its type;
+        // the one that spans two is the merge across the deleted vertex.
+        const single = run.polyline.closed ? (from + 1) % n === to : from + 1 === to;
+        nextTypes.push(single ? segmentTypeAt(run, from) : 'line');
+      }
+      polyline.segment_types = nextTypes;
+    }
     return {
       ...run,
-      polyline: { ...run.polyline, points },
+      polyline,
       electrodes,
     };
   });
@@ -1088,10 +1126,28 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
     ...pts.slice(0, vertexIndex),
     pts[vertexIndex],
   ];
+  // segment_types rotates with the walk. n+1 points means n segments — the
+  // same count the closed loop had — which is exactly why this hid: the array
+  // stayed the right LENGTH, so segmentTypesWellFormed passed and the Go
+  // decoder accepted the doc while every arc sat `vertexIndex` segments away
+  // from the glass it describes. Only a rotation assertion can see it.
+  //
+  // Index i is the segment LEAVING vertex i, and new vertex j is old vertex
+  // (vertexIndex + j) % n, so new segment j is old segment (vertexIndex + j)
+  // % n. Pure bookkeeping: no glass is lost, no arc changes side, every
+  // segment just gets its correct index. openClosedRunAtCrossing does the
+  // identical rotation for the raceway splitter's closed-run half.
+  let rotTypes: SegmentKind[] | undefined;
+  if (run.polyline.segment_types) {
+    rotTypes = [];
+    for (let j = 0; j < n; j++) rotTypes.push(segmentTypeAt(run, (vertexIndex + j) % n));
+  }
   return mapRun(doc, runId, (r) => {
+    const polyline = { ...r.polyline, points: newPts, closed: false };
+    if (rotTypes) polyline.segment_types = rotTypes;
     const next: DesignRun = {
       ...r,
-      polyline: { ...r.polyline, points: newPts, closed: false },
+      polyline,
       electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
     };
     // Direction is meaningless once the run is open (runArcs walks the
@@ -1164,11 +1220,37 @@ export function moveOpening(
   // bumped by one walk-step to the new opening's other side.
   const rotated = walked.slice(targetWalkPos).concat(walked.slice(0, targetWalkPos));
   const newPts: [number, number][] = rotated.map((i) => pts[i]);
-  return mapRun(doc, runId, (r) => ({
-    ...r,
-    polyline: { ...r.polyline, points: newPts },
-    electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
-  }));
+  // segment_types rotates with the walk, for the same reason it does in
+  // breakOpen: the point COUNT does not change, so the array stayed the right
+  // length and nothing complained while every arc sat targetWalkPos segments
+  // off the glass it describes.
+  //
+  // New segment j runs new vertex j -> j+1, i.e. old vertex (targetWalkPos+j)
+  // % n -> (targetWalkPos+j+1) % n, i.e. old segment (targetWalkPos+j) % n.
+  // The one exception is old index n-1, which is not a segment on an open run
+  // — it is the OPENING, the gap between the polyline's last and first vertex.
+  // Moving the opening turns that gap into drawn glass (and turns old segment
+  // targetWalkPos-1 into the new gap), and the operator drew no curve across
+  // it, so it enters as a line: Bug #17's rule that an edit straightens only
+  // what it touches. segmentTypeAt already answers 'line' out of range; the
+  // branch is here to say so out loud.
+  let rotTypes: SegmentKind[] | undefined;
+  if (run.polyline.segment_types) {
+    rotTypes = [];
+    for (let j = 0; j < n - 1; j++) {
+      const from = (targetWalkPos + j) % n;
+      rotTypes.push(from === n - 1 ? 'line' : segmentTypeAt(run, from));
+    }
+  }
+  return mapRun(doc, runId, (r) => {
+    const polyline = { ...r.polyline, points: newPts };
+    if (rotTypes) polyline.segment_types = rotTypes;
+    return {
+      ...r,
+      polyline,
+      electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+    };
+  });
 }
 
 // connectTubes creates a new "jumper" run that splices two existing
