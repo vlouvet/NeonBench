@@ -262,6 +262,23 @@ load-bearing, construct the broken variant in the same test and assert it
 **fails** — PR #159 does this for the mirror double-flip, and it is what makes
 the passing case mean something.
 
+**Never substring-search a rendered PDF.** `internal/printpdf` output is
+**compressed** — gofpdf's default, and nothing in the render path calls
+`SetCompression(false)` (the calls you will find are in test files building
+their own `fpdf`). So `strings.Contains(pdf, "some label")` cannot match, and a
+*negative* one — `if strings.Contains(...) { t.Error(...) }` — passes forever
+while asserting nothing. Tier 3 #122 found three of these, one of them under a
+comment asserting the opposite in so many words: "this codebase uses the
+uncompressed default, so a substring check is reliable." Assert against
+`planRunDrawing` (`internal/printpdf/runpath.go`), which returns the drawn
+geometry in world millimetres before any of it reaches a PDF.
+
+**Byte-length deltas are the same trap wearing a hat.** `len(withFeature) >
+len(without)` cannot tell "drew a curve" from "drew a slightly longer straight
+line", and #122 found one guarding a ~40-byte row with a 500-byte threshold.
+That proxy is exactly how Bug #18's straight-`LineTo`-instead-of-arc survived in
+the printed pattern.
+
 ## Required pre-merge checks
 
 Before opening a PR (and again after every push), run locally:
