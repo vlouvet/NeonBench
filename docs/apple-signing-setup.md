@@ -166,8 +166,10 @@ Then watch the workflow at https://github.com/vlouvet/NeonBench/actions. The `bu
 2. Build both darwin binaries
 3. Codesign each (no errors)
 4. Submit to notary, wait, and receive `Status: Accepted` (5-15 min per binary)
-5. Staple the ticket
-6. Recompute the SHA256 (binary contents change after stapling)
+5. Compute the SHA256 — **after** signing, because `codesign` rewrites the binary
+
+There is **no stapling step**, and that is deliberate — see
+[Why there is no staple](#why-there-is-no-staple) below.
 
 When the workflow finishes, go to https://github.com/vlouvet/NeonBench/releases. Download `neonbench-darwin-arm64` (or `-amd64` if you're on Intel) on a **fresh mac** — one that has never seen the binary. Open it. **No Gatekeeper warning.** The binary launches normally.
 
@@ -185,7 +187,10 @@ If the warning does appear, something went wrong — most likely:
 
 - The codesign step is using the wrong identity (check `MACOS_CERT_IDENTITY`).
 - The notarytool submission failed silently (check the workflow logs for the `xcrun notarytool submit` step's output — it should say `Accepted`).
-- The staple step ran before notarization completed (notarytool's `--wait` should prevent this; if the workflow didn't wait, check timeout values).
+- The machine you are testing on is **offline**. Without a stapled ticket
+  Gatekeeper checks notarization online, so a first launch with no network
+  can still warn. Reconnect and try again — see
+  [Why there is no staple](#why-there-is-no-staple).
 
 ---
 
@@ -218,9 +223,42 @@ The cert + private key are still in your login keychain on this mac — that's f
 | `User interaction is not allowed` | Same — keychain locked or partition list not set. The `security set-key-partition-list` step in the workflow handles this. |
 | Notarytool: `Status: Invalid` | The binary failed Apple's malware scan or has a bad entitlement. Check the JSON log Apple returns: `xcrun notarytool log <submission-id> --key ... --key-id ... --issuer ...`. |
 | Notarytool: timeout exceeded | Apple's queue is slow that day. Increase `--timeout` to 60m. |
-| Stapler fails: "could not find ticket" | Notarization didn't actually succeed despite the wait. Check notarytool log. |
-| Gatekeeper warning despite signing | Signed but not notarized OR notarized but not stapled. The staple is what makes it work offline (offline machines can't query Apple's notary service, so the ticket must be embedded). |
-| Local mac can run the binary but a colleague's can't | Their mac still has the quarantine attribute and may need an internet connection on first run (to fetch the staple). Use the fresh-mac test or `xattr -w com.apple.quarantine` simulation in Step 7. |
+| You added a `stapler staple` call and it fails | Expected. You cannot staple a bare binary — see [Why there is no staple](#why-there-is-no-staple). Remove the call. |
+| Gatekeeper warning despite signing | Either the notarization did not actually succeed (check the notarytool log for `Accepted`), or the test machine is offline — with no stapled ticket the check happens online. |
+| Local mac can run the binary but a colleague's can't | Their mac has the quarantine attribute from the browser download and needs a network on first launch to verify notarization. Use the fresh-mac test or the `xattr -w com.apple.quarantine` simulation in Step 7. |
+
+---
+
+## Why there is no staple
+
+Most notarization guides end with `xcrun stapler staple`, which embeds the
+notarization ticket in the file so Gatekeeper can verify it **offline**.
+NeonBench does not do this, because it cannot.
+
+Run `xcrun stapler --help` and it tells you the supported formats:
+
+> Supported file formats are: UDIF disk images, code-signed executable
+> bundles, and signed "flat" installer packages.
+
+NeonBench ships a **bare Mach-O executable**, which is none of those — not a
+bundle (that is a `.app` directory), not a disk image, not an installer
+package. An earlier draft of both this document and the release workflow
+called `stapler` anyway; it would have failed the release on every tag push.
+
+**What that costs, precisely.** Without a stapled ticket Gatekeeper verifies
+notarization by querying Apple **online** at first launch. That check only
+happens at all when the file carries `com.apple.quarantine`, and that
+attribute is set by the *downloading application* — browsers and LaunchServices
+set it; `curl` and ordinary programs do not.
+
+So the only affected case is: *downloaded through a browser, then run for the
+first time with no network*. Someone who has just downloaded a file generally
+has a network. And it does not affect the self-updater at all, since a binary
+fetched by NeonBench itself is never quarantined.
+
+**If offline first-launch ever needs to work**, the fix is to ship a stapled
+`.dmg` alongside the bare binaries — a disk image is a supported format. Do
+not add a `stapler` call to the existing loop; it will fail.
 
 ---
 

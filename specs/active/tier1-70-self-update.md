@@ -128,7 +128,26 @@ jobs:
 - `internal/version/version_test.go` — `Current()` returns embedded value, falls back to "dev" if unset.
 - Manual: tag `v0.0.1-test` on a branch, push, verify CI produces 5 binaries + 5 sha256 files in a GitHub draft release.
 
-### Sub-PR 70b — macOS code signing + notarization
+### Sub-PR 70b — macOS code signing + notarization — ✅ SHIPPED (CI + docs)
+
+**Status added 2026-09-02.** The workflow and documentation are in place;
+what remains is the human half — creating the certificate and the six GitHub
+Secrets, then tagging a test release. See `docs/apple-signing-setup.md`.
+
+**Correction to the CI block below: it called `xcrun stapler staple` on a bare
+binary, which cannot work.** `stapler --help` lists its three supported
+formats — "UDIF disk images, code-signed executable bundles, and signed 'flat'
+installer packages" — and a bare Mach-O is none of them. As written, the
+release would have failed on every tag push. Decided 2026-09-02: **sign and
+notarize, do not staple.** Gatekeeper then verifies online at first launch,
+which only affects a browser download run offline, and never affects 70c
+(programmatic downloads do not set `com.apple.quarantine`). The reasoning is
+in `docs/apple-signing-setup.md` → "Why there is no staple".
+
+**Also corrected:** checksums must be emitted *after* `codesign`, which
+rewrites the binary. The block below emits them during the build.
+
+**Original scope, for reference:**
 
 **Modify:**
 - `.github/workflows/release.yml` — extend the `build-macos` job with: import cert from `MACOS_CERT_P12_BASE64`, codesign the two darwin binaries with `--options runtime --timestamp --entitlements <path>`, submit each to notary via `xcrun notarytool` against the App Store Connect API key, staple the resulting tickets.
