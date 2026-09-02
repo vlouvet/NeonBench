@@ -221,7 +221,7 @@ func TestPlanRunDrawingArcsMatchDesigndoc(t *testing.T) {
 		ID: "r",
 		Polyline: designdoc.Polyline{
 			Points:       [][2]float64{{0, 0}, {100, 0}, {100, 80}},
-			SegmentTypes: []string{"arc", "arc_r"},
+			SegmentTypes: []string{designdoc.SegmentArc, designdoc.SegmentArcR},
 		},
 	}
 	plan := planRunDrawing(run)
@@ -234,7 +234,10 @@ func TestPlanRunDrawingArcsMatchDesigndoc(t *testing.T) {
 
 	for i, segType := range run.Polyline.SegmentTypes {
 		p0, p1 := run.Polyline.Points[i], run.Polyline.Points[i+1]
-		arc, ok := designdoc.ArcFor(p0, p1, segType == "arc_r")
+		// ArcFlipped, not `== SegmentArcR`: the house rule after Tier 3 #87
+		// widened the enum and quietly emptied two regression tests
+		// (CLAUDE.md → Recurring bug classes → 7).
+		arc, ok := designdoc.ArcFor(p0, p1, designdoc.ArcFlipped(segType))
 		if !ok {
 			t.Fatalf("segment %d: designdoc has no arc for it", i)
 		}
