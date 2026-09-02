@@ -2,9 +2,7 @@ package printpdf
 
 import (
 	"bytes"
-	"compress/zlib"
 	"fmt"
-	"io"
 	"math"
 	"strings"
 	"testing"
@@ -134,6 +132,15 @@ func TestMakePageProjectorMirrored(t *testing.T) {
 // We additionally pin that the default-options output matches the
 // explicit `Mirror = &true` output — the trade-default-is-mirrored
 // invariant is the load-bearing piece of the spec.
+//
+// Tier 3 #122 reviewed the byte comparisons here and left them. They are not
+// standing in for a geometric assertion: "these two option settings produce
+// the same artifact" is exactly a byte-equality question, and the ±10%
+// size-divergence check is watching for structural divergence (extra pages,
+// dropped labels) rather than for shape. The shape question — where the mirror
+// puts a coordinate — is answered directly by TestMakePageProjectorMirrored
+// and TestMirrorRotateOrderIsMirrorThenRotate, because mirroring lives in the
+// projector and not in the drawing plan (runpath.go emits world mm).
 func TestRenderFromDocMirrorChangesOutput(t *testing.T) {
 	doc := mirrorTestDoc()
 	opts := DefaultOptions()
@@ -1404,90 +1411,11 @@ func TestRenderFromDocTrimmedGridStillCoversTheDesign(t *testing.T) {
 	}
 }
 
-// Bug #18 — the printed pattern's own path builder had the same hole as the
-// SVG writer: it walked the steps BETWEEN seg.Indices and then closed a closed
-// run with a straight LineTo, so a closing segment marked as an arc reached the
-// bender as a chord. That is the "shown one shape, handed another" failure the
-// arc twins exist to prevent, and here the wrong artifact is the one they bend
-// against — the DXF vertex bulge already carried the closing arc out to CAM.
-//
-// RenderFromDoc's content streams are Flate-compressed and it exposes no
-// SetCompression hook (see the note in jumper_test.go), so this inflates them
-// and counts cubic-Bezier operators. Two cubics per arc, exactly as
-// designdoc.ArcCubics emits.
-func inflatedStreams(t *testing.T, pdf []byte) string {
-	t.Helper()
-	var out bytes.Buffer
-	rest := pdf
-	for {
-		i := bytes.Index(rest, []byte("stream\n"))
-		if i < 0 {
-			break
-		}
-		rest = rest[i+len("stream\n"):]
-		j := bytes.Index(rest, []byte("\nendstream"))
-		if j < 0 {
-			break
-		}
-		if zr, err := zlib.NewReader(bytes.NewReader(rest[:j])); err == nil {
-			b, _ := io.ReadAll(zr)
-			out.Write(b)
-			out.WriteByte('\n')
-		}
-		rest = rest[j:]
-	}
-	if out.Len() == 0 {
-		t.Fatal("no inflatable content streams in the PDF — the counting below would be vacuous")
-	}
-	return out.String()
-}
-
-// bug18SquarePDF renders a 100 mm closed square with the given segment types
-// and returns the PDF plus the number of cubic-Bezier operators in it.
-func bug18SquarePDF(t *testing.T, types []string) ([]byte, int) {
-	t.Helper()
-	doc := &designdoc.Doc{
-		Version:   1,
-		ViewBoxMM: [4]float64{0, 0, 200, 200},
-		Runs: []designdoc.Run{{
-			ID: "sq",
-			Polyline: designdoc.Polyline{
-				Points:       [][2]float64{{20, 20}, {120, 20}, {120, 120}, {20, 120}},
-				Closed:       true,
-				SegmentTypes: types,
-			},
-			TubeDiameterMM: 10,
-		}},
-	}
-	opts := DefaultOptions()
-	opts.ProjectName = "Bug18"
-	opts.DesignVersionLabel = "v1"
-	out, err := RenderFromDoc(doc, opts, 10)
-	if err != nil {
-		t.Fatalf("RenderFromDoc %v: %v", types, err)
-	}
-	return out, strings.Count(inflatedStreams(t, out), " c\n")
-}
-
-func TestRenderFromDocDrawsClosingSegmentArc(t *testing.T) {
-	for _, c := range []struct {
-		name          string
-		curved, chord []string
-	}{
-		{"straight sides", []string{"line", "line", "line", "arc"}, []string{"line", "line", "line", "line"}},
-		{"curved sides", []string{"arc", "arc", "arc", "arc"}, []string{"arc", "arc", "arc", "line"}},
-	} {
-		curvedPDF, curvedOps := bug18SquarePDF(t, c.curved)
-		chordPDF, chordOps := bug18SquarePDF(t, c.chord)
-
-		// Pre-fix these two docs rendered BYTE-IDENTICAL PDFs: the closing
-		// segment's type changed nothing that reached the bench.
-		if bytes.Equal(curvedPDF, chordPDF) {
-			t.Errorf("%s: a curved closing segment produced a byte-identical PDF", c.name)
-		}
-		if got := curvedOps - chordOps; got != 2 {
-			t.Errorf("%s: curving the closing segment added %d cubic operators, want 2 (%d vs %d)",
-				c.name, got, curvedOps, chordOps)
-		}
-	}
-}
+// Bug #18's regression test used to live here. It rendered two PDFs, inflated
+// their Flate-compressed content streams with a parser defined in this file,
+// and counted cubic-Bezier operators — because nothing in this package could
+// say what the renderer had drawn. Tier 3 #122 replaced that with a seam
+// (runpath.go): the test is now TestPlanRunDrawingDrawsClosingSegmentArc in
+// runpath_test.go, and it asserts that the drawn glass passes through the
+// closing arc's apex rather than counting operators in a byte stream. The
+// in-test PDF parser is gone with it.

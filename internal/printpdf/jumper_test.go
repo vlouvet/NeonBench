@@ -2,25 +2,18 @@ package printpdf
 
 import (
 	"bytes"
-	"strings"
+	"math"
 	"testing"
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
 )
 
-// TestRenderFromDocWithJumperDoesNotError is a smoke test for Tier 3
-// #60 / NW #125 — Connect Tubes. Verifies that a doc carrying a
-// jumper run produces a syntactically-valid PDF (gofpdf compresses
-// page content streams by default, so a literal "JUMPER" substring
-// search is not reliable; cf. returnstrip_test.go which calls
-// pdf.SetCompression(false) on a hand-built fpdf when it needs to
-// inspect the raw stream — we don't reach that hook from
-// RenderFromDoc, by design). The structural assertions plus the
-// neighboring TestRenderFromDocSkipsJumpersInBendList exercise the
-// jumper code paths end-to-end without depending on stream
-// compression behavior.
-func TestRenderFromDocWithJumperDoesNotError(t *testing.T) {
-	doc := &designdoc.Doc{
+// jumperDoc is a primary run plus a jumper spliced across midfield, positioned
+// so the dashed stroke and its midpoint label both land inside a tile's
+// printable area. The jumper carries no electrodes — jumpers are wired, not
+// glass-open — and `Kind` is what tags it for the dashed-stroke + label path.
+func jumperDoc() *designdoc.Doc {
+	return &designdoc.Doc{
 		Version:   1,
 		ViewBoxMM: [4]float64{0, 0, 200, 100},
 		Runs: []designdoc.Run{
@@ -36,11 +29,6 @@ func TestRenderFromDocWithJumperDoesNotError(t *testing.T) {
 				TubeDiameterMM: 10,
 			},
 			{
-				// Jumper run between two midfield points so the dashed
-				// stroke + midpoint label both fall inside a tile's
-				// printable area. No electrodes (jumpers are wired,
-				// not glass-open). Kind tags it for the dashed-stroke
-				// + label code path.
 				ID:   "j1",
 				Kind: "jumper",
 				Polyline: designdoc.Polyline{
@@ -49,11 +37,81 @@ func TestRenderFromDocWithJumperDoesNotError(t *testing.T) {
 			},
 		},
 	}
+}
+
+// TestJumperIsDrawnDashedAndLabelled is Tier 3 #60 / NW #125 — Connect Tubes —
+// asserted on the geometry rather than on the size of the PDF.
+//
+// This test used to render the doc twice, with and without the jumper, and
+// require the two byte streams to differ ("output identical with and without
+// jumper run — emitter likely no-op"). That could only ever detect that
+// *something* changed; it could not tell a dashed splice tube from an extra
+// space in a label. Tier 3 #122's seam answers the real question: for a jumper
+// run the plan is one dashed stroke between the two splice points, plus a
+// "JUMPER" callout anchored at their midpoint.
+func TestJumperIsDrawnDashedAndLabelled(t *testing.T) {
+	doc := jumperDoc()
+	primary, jumper := planRunDrawing(doc.Runs[0]), planRunDrawing(doc.Runs[1])
+
+	if len(jumper.Paths) != 1 {
+		t.Fatalf("jumper planned %d subpaths, want 1", len(jumper.Paths))
+	}
+	stroke := jumper.Paths[0]
+	if !stroke.Dashed {
+		t.Error("jumper stroke is solid — it would print as lit glass on the pattern")
+	}
+	if stroke.Closed {
+		t.Error("jumper stroke is closed — a 2-vertex splice tube is an open run")
+	}
+	if got, want := len(stroke.Ops), 2; got != want {
+		t.Fatalf("jumper stroke has %d operators, want %d (a move and a line)", got, want)
+	}
+	if stroke.Ops[0].Kind != opMoveTo || stroke.Ops[1].Kind != opLineTo {
+		t.Errorf("jumper stroke operators are %v %v, want M then L", stroke.Ops[0].Kind, stroke.Ops[1].Kind)
+	}
+	for i, want := range [][2]float64{{50, 60}, {100, 70}} {
+		if got := stroke.Ops[i]; got.X != want[0] || got.Y != want[1] {
+			t.Errorf("jumper operator %d ends at (%g,%g), want (%g,%g)", i, got.X, got.Y, want[0], want[1])
+		}
+	}
+
+	if jumper.Label == nil {
+		t.Fatal("jumper planned no label — the bender is handed a dashed line with no explanation")
+	}
+	if jumper.Label.Text != "JUMPER" {
+		t.Errorf("jumper label = %q, want %q", jumper.Label.Text, "JUMPER")
+	}
+	// Midpoint of (50,60)–(100,70).
+	if d := math.Hypot(jumper.Label.X-75, jumper.Label.Y-65); d > 1e-9 {
+		t.Errorf("jumper label anchored at (%g,%g), %.4f mm off the splice midpoint (75,65)",
+			jumper.Label.X, jumper.Label.Y, d)
+	}
+
+	// Negative control: the primary run in the same doc must NOT pick up the
+	// jumper treatment, or "dashed" would mean nothing.
+	for i, p := range primary.Paths {
+		if p.Dashed {
+			t.Errorf("primary run subpath %d came out dashed", i)
+		}
+	}
+	if primary.Label != nil {
+		t.Errorf("primary run picked up a %q label", primary.Label.Text)
+	}
+}
+
+// TestRenderFromDocWithJumperDoesNotError is the end-to-end smoke test: a doc
+// carrying a jumper assembles into a syntactically-valid, non-trivial PDF.
+//
+// The byte-length check here is deliberate and stays. Its question is "did a
+// PDF come out of this at all", which is exactly what a length answers; the
+// geometric question — is the jumper drawn, and drawn dashed — belongs to
+// TestJumperIsDrawnDashedAndLabelled above, which asks it of the plan.
+func TestRenderFromDocWithJumperDoesNotError(t *testing.T) {
 	opts := DefaultOptions()
 	opts.ProjectName = "TestProj"
 	opts.DesignVersionLabel = "v1"
 
-	out, err := RenderFromDoc(doc, opts, 10)
+	out, err := RenderFromDoc(jumperDoc(), opts, 10)
 	if err != nil {
 		t.Fatalf("RenderFromDoc: %v", err)
 	}
@@ -63,101 +121,57 @@ func TestRenderFromDocWithJumperDoesNotError(t *testing.T) {
 	if len(out) < 1024 {
 		t.Errorf("output suspiciously small (%d bytes)", len(out))
 	}
-
-	// The jumper-aware emitter changes the rendered byte stream from
-	// the same doc minus the jumper — verify that we're not silently
-	// no-op'ing (a regression that lost the dashed-stroke + label
-	// branch would produce identical output).
-	without := *doc
-	withoutRuns := []designdoc.Run{doc.Runs[0]}
-	without.Runs = withoutRuns
-	bareOut, err := RenderFromDoc(&without, opts, 10)
-	if err != nil {
-		t.Fatalf("RenderFromDoc (without jumper): %v", err)
-	}
-	if bytes.Equal(out, bareOut) {
-		t.Errorf("output identical with and without jumper run — emitter likely no-op")
-	}
 }
 
-// TestRenderFromDocSkipsJumpersInBendList verifies the bend-list
-// summary page does NOT include a row for jumper runs. Jumpers are
-// 2-vertex splice tubes — they have no bends to enumerate, and the
-// "(no bends auto-detected)" placeholder row would just clutter the
-// summary. We stand the test up by rendering once with a jumper and
-// once without, then asserting the bend list page emits the same
-// number of run-header bytes (a header-per-non-jumper-run is the
-// observable behavior). gofpdf's stream compression hides the literal
-// header text from a substring search; comparing byte length deltas
-// against the no-jumper baseline is the closest we can get to a
-// behavioral assertion without reaching for the compression-disabled
-// fpdf hook returnstrip_test.go uses.
+// TestRenderFromDocSkipsJumpersInBendList verifies the bend-list summary page
+// does NOT enumerate jumper runs. Jumpers are 2-vertex splice tubes — they have
+// no bends, and the "(no bends auto-detected)" placeholder row would just
+// clutter the summary.
+//
+// The old version of this test stood two renders side by side and required the
+// jumper to add fewer than 500 bytes to the PDF, reasoning that a bend-list row
+// is "on the order of 30–60 bytes of compressed stream". That threshold is an
+// order of magnitude above the thing it was watching for, so it could never
+// have fired; the accompanying `strings.Contains(pdf, "j1 ·")` check was worse
+// than weak — RenderFromDoc's content streams are Flate-compressed, so the
+// literal is not in the bytes whether the row was emitted or not, and the
+// assertion passed by construction.
+//
+// Tier 3 #122 asks the question of bendListRuns instead, which is the function
+// drawBendListPage and the bend pre-compute both walk.
 func TestRenderFromDocSkipsJumpersInBendList(t *testing.T) {
-	primary := designdoc.Run{
-		// Primary run with bends — keeps the bend-list page emitter
-		// alive (it fires only when totalBends > 0).
-		ID: "r1",
-		Polyline: designdoc.Polyline{
-			Points: [][2]float64{
-				{0, 0}, {50, 0}, {50, 50}, {100, 50}, {100, 0},
-			},
-		},
-		Electrodes:     []designdoc.Electrode{{PointIndex: 0}, {PointIndex: 4}},
-		TubeDiameterMM: 10,
+	doc := jumperDoc()
+
+	var ids []string
+	for _, run := range bendListRuns(doc) {
+		ids = append(ids, run.ID)
 	}
-	jumper := designdoc.Run{
-		ID:   "j1",
-		Kind: "jumper",
-		Polyline: designdoc.Polyline{
-			Points: [][2]float64{{100, 0}, {120, 5}},
-		},
+	if len(ids) != 1 || ids[0] != "r1" {
+		t.Errorf("bend list enumerates %v, want [r1] — jumper j1 must not get a row", ids)
 	}
 
-	docWith := &designdoc.Doc{
-		Version:   1,
-		ViewBoxMM: [4]float64{0, 0, 200, 100},
-		Runs:      []designdoc.Run{primary, jumper},
+	// Guard against the assertion going vacuous if the fixture ever loses its
+	// jumper: the doc really does contain one, and a non-jumper really is
+	// enumerated.
+	sawJumper := false
+	for _, run := range doc.Runs {
+		if run.Kind == "jumper" {
+			sawJumper = true
+		}
 	}
-	docWithout := &designdoc.Doc{
-		Version:   1,
-		ViewBoxMM: [4]float64{0, 0, 200, 100},
-		// Same primary; identical bend list expected.
-		Runs: []designdoc.Run{primary},
+	if !sawJumper {
+		t.Fatal("fixture has no jumper run — this test asserts nothing")
 	}
+
+	// End-to-end: the page set still renders.
 	opts := DefaultOptions()
 	opts.ProjectName = "TestProj"
 	opts.DesignVersionLabel = "v1"
-
-	withOut, err := RenderFromDoc(docWith, opts, 10)
+	out, err := RenderFromDoc(doc, opts, 10)
 	if err != nil {
-		t.Fatalf("RenderFromDoc with jumper: %v", err)
+		t.Fatalf("RenderFromDoc: %v", err)
 	}
-	withoutOut, err := RenderFromDoc(docWithout, opts, 10)
-	if err != nil {
-		t.Fatalf("RenderFromDoc without jumper: %v", err)
-	}
-	// Heuristic: a per-run bend-list row is on the order of 30–60 bytes
-	// of compressed PDF stream. If the jumper had been emitted into
-	// the bend list, withOut would be at least ~30 bytes larger than
-	// withoutOut after accounting for the jumper's (small) main-page
-	// dashed stroke + JUMPER label additions. We expect the delta to
-	// be modest (jumper main-page geometry adds <200 bytes); a
-	// delta over 500 bytes would suggest the bend list grew too.
-	delta := len(withOut) - len(withoutOut)
-	if delta > 500 {
-		t.Errorf("jumper added %d bytes to the rendered PDF — likely emitted into the bend list (expected <500)", delta)
-	}
-	// Sanity: still a PDF.
-	if !bytes.HasPrefix(withOut, []byte("%PDF-")) {
-		t.Errorf("not a PDF: %q", string(withOut[:8]))
-	}
-	// Sanity: the housings label test pattern works regardless of
-	// compression (the literal "j1 ·" run-header would have to fit
-	// inside the compressed content stream — it doesn't, so this
-	// assertion is structurally weak — but if a future change
-	// removes compression, we still want the test to enforce the
-	// invariant. Keep it.
-	if strings.Contains(string(withOut), "j1 ·") {
-		t.Errorf("bend list page emitted a row for jumper run j1")
+	if !bytes.HasPrefix(out, []byte("%PDF-")) {
+		t.Errorf("not a PDF: %q", string(out[:8]))
 	}
 }

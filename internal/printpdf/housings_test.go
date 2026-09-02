@@ -2,7 +2,6 @@ package printpdf
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 
 	"github.com/vlouvet/neonbench/internal/designdoc"
@@ -203,11 +202,13 @@ func TestRenderFromDocSkipsHousingsWhenNoneConfigured(t *testing.T) {
 	if !bytes.HasPrefix(out, []byte("%PDF-")) {
 		t.Errorf("not a PDF")
 	}
-	// "Housings:" header should not appear in the output (gofpdf
-	// embeds the literal text in the PDF stream, deflate/uncompressed
-	// depending on the gofpdf version; this codebase uses the
-	// uncompressed default, so a substring check is reliable).
-	if strings.Contains(string(out), "Housings:") {
-		t.Errorf("expected no Housings: subsection when no electrode has a housing")
-	}
+	// There used to be a `strings.Contains(string(out), "Housings:")` check
+	// here, justified by a comment claiming "this codebase uses the
+	// uncompressed default, so a substring check is reliable". It does not:
+	// gofpdf Flate-compresses page content streams and RenderFromDoc leaves
+	// that at its default, so the literal is absent from the bytes whether the
+	// subsection was emitted or not — the assertion passed by construction and
+	// would have gone on passing if the gate broke. Removed by Tier 3 #122.
+	// The load-bearing assertion is housingsForRun above: it is the gate
+	// drawBendListPage tests before drawing the subsection at all.
 }

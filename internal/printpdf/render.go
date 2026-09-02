@@ -555,17 +555,11 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 	pdf.SetTitle(opts.ProjectName, false)
 
 	// Pre-compute bends per run so the apex numbers we draw on the tiles
-	// match the bend list page at the back.
-	// Tier 3 #60 — jumpers are 2-vertex splice tubes with no bends
-	// to enumerate; we skip them at compute time so the bend-apex
-	// pass and the summary page agree (and so a doc that's purely
-	// "primary run + jumper" doesn't emit a bend-list page with one
-	// "(no bends)" row).
+	// match the bend list page at the back. bendListRuns is the single
+	// source of truth for which runs the summary enumerates, so the
+	// pre-compute and the page cannot drift apart.
 	bendsByRun := make(map[string][]designdoc.BendPoint, len(doc.Runs))
-	for _, run := range doc.Runs {
-		if run.Kind == "jumper" {
-			continue
-		}
+	for _, run := range bendListRuns(doc) {
 		bendsByRun[run.ID] = designdoc.EffectiveBends(run, projectDiameterMM)
 	}
 
@@ -616,99 +610,57 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 				// visually distinct from primary runs on the print
 				// pattern, and a centered "JUMPER" label at the
 				// midpoint tells the bender what they are at a glance.
+				//
+				// Tier 3 #122 — WHAT to draw is decided by
+				// planRunDrawing (runpath.go), a pure function over the
+				// run; this loop only projects world mm into page mm
+				// and hands the operators to gofpdf. That split is what
+				// makes the drawn geometry assertable without a PDF:
+				// the tests read the same plan value this executes.
+				// Keep it that way — geometry decisions belong in
+				// runpath.go, not here.
 				for _, run := range doc.Runs {
-					isJumper := run.Kind == "jumper"
-					for _, seg := range designdoc.RenderableSegments(run) {
-						if len(seg.Indices) < 2 {
-							continue
-						}
-						if seg.IsBlockout || isJumper {
+					plan := planRunDrawing(run)
+					for _, path := range plan.Paths {
+						if path.Dashed {
 							pdf.SetDashPattern([]float64{2, 1}, 0)
 						}
-						start := run.Polyline.Points[seg.Indices[0]]
-						sx, sy := toPage(start[0], start[1])
-						pdf.MoveTo(sx, sy)
-						// Tier 3 #78 — an arc segment draws as the same two
-						// cubics the SVG writer emits, so the printed pattern
-						// and the on-screen curve are the same geometry. The
-						// walk can run backwards around a closed run, so which
-						// segment joins two positions is resolved, not assumed.
-						nPts := len(run.Polyline.Points)
-						for i := 1; i < len(seg.Indices); i++ {
-							prev := seg.Indices[i-1]
-							cur := seg.Indices[i]
-							p := run.Polyline.Points[cur]
-							px, py := toPage(p[0], p[1])
-							segIdx, reversed, ok := designdoc.SegmentIndexBetween(prev, cur, nPts, run.Polyline.Closed)
-							if ok && designdoc.IsArcType(run.Polyline.SegmentType(segIdx)) {
-								cubics := designdoc.ArcCubics(
-									run.Polyline.Points[segIdx],
-									run.Polyline.Points[(segIdx+1)%nPts],
-									run.Polyline.SegmentType(segIdx),
-									reversed,
-								)
-								if len(cubics) > 0 {
-									for _, c := range cubics {
-										c1x, c1y := toPage(c.C1X, c.C1Y)
-										c2x, c2y := toPage(c.C2X, c.C2Y)
-										ex, ey := toPage(c.X, c.Y)
-										pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
-									}
-									continue
-								}
+						// Every pathOpKind needs a case here. There is
+						// deliberately no default: a kind that falls
+						// through would be drawn as whichever operator
+						// the default happened to be, which is how you
+						// ship a curve as a line. Add the kind to
+						// runpath.go and to this switch together.
+						for _, op := range path.Ops {
+							switch op.Kind {
+							case opMoveTo:
+								x, y := toPage(op.X, op.Y)
+								pdf.MoveTo(x, y)
+							case opLineTo:
+								x, y := toPage(op.X, op.Y)
+								pdf.LineTo(x, y)
+							case opCubicTo:
+								c1x, c1y := toPage(op.C1X, op.C1Y)
+								c2x, c2y := toPage(op.C2X, op.C2Y)
+								ex, ey := toPage(op.X, op.Y)
+								pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
 							}
-							pdf.LineTo(px, py)
-						}
-						// Bug #18 — the closing segment of a closed run is a
-						// segment like any other and may be an arc. The walk
-						// above only asks about steps between two entries of
-						// seg.Indices, so this one has to ask separately or the
-						// bender is handed a straight chord where the screen,
-						// the DXF bulge and every length already say curve. Same
-						// tail as emitPath in internal/designdoc/convert.go —
-						// n-1 taken directly (SegmentIndexBetween answers the
-						// non-wrap segment at n == 2), and guarded on the walk
-						// really being the whole polyline in index order.
-						if seg.Closed && len(seg.Indices) == nPts &&
-							seg.Indices[0] == 0 && seg.Indices[nPts-1] == nPts-1 {
-							if si := nPts - 1; designdoc.IsArcType(run.Polyline.SegmentType(si)) {
-								for _, c := range designdoc.ArcCubics(
-									run.Polyline.Points[si],
-									run.Polyline.Points[0],
-									run.Polyline.SegmentType(si),
-									false,
-								) {
-									c1x, c1y := toPage(c.C1X, c.C1Y)
-									c2x, c2y := toPage(c.C2X, c.C2Y)
-									ex, ey := toPage(c.X, c.Y)
-									pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
-								}
-							}
-						}
-						if seg.Closed {
-							pdf.LineTo(sx, sy)
 						}
 						pdf.DrawPath("D")
-						if seg.IsBlockout || isJumper {
+						if path.Dashed {
 							pdf.SetDashPattern([]float64{}, 0)
 						}
 					}
-					if isJumper && len(run.Polyline.Points) >= 2 {
+					if plan.Label != nil {
 						// Midpoint label "JUMPER" — 6 pt Helvetica,
-						// stroke-free, world-mm midpoint of the
-						// 2-vertex polyline. Per spec we don't bother
-						// orienting along the jumper axis (jumpers are
-						// short — the axis-aligned label reads fine).
-						p1 := run.Polyline.Points[0]
-						p2 := run.Polyline.Points[len(run.Polyline.Points)-1]
-						mx, my := toPage((p1[0]+p2[0])/2, (p1[1]+p2[1])/2)
+						// stroke-free, at the plan's world-mm anchor.
+						mx, my := toPage(plan.Label.X, plan.Label.Y)
 						pdf.SetFont("Helvetica", "", 6)
-						label := "JUMPER"
-						lw := pdf.GetStringWidth(label)
+						lw := pdf.GetStringWidth(plan.Label.Text)
 						// 1 mm vertical offset from the midpoint so
 						// the label doesn't sit directly on the dashed
 						// line — readable at 1:1.
-						pdf.Text(mx-lw/2, my-1, label)
+						pdf.Text(mx-lw/2, my-1, plan.Label.Text)
 					}
 				}
 
@@ -1044,6 +996,30 @@ func shortRunID(id string) string {
 	return id
 }
 
+// bendListRuns returns the runs the bend-list summary enumerates, in page
+// order.
+//
+// Tier 3 #60 — jumpers are 2-vertex splice tubes; the bend list is about
+// primary runs and a jumper would only ever contribute a "(no bends auto-
+// detected)" row that clutters the summary. Skip them entirely.
+//
+// Tier 3 #122 — this exists as a named function rather than an inline
+// `continue` so that "which runs get a row?" is assertable directly. The test
+// that used to guard it compared PDF byte-length deltas against a 500-byte
+// threshold, which a ~40-byte compressed row could never have crossed.
+// drawBendListPage and the bend pre-compute in RenderFromDoc both walk this,
+// so the assertion is on the decision they actually make.
+func bendListRuns(doc *designdoc.Doc) []designdoc.Run {
+	out := make([]designdoc.Run, 0, len(doc.Runs))
+	for _, run := range doc.Runs {
+		if run.Kind == "jumper" {
+			continue
+		}
+		out = append(out, run)
+	}
+	return out
+}
+
 // drawBendListPage emits a final page listing each run's bends in order
 // with arc-length offset and turn angle, plus electrode count, total tube
 // length, and any per-run color/diameter overrides.
@@ -1063,14 +1039,7 @@ func drawBendListPage(pdf *gofpdf.Fpdf, opts Options, doc *designdoc.Doc, bendsB
 
 	y := mx + 22
 	pdf.SetFont("Helvetica", "B", 10)
-	for _, run := range doc.Runs {
-		// Tier 3 #60 — jumpers are 2-vertex splice tubes; the bend
-		// list is about primary runs and would emit "(no bends auto-
-		// detected)" rows that just clutter the summary. Skip them
-		// entirely.
-		if run.Kind == "jumper" {
-			continue
-		}
+	for _, run := range bendListRuns(doc) {
 		bends := bendsByRun[run.ID]
 		title := fmt.Sprintf("%s · %d pts · %d electrode%s · %d bend%s",
 			run.ID,
