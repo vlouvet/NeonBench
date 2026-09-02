@@ -5524,7 +5524,21 @@ describe('segment_types well-formedness across every point-count op', () => {
     // Breaking at vertex 1 rotates the walk by one, so the array should read
     // ['line','arc_r','line','arc']. It comes back untouched, which puts the
     // first arc on the segment that used to be straight.
+    expect(out.polyline.points[0]).toEqual([100, 0]); // the walk really rotated
     expect(out.polyline.segment_types).toEqual(['arc', 'line', 'arc_r', 'line']);
     expect(out.polyline.segment_types).not.toEqual(['line', 'arc_r', 'line', 'arc']);
+  });
+
+  it('KNOWN BROKEN: moveOpening rotates the points and leaves the arcs behind', () => {
+    const doc = docOf([{
+      ...openArcRun(),
+      electrodes: [{ point_index: 0 }, { point_index: 3 }],
+    }]);
+    const out = ops.moveOpening(doc, 'a', 1).runs[0];
+    // The points rotated…
+    expect(out.polyline.points).toEqual([[100, 0], [200, 0], [300, 0], [0, 0]]);
+    // …and the arcs did not follow them.
+    expect(out.polyline.segment_types).toEqual(['arc', 'line', 'arc_r']);
+    expect(out.polyline.segment_types).not.toEqual(['line', 'arc_r', 'line']);
   });
 });
