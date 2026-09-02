@@ -1545,6 +1545,61 @@ export default function EditorPage() {
     setSelectedRunIds(memberIds);
   }
 
+  // Tier 2 #136 — circuit helpers. A circuit is the WIRING grouping: the runs
+  // the shop will splice into one tube on one transformer. It is separate from
+  // a Layer/Group (a selection convenience) and from a raceway (a box), and a
+  // run can be in all three.
+  //
+  // None of these touch electrodes. The takeoff CAPS its derivation at one
+  // pair per circuit; it does not delete the electrodes the designer placed,
+  // and neither does the editor.
+  function newCircuitFromSelection() {
+    if (!doc) return;
+    if (selectedRunIds.length === 0) return;
+    const defaultName = `Circuit ${(doc.circuits?.length ?? 0) + 1}`;
+    const name = window.prompt('Circuit name:', defaultName);
+    if (name == null) return; // Cancel
+    const memberIds = selectedRunIds.slice();
+    // applyOp, not a bare editDoc: the op returns the freshly allocated id and
+    // reading it out of an editDoc updater is the stale-capture trap.
+    const res = applyOp((prev) => ops.createCircuit(prev, memberIds, name));
+    if (res) setSelectedRunIds(memberIds);
+  }
+
+  function addSelectionToCircuit(circuitId: string) {
+    if (selectedRunIds.length === 0) return;
+    const memberIds = selectedRunIds.slice();
+    editDoc((prev) => ops.assignRunsToCircuit(prev, memberIds, circuitId));
+  }
+
+  // Drop the selected runs out of whatever circuit they are in. They go back
+  // to the per-run derivation — one pair, one transformer each.
+  function removeSelectionFromCircuit() {
+    if (selectedRunIds.length === 0) return;
+    const memberIds = selectedRunIds.slice();
+    editDoc((prev) => ops.assignRunsToCircuit(prev, memberIds, ''));
+  }
+
+  function dissolveCircuitById(circuitId: string) {
+    editDoc((prev) => ops.dissolveCircuit(prev, circuitId));
+  }
+
+  function renameCircuitById(circuitId: string) {
+    if (!doc) return;
+    const circuit = (doc.circuits ?? []).find((c) => c.id === circuitId);
+    if (!circuit) return;
+    const next = window.prompt('Rename circuit:', circuit.name ?? '');
+    if (next == null) return;
+    editDoc((prev) => ops.renameCircuit(prev, circuitId, next));
+  }
+
+  function selectCircuitMembers(circuitId: string) {
+    if (!doc) return;
+    const memberIds = ops.circuitMemberIds(doc, circuitId);
+    if (memberIds.length === 0) return;
+    setSelectedRunIds(memberIds);
+  }
+
   function simplifySelected(epsilonMM: number) {
     if (selectedRunIds.length === 0) return;
     // Tier 3 #33a — apply Douglas-Peucker to each selected run in
@@ -2713,6 +2768,98 @@ export default function EditorPage() {
               })}
             </ul>
           )}
+          {/* Tier 2 #136 — Circuits. A circuit is what the shop will WIRE:
+              several runs spliced into one tube, one electrode pair, one
+              transformer. It is deliberately not a Layer (a selection
+              convenience) and not a raceway (a box) — a run can be in all
+              three at once.
+
+              Why it is here at all: the run count is an artifact of how the
+              tracer fragmented the artwork, and the takeoff derived a
+              transformer, two boots and a gas fill from every one of those
+              fragments. Grouping them says which of those are real. Nothing
+              here moves an electrode; the derivation is capped, the drawing
+              is untouched. */}
+          <div className="groups-header">
+            <h3>Circuits ({doc.circuits?.length ?? 0})</h3>
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={selectedRunIds.length === 0}
+              onClick={newCircuitFromSelection}
+              title="Wire the selected runs into one circuit: one electrode pair, one transformer, one gas fill for the whole group — however many runs the tracer produced. Electrodes are left exactly where they are."
+            >
+              New circuit from selection
+            </button>
+          </div>
+          {(doc.circuits?.length ?? 0) > 0 && (
+            <ul className="group-list">
+              {(doc.circuits ?? []).map((c) => {
+                const members = doc.runs.filter((r) => r.circuit_id === c.id);
+                const memberCount = members.length;
+                // A circuit only implies a transformer once its glass has a
+                // pair of electrodes to drive. Saying "1 transformer" on a
+                // circuit that derives none is exactly the kind of label the
+                // takeoff exists to stop believing.
+                const memberElectrodes = members.reduce(
+                  (n, r) => n + (r.electrodes?.length ?? 0),
+                  0,
+                );
+                const selectedInside = selectedRunIds.filter(
+                  (id) => doc.runs.find((r) => r.id === id)?.circuit_id === c.id,
+                ).length;
+                const canAdd =
+                  selectedRunIds.length > 0 && selectedInside < selectedRunIds.length;
+                return (
+                  <li key={c.id} className="group-row">
+                    <button
+                      type="button"
+                      className="group-name btn-link"
+                      onClick={() => selectCircuitMembers(c.id)}
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        renameCircuitById(c.id);
+                      }}
+                      title="Click to select this circuit's runs; double-click to rename."
+                    >
+                      {c.name || c.id}
+                    </button>
+                    <span className="meta">
+                      {' '}({memberCount} {memberCount === 1 ? 'run' : 'runs'} ·{' '}
+                      {memberElectrodes >= 2 ? '1 transformer' : 'no electrodes yet'})
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      disabled={!canAdd}
+                      onClick={() => addSelectionToCircuit(c.id)}
+                      title="Move the selected runs into this circuit. A run belongs to at most one circuit, so this replaces any previous membership."
+                    >
+                      Add selected
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-secondary group-dissolve-btn"
+                      onClick={() => dissolveCircuitById(c.id)}
+                      title="Delete this circuit; its runs go back to one transformer each."
+                    >
+                      Dissolve
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {selectedRunIds.some((id) => doc.runs.find((r) => r.id === id)?.circuit_id) && (
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={removeSelectionFromCircuit}
+              title="Take the selected runs out of their circuit. Each one goes back to deriving its own electrode pair and transformer."
+            >
+              Unwire selection
+            </button>
+          )}
           <div className="runs-header">
             <h3>Runs</h3>
             <button
@@ -3084,6 +3231,21 @@ export default function EditorPage() {
                         title="Channel-letter face: print PDF emits a return-strip page for this run."
                       >
                         [ch]
+                      </span>
+                    )}
+                    {/* Tier 2 #136 — which circuit wires this run. Shown on
+                        the row because the consequence is invisible
+                        otherwise: a circuited run no longer buys its own
+                        transformer, boots or gas fill. */}
+                    {run.circuit_id && (
+                      <span
+                        className="run-badge"
+                        title={`Wired into circuit ${
+                          (doc.circuits ?? []).find((c) => c.id === run.circuit_id)?.name ||
+                          run.circuit_id
+                        }: one electrode pair and one transformer for the whole circuit.`}
+                      >
+                        [{run.circuit_id}]
                       </span>
                     )}
                   </div>

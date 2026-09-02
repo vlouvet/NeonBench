@@ -185,6 +185,40 @@ export type DesignDoc = {
   // with DisallowUnknownFields, so this and the Go struct move together
   // or every save 400s.
   raceways?: Raceway[];
+  // Tier 2 #136 — the circuits the shop will actually wire. Mirrors
+  // `designdoc.Doc.Circuits`. Optional / omitted on every pre-#136 doc,
+  // which is what keeps their JSON byte-identical; the Go decoder runs
+  // with DisallowUnknownFields, so this and the Go struct move together
+  // or every save 400s.
+  circuits?: Circuit[];
+};
+
+// Tier 2 #136 — one electrical circuit: the glass between a single pair of
+// electrodes, spliced from as many runs as the layout needs, driven by one
+// transformer. Mirrors `internal/designdoc.Circuit` byte-for-byte.
+//
+// WHY IT EXISTS: the run count is an artifact of the tracer, not a fabrication
+// decision. A medial-axis trace of a connected script returns however many
+// fragments the skeleton broke into, and deriving one electrode pair — and so
+// one transformer, two boots, one gas fill — from each of them multiplies a
+// drawing accident through the whole takeoff. Saying "these runs are one
+// circuit" caps that derivation at one pair. It never moves or deletes an
+// electrode; the document is unchanged.
+//
+// IDENTITY — read this before wiring anything to it. Unlike `Raceway.id`
+// (which MUST be the id of an existing `kind: 'raceway'` guideline), a
+// circuit's `id` is its own id space: a circuit has no geometry, so there is
+// nothing for it to hang off. `docOps.nextCircuitId` allocates "c1", "c2", …
+// The one rule the Go decoder enforces runs the other way: every
+// `run.circuit_id` must name a circuit in this array, or the save 400s with a
+// message naming the run and the id. Deleting a circuit therefore has to clear
+// its members' FKs — see `dissolveCircuit` in lib/docOps.ts.
+//
+// `name` is display-only and may be omitted; the editor labels an unnamed
+// circuit by its id.
+export type Circuit = {
+  id: string;
+  name?: string;
 };
 
 // Tier 2 #104 / NW #133 — the rectangular aluminium box the letters mount
@@ -395,6 +429,15 @@ export type DesignRun = {
   // time; re-grouping replaces the prior value (see groupRuns in
   // lib/docOps.ts for the canonical "replace" semantic).
   group_id?: string;
+  // Tier 2 #136 — foreign key into `DesignDoc.circuits`. Empty /
+  // missing = not wired into any circuit, which is the shape every
+  // pre-#136 doc has and the one that keeps this run on the original
+  // per-run takeoff derivation. Deliberately independent of
+  // `group_id` (an editor selection convenience) and `raceway_id` (a
+  // box): the same run can be in all three, and collapsing any two
+  // would make one of the three answers wrong. The Go decoder rejects
+  // a value that names no circuit.
+  circuit_id?: string;
 };
 
 export function parseDoc(dv: DesignVersion | null | undefined): DesignDoc | null {
@@ -966,6 +1009,9 @@ export type TakeoffSummary = {
   bend_count: number;
   splice_count: number;
   stick_count: number;
+  /** Tier 2 #136. Absent (not 0) on a doc that models no circuits — the Go
+   *  field is omitempty so the takeoff JSON of a pre-#136 doc is unchanged. */
+  circuit_count?: number;
   electrode_count: number;
   electrode_pairs: number;
   pumped_sections: number;
@@ -985,9 +1031,30 @@ export type TakeoffSummary = {
   fabrication_hours: number;
 };
 
+/** Tier 2 #136 — one circuit's share of the job. Mirrors
+ *  `takeoff.CircuitSummary`.
+ *
+ *  `stick_count` is the SUM of its member runs' sticks, not
+ *  `ceil(circuit glass / usable stick)`. Two geometrically separate runs are
+ *  two physical pieces of bent glass, and ceiling the circuit total would
+ *  under-order: four 700 mm letters need four sticks, not three. A circuit is
+ *  a wiring grouping, not a cut plan. */
+export type TakeoffCircuit = {
+  id: string;
+  name?: string;
+  run_count: number;
+  electrode_pairs: number;
+  stick_count: number;
+  net_tube_ft: number;
+  gross_glass_ft: number;
+};
+
 export type Takeoff = {
   summary: TakeoffSummary;
   lines: TakeoffLine[];
+  /** Per-circuit breakdown, in doc declaration order. Absent when the doc
+   *  models no circuits. */
+  circuits?: TakeoffCircuit[];
   yield: { stick_length_mm: number; stick_waste_mm: number; sheet_area_sq_ft: number };
   lead_in_mm: number;
 };

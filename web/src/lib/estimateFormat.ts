@@ -42,6 +42,16 @@ export function quantityRows(s: TakeoffSummary): [string, string][] {
     ['Electrodes', `${s.electrode_count} (${s.electrode_pairs} pair)`],
     ['Pumped sections', String(s.pumped_sections)],
   ];
+  // Tier 2 #136 — only shown once the doc models circuits. Absent (not 0) on
+  // every pre-#136 takeoff, so the table is unchanged for them. It sits next
+  // to the electrode row on purpose: when circuits exist, THEY are what the
+  // pairs and transformers were derived from, not the run count.
+  if (s.circuit_count) {
+    rows.push([
+      'Circuits',
+      `${s.circuit_count} (one transformer each)`,
+    ]);
+  }
   if (s.jumper_ft > 0) {
     rows.push(['Jumpers', `${s.jumper_ft.toFixed(2)} ft in ${s.jumper_count}`]);
   }

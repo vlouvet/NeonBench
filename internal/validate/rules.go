@@ -1207,7 +1207,12 @@ type RacewayInput struct {
 	MemberMinXMM float64
 	MemberMaxXMM float64
 	HasMembers   bool
-	// TransformerCount is derived from electrode pairs on the member runs.
+	// TransformerCount is derived from electrode pairs on the member runs —
+	// or, where the doc models circuits (Tier 2 #136), one per CIRCUIT the
+	// member runs belong to. See designdoc.RacewayTransformerCount, which is
+	// the only place that arithmetic lives. It matters which of the two the
+	// caller passed: the run count is an artifact of how the tracer
+	// fragmented the artwork, and this rule was refusing real jobs on it.
 	TransformerCount int
 	// TransformerLengthMM is the case length of one transformer. Zero falls
 	// back to RacewayTransformerLengthMM.
@@ -1307,6 +1312,12 @@ func checkRacewaySpan(rw RacewayInput) []Issue {
 // the box (docs/neon-rules/raceway.md, "Cross-section"), so the constraint is
 // on length, not on depth. Four letters wanting four transformers in a 900mm
 // raceway do not go together, and today that is discovered on a lift.
+//
+// The arithmetic here has always been right; what was wrong was its input.
+// TransformerCount now counts circuits where the doc models them (Tier 2
+// #136), so grouping the fragments a tracer produced into the circuits a shop
+// will wire is enough to turn this warning off — without moving a single
+// electrode or resizing the box.
 func checkRacewayTransformerFit(rw RacewayInput) []Issue {
 	if rw.TransformerCount <= 0 || rw.LengthMM <= 0 {
 		return nil

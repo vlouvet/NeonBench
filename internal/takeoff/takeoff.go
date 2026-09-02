@@ -181,6 +181,11 @@ type Summary struct {
 	SpliceCount int `json:"splice_count"`
 	StickCount  int `json:"stick_count"`
 
+	// CircuitCount is the number of modelled circuits (Tier 2 #136).
+	// omitempty is load-bearing: a doc with no circuits must serialise a
+	// byte-identical takeoff, so this key only appears once circuits exist.
+	CircuitCount int `json:"circuit_count,omitempty"`
+
 	ElectrodeCount int `json:"electrode_count"`
 	ElectrodePairs int `json:"electrode_pairs"`
 	PumpedSections int `json:"pumped_sections"`
@@ -204,11 +209,39 @@ type Summary struct {
 	FabricationHours float64 `json:"fabrication_hours"`
 }
 
+// CircuitSummary is one circuit's share of the job (Tier 2 #136): what a shop
+// looks at when it asks "where is the glass going, and which of these boxes is
+// the expensive one".
+//
+// NOTE what StickCount is and is not. Sticks are counted PER RUN, exactly as
+// they were before circuits existed, and this field is the sum over the
+// circuit's members — it is NOT ceil(circuit glass / usable stick). Two
+// geometrically separate runs are two physical pieces of bent glass, and a
+// 1219 mm usable stick that has yielded one 700 mm piece cannot also yield a
+// second: ceiling the circuit total would order 3 sticks for four 700 mm
+// letters that need 4. Under-ordering glass is a worse failure than
+// over-ordering it. Nesting offcuts across runs is a cut-planning question
+// this package does not model, and a wiring grouping is not the licence to
+// answer it. See the PR body for Tier 2 #136.
+type CircuitSummary struct {
+	ID             string  `json:"id"`
+	Name           string  `json:"name,omitempty"`
+	RunCount       int     `json:"run_count"`
+	ElectrodePairs int     `json:"electrode_pairs"`
+	StickCount     int     `json:"stick_count"`
+	NetTubeFt      float64 `json:"net_tube_ft"`
+	GrossGlassFt   float64 `json:"gross_glass_ft"`
+}
+
 // Takeoff is the whole result: quantities at a glance, plus the priceable
 // lines the estimate consumes.
 type Takeoff struct {
 	Summary Summary `json:"summary"`
 	Lines   []Line  `json:"lines"`
+	// Circuits is the per-circuit breakdown, in doc declaration order.
+	// omitempty, and only populated when the doc models circuits, so a
+	// pre-#136 doc's takeoff JSON is byte-identical.
+	Circuits []CircuitSummary `json:"circuits,omitempty"`
 	// Yield and LeadInMM are echoed so a printed takeoff records the
 	// assumptions that produced it. A footage number without the stick
 	// length that yielded it cannot be checked later.
@@ -296,6 +329,27 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 	var order []string
 	var jumperMM, blockoutMM, returnStripMM float64
 
+	// Tier 2 #136 — a circuit is ONE tube between ONE pair of electrodes,
+	// spliced from as many runs as the layout needs. Every circuit therefore
+	// gets an electrode BUDGET of designdoc.CircuitElectrodeCap, spent over
+	// its member runs in declaration order; electrodes beyond it are splice
+	// points, not tube ends, so they buy no pair, no boot, no gas fill and no
+	// lead-in tail. Nothing here touches the document — the electrodes stay
+	// exactly where the designer put them.
+	//
+	// A doc with no circuits allocates an empty map and every run takes the
+	// original path below unchanged, which is what keeps the takeoff JSON
+	// byte-identical for every design that predates this field.
+	budget := make(map[string]int, len(doc.Circuits))
+	for _, c := range doc.Circuits {
+		budget[c.ID] = designdoc.CircuitElectrodeCap
+	}
+	circuits := make(map[string]*CircuitSummary, len(doc.Circuits))
+	for i := range doc.Circuits {
+		c := doc.Circuits[i]
+		circuits[c.ID] = &CircuitSummary{ID: c.ID, Name: c.Name}
+	}
+
 	for _, run := range doc.Runs {
 		pts := run.Polyline.Points
 		if len(pts) < 2 {
@@ -316,11 +370,35 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 
 		t.Summary.RunCount++
 		t.Summary.BendCount += len(designdoc.EffectiveBends(run, spec.DiameterMM))
-		t.Summary.ElectrodeCount += len(run.Electrodes)
-		if len(run.Electrodes) >= 2 {
+
+		// Electrodes this run gets to CLAIM. Identical to the run's own list
+		// unless it belongs to a circuit that has already spent its budget.
+		elecs := run.Electrodes
+		circuit := circuits[run.CircuitID]
+		// `circuit != nil` rather than `run.CircuitID != ""`: a run naming a
+		// circuit that is not in Doc.Circuits behaves exactly as it did
+		// before this field existed. designdoc's decoder rejects that shape,
+		// so it is unreachable for anything persisted or posted — but a doc
+		// assembled in memory must not silently lose its electrode pair to a
+		// typo'd id.
+		if circuit != nil {
+			room := budget[run.CircuitID]
+			if room < 0 {
+				room = 0
+			}
+			if len(elecs) > room {
+				elecs = elecs[:room]
+			}
+			budget[run.CircuitID] = room - len(elecs)
+		}
+		t.Summary.ElectrodeCount += len(elecs)
+		if circuit == nil && len(elecs) >= 2 {
+			// Pumped sections for circuit members are counted once per
+			// circuit after the loop — a circuit is one pumped section
+			// however many runs it is spliced from.
 			t.Summary.PumpedSections++
 		}
-		for _, e := range run.Electrodes {
+		for _, e := range elecs {
 			if e.HousingType != "" {
 				t.Summary.HousingCount++
 			}
@@ -340,13 +418,35 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 
 		// Glass ordered for this run includes the electrode tails at each
 		// end, which are consumed but never glow.
+		//
+		// A free-standing run gets both tails as soon as it carries any
+		// electrode at all — the pre-#136 rule, kept verbatim. A circuit
+		// member gets one tail per electrode it actually claimed, so the
+		// circuit's tails total two no matter how it was fragmented; the
+		// interior ends are splices, and a splice has no lead-in.
 		glassMM := liveMM
-		if len(run.Electrodes) > 0 {
+		switch {
+		case circuit != nil:
+			glassMM += float64(len(elecs)) * leadIn
+		case len(run.Electrodes) > 0:
 			glassMM += 2 * leadIn
 		}
+		// Sticks stay PER RUN, deliberately. A circuit is a wiring grouping;
+		// whether two runs can be cut from one stick is a separate
+		// fabrication question, and answering it here would UNDER-order
+		// glass — four 700 mm letters need four sticks, while
+		// ceil(2800/1219) says three. See CircuitSummary.StickCount.
 		sticks := int(math.Ceil(glassMM / usable))
 		if sticks < 1 {
 			sticks = 1
+		}
+		if circuit != nil {
+			circuit.RunCount++
+			circuit.StickCount += sticks
+			// Accumulated in mm and converted to feet in one place after
+			// the loop, the same way netMM / grossMM are — rounding each
+			// run's contribution to feet first would drift.
+			circuit.NetTubeFt += liveMM
 		}
 
 		dia := run.TubeDiameterMM
@@ -393,6 +493,27 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 	t.Summary.BlockoutFt = round4(blockoutMM / MMPerFoot)
 	t.Summary.ReturnStripFt = round4(returnStripMM / MMPerFoot)
 	t.Summary.ElectrodePairs = ceilDiv(t.Summary.ElectrodeCount, 2)
+
+	// One pumped section per circuit that spent a full pair, and the
+	// per-circuit breakdown, in doc declaration order.
+	if len(doc.Circuits) > 0 {
+		t.Summary.CircuitCount = len(doc.Circuits)
+		t.Circuits = make([]CircuitSummary, 0, len(doc.Circuits))
+		for _, c := range doc.Circuits {
+			cs := circuits[c.ID]
+			if cs == nil {
+				continue
+			}
+			spent := designdoc.CircuitElectrodeCap - budget[c.ID]
+			if spent >= 2 {
+				t.Summary.PumpedSections++
+			}
+			cs.ElectrodePairs = ceilDiv(spent, 2)
+			cs.GrossGlassFt = round4(float64(cs.StickCount) * y.StickLengthMM / MMPerFoot)
+			cs.NetTubeFt = round4(cs.NetTubeFt / MMPerFoot)
+			t.Circuits = append(t.Circuits, *cs)
+		}
+	}
 
 	if t.Summary.ElectrodePairs > 0 {
 		t.Lines = append(t.Lines, Line{

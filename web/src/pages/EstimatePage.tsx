@@ -141,6 +141,40 @@ export default function EstimatePage() {
 
       <Quantities summary={takeoff.summary} />
 
+      {takeoff.circuits && takeoff.circuits.length > 0 && (
+        <>
+          <h2>Circuits</h2>
+          <table className="est-table">
+            <thead>
+              <tr>
+                <th>Circuit</th>
+                <th className="est-num">Runs</th>
+                <th className="est-num">Pairs</th>
+                <th className="est-num">Net</th>
+                <th className="est-num">Gross</th>
+              </tr>
+            </thead>
+            <tbody>
+              {takeoff.circuits.map((c) => (
+                <tr key={c.id}>
+                  <td>{c.name || c.id}</td>
+                  <td className="est-num">{c.run_count}</td>
+                  <td className="est-num">{c.electrode_pairs}</td>
+                  <td className="est-num">{c.net_tube_ft.toFixed(2)} ft</td>
+                  {/* Gross is the sum of the member runs' sticks, NOT
+                      ceil(circuit glass / stick). Two separate runs are two
+                      pieces of bent glass; ceiling the total would order
+                      three sticks for four letters that need four. */}
+                  <td className="est-num">
+                    {c.gross_glass_ft.toFixed(2)} ft in {c.stick_count}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
       <h2>Lines</h2>
       <table className="est-table">
         <thead>

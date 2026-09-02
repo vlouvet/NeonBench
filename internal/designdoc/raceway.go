@@ -69,18 +69,45 @@ func FitRacewayToRuns(doc *Doc, rw Raceway) (Raceway, bool) {
 }
 
 // RacewayTransformerCount is the number of transformers the design implies
-// for one raceway: one per electrode PAIR on the runs tagged with that id.
+// for one raceway: one per electrode PAIR on the runs tagged with that id —
+// or, once the shop has said which runs it will actually wire together, one
+// per CIRCUIT (Tier 2 #136).
+//
+// This is the input that made raceway_transformer_fit arithmetically correct
+// and factually fictional. On Chachi's job a connected script fragmented into
+// 17 runs, so the rule was handed 17 transformers wanting 3135 mm of a 2170 mm
+// box. 17 was never a fabrication decision; it was how the medial axis
+// happened to break. Declaring those fragments one circuit caps the circuit's
+// contribution at one pair (CircuitElectrodeCap) and the check starts
+// measuring the sign the shop is going to build.
 //
 // The pair arithmetic is deliberately the same as
 // takeoff.Summary.ElectrodePairs — ceil(electrodes / 2), with jumper runs
-// skipped because a jumper's ends are splices, not electrodes. Read
+// skipped because a jumper's ends are splices, not electrodes, and with the
+// circuit budget spent in the same declaration order. Read
 // internal/takeoff/takeoff.go rather than re-deriving it; if that definition
 // ever changes, this is the other place that has to move.
+//
+// A circuit whose members straddle two raceways is counted (up to one pair)
+// in EACH box. That is deliberate: the rule asks "does this box have room for
+// what has to sit in it", and a transformer physically lives in one box, so
+// the conservative answer per box is the useful one.
 func RacewayTransformerCount(doc *Doc, racewayID string) int {
 	if doc == nil || racewayID == "" {
 		return 0
 	}
 	electrodes := 0
+	spent := map[string]int{}
+	// Only ids that are actually declared cap anything. A run naming a circuit
+	// that is not in Doc.Circuits behaves exactly as it did before circuits
+	// existed — the decoder rejects that shape, so it is unreachable for
+	// anything persisted or posted, but a doc assembled in memory must not
+	// silently lose its pair to a typo'd id. takeoff.Compute makes the same
+	// choice; the two have to agree.
+	declared := make(map[string]bool, len(doc.Circuits))
+	for _, c := range doc.Circuits {
+		declared[c.ID] = true
+	}
 	for i := range doc.Runs {
 		run := &doc.Runs[i]
 		// The literal matches internal/takeoff/takeoff.go, which is where
@@ -88,7 +115,18 @@ func RacewayTransformerCount(doc *Doc, racewayID string) int {
 		if run.RacewayID != racewayID || run.Kind == "jumper" {
 			continue
 		}
-		electrodes += len(run.Electrodes)
+		n := len(run.Electrodes)
+		if declared[run.CircuitID] {
+			room := CircuitElectrodeCap - spent[run.CircuitID]
+			if room < 0 {
+				room = 0
+			}
+			if n > room {
+				n = room
+			}
+			spent[run.CircuitID] += n
+		}
+		electrodes += n
 	}
 	return (electrodes + 1) / 2 // ceil(electrodes / 2)
 }

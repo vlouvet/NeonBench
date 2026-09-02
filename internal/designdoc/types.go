@@ -45,15 +45,70 @@ type Doc struct {
 	// omitempty keeps every pre-#104 doc's JSON byte-identical, the same
 	// back-compat invariant Groups, Guidelines and SegmentTypes rely on.
 	Raceways []Raceway `json:"raceways,omitempty"`
+	// Circuits are the WIRING groups (Tier 2 #136): several runs that the
+	// shop will splice into one continuous length of glass, in series
+	// between ONE pair of electrodes, driven by ONE transformer. Membership
+	// is recorded on the Run side (Run.CircuitID), exactly as Doc.Groups
+	// records it — this slice is the source of truth for display names and
+	// for which circuit ids exist at all.
+	//
+	// A circuit is NOT a geometry grouping. Doc.Groups binds runs so the
+	// editor can select and transform them together; Doc.Raceways binds
+	// runs that share one aluminium box. A circuit says something the other
+	// two do not: that the tracer's fragment count is not the fabrication
+	// count, and that the electrode pairs, transformers, boots, gas fills
+	// and stick yield should be derived per circuit instead of per run.
+	//
+	// IDENTITY: unlike Raceway.ID (which must name an existing "raceway"
+	// Guideline), Circuit.ID is its OWN id space — a circuit has no
+	// geometry, so there is nothing for it to hang off. It is allocated by
+	// the editor as "c1", "c2", … The one cross-field rule the decoder
+	// enforces is the reverse direction: every Run.CircuitID must name a
+	// circuit in this slice. See Tier 3 #140 — the relationship a schema
+	// implies has to be stated in the API, not only in this file.
+	//
+	// omitempty keeps every pre-#136 doc's JSON byte-identical, the same
+	// back-compat invariant Groups, Guidelines, Raceways and SegmentTypes
+	// rely on. A doc with no circuits derives exactly the numbers it
+	// derived before this field existed.
+	Circuits []Circuit `json:"circuits,omitempty"`
 }
 
-// UnmarshalJSON enforces the one cross-field invariant the schema has:
-// every Raceway hangs off a "raceway" Guideline with the same ID. A
+// Circuit is one electrical circuit: the glass between a single pair of
+// electrodes, spliced from as many runs as the layout needs, driven by one
+// transformer (Tier 2 #136).
+//
+// It exists because the run count is an artifact of the tracer, not a
+// fabrication decision. A medial-axis trace of a connected script hands back
+// however many fragments the skeleton happened to break into; deriving one
+// electrode pair (and therefore one transformer, two boots, one gas fill and
+// a whole stick of glass) from each of them multiplies a drawing accident
+// through every downstream quantity. Grouping runs into the circuits the shop
+// will actually wire is what makes those numbers answerable.
+//
+// Name is display-only. Empty is legal — the editor labels an unnamed circuit
+// by its id — and omitempty keeps the JSON minimal.
+type Circuit struct {
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
+}
+
+// UnmarshalJSON enforces the cross-field invariants the schema has.
+//
+// First: every Raceway hangs off a "raceway" Guideline with the same ID. A
 // Raceway is the box for a guideline, not an object in its own right, so
 // a dangling one has no top edge, no member runs, and no place on the
 // canvas — it can only be the residue of a client that deleted the
 // guideline and forgot the box. Rejecting here means the editor finds out
 // on save instead of the fabricator finding out in the PDF.
+//
+// Second: every Run.CircuitID names a Circuit in Doc.Circuits. A dangling
+// circuit id is the failure mode Tier 3 #140 records — an FK relationship
+// that is obvious in the Go source and invisible from the API — so it is
+// refused at the door with a message that says which run, which id, and what
+// the rule is. Silently ignoring it would be worse than a 400: the run would
+// drop out of its circuit and the takeoff would quietly go back to deriving a
+// transformer for it.
 //
 // The nested decoder keeps DisallowUnknownFields, which the server's
 // decoder sets on the outer request object — a custom UnmarshalJSON on
@@ -86,6 +141,26 @@ func (d *Doc) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("raceway %q: duplicated — one guideline carries at most one box", rw.ID)
 			}
 			seen[rw.ID] = true
+		}
+	}
+	circuits := make(map[string]bool, len(out.Circuits))
+	for _, c := range out.Circuits {
+		if c.ID == "" {
+			return fmt.Errorf("circuit: empty id — a circuit is addressed only by its id, so a blank one can never be referenced by a run")
+		}
+		if circuits[c.ID] {
+			return fmt.Errorf("circuit %q: duplicated — circuit ids are unique within the document", c.ID)
+		}
+		circuits[c.ID] = true
+	}
+	for _, run := range out.Runs {
+		if run.CircuitID == "" {
+			continue
+		}
+		if !circuits[run.CircuitID] {
+			return fmt.Errorf(
+				"run %q: circuit_id %q names no circuit in doc.circuits — a circuit has no geometry of its own, so a run can only point at one that exists (add the circuit, or clear the run's circuit_id)",
+				run.ID, run.CircuitID)
 		}
 	}
 	*d = out
@@ -304,6 +379,22 @@ func (r Raceway) SpliceCount() int {
 	return n
 }
 
+// CircuitElectrodeCap is how many electrodes ONE circuit has, no matter how
+// many its member runs carry: two, one at each end of the series chain.
+//
+// This is the whole point of Tier 2 #136. A medial-axis trace of a connected
+// script hands back a fragment count that is a drawing accident, and every
+// electrode a designer dropped on those fragments becomes an electrode pair, a
+// transformer, two boots and a gas fill. Declaring the fragments one circuit
+// says "this is one tube, spliced" — so the derivation caps the contribution
+// at one pair and the interior electrodes read as splice points instead.
+//
+// It caps a DERIVATION, never the document: nothing here deletes or moves an
+// electrode, and the editor's electrode ops are untouched. Both consumers —
+// takeoff.Compute and RacewayTransformerCount — spend this budget over a
+// circuit's member runs in declaration order so the two cannot disagree.
+const CircuitElectrodeCap = 2
+
 // Group is a named binding of two-or-more runs. Membership is recorded
 // on the Run side (Run.GroupID), so dropping a group entry here without
 // also clearing the FKs leaves orphan IDs — see docOps.dissolveGroup
@@ -420,6 +511,17 @@ type Run struct {
 	// group at a time — re-grouping replaces the prior value, it
 	// doesn't introduce M:N membership.
 	GroupID string `json:"group_id,omitempty"`
+	// CircuitID is the foreign key into Doc.Circuits (Tier 2 #136).
+	// Empty (zero-value) means "not assigned to a circuit", which is the
+	// shape every pre-#136 doc has and the shape that keeps the takeoff on
+	// its original per-run derivation for this run.
+	//
+	// It is deliberately independent of GroupID and RacewayID. A group is
+	// an editor selection convenience, a raceway is a box, and a circuit is
+	// a wiring decision — the same run can legitimately be in all three,
+	// and collapsing any two of them would make one of the three answers
+	// wrong. Doc.UnmarshalJSON rejects a value naming no circuit.
+	CircuitID string `json:"circuit_id,omitempty"`
 }
 
 // Bend is a single user-authored bend apex along the run's live arc.
