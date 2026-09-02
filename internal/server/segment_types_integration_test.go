@@ -198,3 +198,107 @@ func TestSplitPiecesKeepTheirGlassThroughSave(t *testing.T) {
 			"(2400mm is the chord, i.e. the arcs were lost)", total)
 	}
 }
+
+// Tier 3 #119 — the same failure with the opposite sign.
+//
+// deleteVertex filtered a point out of the polyline and left segment_types
+// exactly as it found it, so the array came out one entry LONG. Same decoder,
+// same door, same 400 on the next save — and, like insertVertex, nothing in
+// the editor noticed at the time the vertex was deleted.
+//
+// Both bodies below are the literal bytes the op emits; `docOps.test.ts` →
+// "emits the polyline the API round-trip test posts" (in the Tier 3 #119
+// block) pins them from the other side so the two cannot drift apart.
+const (
+	// What deleteVertex(doc, 'r1', 1) produces today, on a 4-point run typed
+	// ["arc","line","arc_r"]: the two segments either side of the dropped
+	// vertex merge into one line, two entries for three points. The surviving
+	// arc_r keeps its side.
+	deleteVertexPolylineJSON = `{"points":[[0,0],[600,0],[900,0]],"closed":false,` +
+		`"segment_types":["line","arc_r"]}`
+	// What it produced before the fix: the array untouched, three entries for
+	// three points. The negative control, run first, so the success after it
+	// is a result rather than the default.
+	preFixDeletePolylineJSON = `{"points":[[0,0],[600,0],[900,0]],"closed":false,` +
+		`"segment_types":["arc","line","arc_r"]}`
+)
+
+func TestDeleteVertexDocRoundTripsThroughSave(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "deleteVertex round trip",
+		"tube_spec_id": int64(specs[0]["id"].(float64)),
+	}, &project)
+	projectID := int64(project["id"].(float64))
+	versionsURL := base + "/api/projects/" + itoa(projectID) + "/design_versions"
+
+	docBody := func(polyline string) string {
+		return `{"design_doc":{"version":1,"view_box_mm":[0,0,1000,1000],"runs":[` +
+			`{"id":"r1","polyline":` + polyline + `,"tube_diameter_mm":12}]}}`
+	}
+
+	// 1) The pre-fix shape must be refused, and say why.
+	resp, err := client.Post(versionsURL, "application/json",
+		bytes.NewReader([]byte(docBody(preFixDeletePolylineJSON))))
+	if err != nil {
+		t.Fatalf("POST design_versions: %v", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a long segment_types array was accepted with status %d: %s", resp.StatusCode, raw)
+	}
+	if !strings.Contains(string(raw), "segment_types has 3 entries, want 2") {
+		t.Errorf("rejection message does not explain itself: %s", raw)
+	}
+
+	// 2) The doc deleteVertex actually emits now saves, reloads, and comes
+	//    back with the surviving arc still on the segment it was drawn on —
+	//    an off-by-one rotation would put it on the merged straight instead,
+	//    which is a shape change no length check would report.
+	var saved map[string]any
+	postJSON(t, client, versionsURL, json.RawMessage(docBody(deleteVertexPolylineJSON)), &saved)
+	versionID := int64(saved["id"].(float64))
+
+	var reloaded map[string]any
+	getJSON(t, client, versionsURL+"/"+itoa(versionID), &reloaded)
+	reloadedJSON, _ := reloaded["design_doc_json"].(string)
+	var reDoc designdoc.Doc
+	if err := json.Unmarshal([]byte(reloadedJSON), &reDoc); err != nil {
+		t.Fatalf("reload unmarshal: %v", err)
+	}
+	if len(reDoc.Runs) != 1 {
+		t.Fatalf("expected 1 run back, got %d", len(reDoc.Runs))
+	}
+	pl := reDoc.Runs[0].Polyline
+	if got, want := len(pl.SegmentTypes), pl.SegmentCount(); got != want {
+		t.Fatalf("reloaded segment_types has %d entries, want %d", got, want)
+	}
+	want := []string{designdoc.SegmentLine, designdoc.SegmentArcR}
+	for i, w := range want {
+		if got := pl.SegmentType(i); got != w {
+			t.Errorf("segment %d came back %q, want %q", i, got, w)
+		}
+	}
+}
