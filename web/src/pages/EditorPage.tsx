@@ -268,6 +268,11 @@ export default function EditorPage() {
   // rather than in the canvas because the sidebar's split action is gated on
   // it; the canvas owns only the drag.
   const [selectedGuidelineId, setSelectedGuidelineId] = useState<string | null>(null);
+  // Tier 2 #135 — operator override for the block-out span, in mm. Blank (the
+  // default) derives it from the tube diameter, which is the number that was
+  // actually measured against a rendered script; the field exists because the
+  // shop that wants 40mm on a fat crossing should not have to paint by hand.
+  const [blockoutSpanInput, setBlockoutSpanInput] = useState('');
   // Tier 2 #72 — transient status banner ("Added 24 doublebacks across
   // 12 runs"). Cleared by the next status set or by the auto-clear
   // timer below. Lives at the editor's `<p className="meta">` strip
@@ -665,6 +670,19 @@ export default function EditorPage() {
     if (!doc || !(maxSegmentLengthMM > 0)) return 0;
     return doc.runs.filter((r) => ops.runLengthMM(r) > maxSegmentLengthMM).length;
   }, [doc, maxSegmentLengthMM]);
+
+  // Tier 2 #135 — how many crossing findings the current report carries, which
+  // gates the block-out button. Unlike overlongRunCount above, this one MUST
+  // come from the report: locating a crossing is the validator's job and there
+  // is no doc-side twin to measure with. The report is debounced ~500ms behind
+  // the doc, so the count can lag an edit by a beat — the op reads the same
+  // issue list the button counted, and a finding whose geometry has since moved
+  // resolves to no run and is reported as unresolved rather than painted onto
+  // the wrong tube.
+  const crossingFindingCount = useMemo(
+    () => (report?.issues ?? []).filter((i) => i.rule === ops.CROSSING_BLOCKOUT_RULE).length,
+    [report],
+  );
 
   // nearestRunForPoint: replicates EditorCanvas's nearestRunId so
   // sidebar-click and j/k can reuse the canvas's "click marker →
@@ -1173,6 +1191,42 @@ export default function EditorPage() {
     setStatusMessage(
       parts.length > 0 ? `${parts.join(' · ')}.` : 'No runs exceed the max segment length.',
     );
+  }
+
+  // Tier 2 #135 — turn the validator's crossing findings into block-out paint.
+  // The validator already knows where every shallow crossing is; before this
+  // the remedy was to click "Mark blockout" twice per crossing, on a script
+  // with dozens of them.
+  //
+  // Through `applyOp`, never a bare `editDoc`: React runs a setDoc updater
+  // during the re-render, so a result captured inside one is still null when
+  // the toast below reads it — and a throw inside one escapes this handler's
+  // caller entirely and lands in the console instead of the error banner
+  // (#127 / #128). `applyOp` computes eagerly and hands back the result.
+  function blockoutCrossings() {
+    if (!doc) return;
+    const issues = report?.issues ?? [];
+    const override = Number(blockoutSpanInput.trim());
+    const spanMM = blockoutSpanInput.trim() !== '' && override > 0 ? override : undefined;
+    const result = applyOp((prev) =>
+      ops.placeBlockoutsFromCrossings(prev, issues, {
+        projectDiameterMM: tubeSpec?.diameter_mm,
+        spanMM,
+      }),
+    );
+    if (!result) return;
+    const r: ops.BlockoutsFromCrossingsResult = result;
+    const parts: string[] = [];
+    parts.push(
+      r.placed === 0
+        ? 'No new block-outs'
+        : `Painted ${r.placed} ${r.placed === 1 ? 'crossing' : 'crossings'}`,
+    );
+    // Name the skips: a bare "0 placed" on a doc that visibly has crossings
+    // reads as the button being broken, when it usually means "already done".
+    if (r.skipped > 0) parts.push(`${r.skipped} already covered`);
+    if (r.unresolved > 0) parts.push(`${r.unresolved} could not be located on a run`);
+    setStatusMessage(`${parts.join(' · ')} (${r.crossings} crossing findings).`);
   }
 
   // Tier 3 #78 — curve or straighten one segment. The vertex list does not
@@ -2626,6 +2680,25 @@ export default function EditorPage() {
             >
               Auto-doubleback all
             </button>
+            {/* Tier 2 #135 — one-click remedy for the crossing_needs_blockout
+                warning. Only that rule: min_spacing is the same geometric
+                check one severity up, and it fires on every near-parallel
+                pair, so painting those out swallows whole strokes. Never
+                automatic — paint is a fabrication decision. */}
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={crossingFindingCount === 0}
+              onClick={blockoutCrossings}
+              title={
+                crossingFindingCount === 0
+                  ? 'No crossings flagged. The validator raises crossing_needs_blockout where two tubes cross steeply enough to need paint.'
+                  : `Paint out ${crossingFindingCount} flagged ${crossingFindingCount === 1 ? 'crossing' : 'crossings'}: ~2 tube diameters of block-out on the nearer tube at each one. Re-running skips crossings already covered. Tier 2 #135.`
+              }
+            >
+              Block out {crossingFindingCount} crossing
+              {crossingFindingCount === 1 ? '' : 's'}
+            </button>
             {/* Tier 2 #75 — one-click remedy for the max_segment_length
                 validator error. Disabled when the spec carries no limit, or
                 when nothing on the doc exceeds it. */}
@@ -2789,6 +2862,23 @@ export default function EditorPage() {
               </button>
             )}
           </div>
+          {crossingFindingCount > 0 && (
+            <label
+              className="diameter-picker"
+              title="Painted span per crossing. Blank derives it from the tube diameter (2 × Ø), which is the number measured against a rendered script: ~90mm severed the letterforms, ~2 diameters kills the bright X and leaves the letter readable."
+            >
+              Block-out span (mm)
+              {/* NumericField, not a raw number input: a numeric `step` makes
+                  `min` a lattice and silently swallows the submit (CLAUDE.md
+                  recurring bug class 3). */}
+              <NumericField
+                min="0"
+                value={blockoutSpanInput}
+                placeholder={`${(2 * projDiam).toFixed(1)} (2 × Ø)`}
+                onChange={(e) => setBlockoutSpanInput(e.target.value)}
+              />
+            </label>
+          )}
           {/* Tier 2 #90 — Arrange. Renders only with a live selection: with
               nothing picked every control would be disabled, which is just
               noise in an already-dense sidebar. Depth order works on one run

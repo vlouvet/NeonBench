@@ -41,6 +41,7 @@ import {
   isArcKind,
   runHasArcs,
   segmentCount,
+  segmentIndexBetween,
   segmentTypeAt,
 } from './arcGeom';
 import {
@@ -247,6 +248,393 @@ export function deleteBlockout(doc: DesignDoc, runId: string, blockoutIndex: num
     ...run,
     blockouts: (run.blockouts ?? []).filter((_, i) => i !== blockoutIndex),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 #135 — turn the validator's crossing findings into block-out paint.
+//
+// The validator already finds every shallow crossing: `checkSpacing`
+// (internal/validate/rules.go) demotes a close pair whose local tangents are
+// more than 60 degrees apart to the `crossing_needs_blockout` rule and hands
+// back the millimetre midpoint between the two tubes. Painting those out was
+// a by-hand job, one crossing at a time, on scripts that have dozens.
+//
+// TWO TUNING FACTS, both learned by rendering the wrong version first. Both
+// are natural-looking things a later change would undo, so they are written
+// down here AND pinned in docOps.test.ts:
+//
+// (a) FILTER ON THE RULE ID, NEVER ON SEVERITY. `crossing_needs_blockout` is
+//     a warning and `min_spacing` is an error raised by the same geometric
+//     check, so "while we're here, also do the errors" is the obvious next
+//     step. It is wrong. `min_spacing` fires wherever two tubes run NEAR-
+//     PARALLEL, which on a script is most of the piece, and painting those
+//     out swallowed whole strokes — the word stopped reading. Crossings only.
+//
+// (b) ~2 TUBE DIAMETERS OF PAINT PER CROSSING. Measured on a real script:
+//     90 mm severed the letterforms, ~30 mm killed the bright X while the
+//     letter still read through it. The number is DERIVED from the tube
+//     diameter (per-run override -> project spec -> 10 mm, the same
+//     precedence the validator uses), never hard-coded at 30: a shop on
+//     15 mm tube then gets 30 mm and a shop on 8 mm tube gets 16 mm.
+//
+// WHICH of the two crossing tubes gets painted: the one whose LIVE glass
+// passes closest to the finding, ties going to the earlier run in doc order.
+// A 2D drawing carries no over/under information, so nothing here can know
+// which tube is in front — and painting both doubles the dark glass at every
+// crossing, which is the failure mode (b) exists to prevent. One painted tube
+// is enough to break the bright X; the operator marks the other by hand where
+// their build needs it.
+//
+// FLATTEN VS INDEX (CLAUDE.md): every millimetre here is measured on the
+// FLATTENED curve, and every index written is a LIVE index. The two must not
+// be crossed. On an open run the live walk is the whole polyline and the live
+// and raw index spaces coincide, so a raw-index implementation passes every
+// open-run test and paints the wrong half of a closed loop with two
+// electrodes — there is a closed-run fixture in the suite for exactly that.
+// ---------------------------------------------------------------------------
+
+// The one rule this op consumes. See tuning fact (a): the filter is the RULE
+// ID and must never become a severity test.
+export const CROSSING_BLOCKOUT_RULE = 'crossing_needs_blockout';
+
+// Painted span per crossing, in tube diameters — tuning fact (b).
+export const BLOCKOUT_SPAN_DIAMETERS = 2;
+
+// Last-resort diameter when neither the run nor the project spec has one.
+// Same value the rest of the editor falls back to (EditorPage's projDiam).
+const BLOCKOUT_FALLBACK_DIAMETER_MM = 10;
+
+// How far the finding may sit from a run's glass before we refuse to paint
+// that run. The finding is the MIDPOINT between the two crossing tubes, so it
+// lies roughly half the spacing limit off each centreline; three diameters
+// covers that plus any disagreement between the Go flattener and this one,
+// while still refusing to paint a run that merely happens to be the nearest
+// thing on an otherwise empty sheet.
+const BLOCKOUT_SNAP_DIAMETERS = 3;
+const BLOCKOUT_SNAP_MIN_MM = 20;
+
+// Ties go to the earlier run in doc order rather than to whichever side of
+// the midpoint floating point rounded toward, so re-running the op picks the
+// same run and idempotence holds.
+const BLOCKOUT_TIE_EPS_MM = 0.05;
+
+// CrossingFinding is the structural subset of `ValidationIssue` this op
+// reads, so a caller can pass `report.issues` straight in and a test can
+// build a two-field literal.
+export type CrossingFinding = {
+  rule: string;
+  x_mm?: number;
+  y_mm?: number;
+};
+
+export type BlockoutsFromCrossingsOptions = {
+  // The project tube spec's diameter, used when a run carries no override.
+  projectDiameterMM?: number;
+  // Operator override for the painted span, in mm. Unset (or <= 0) derives it
+  // from the tube diameter — see tuning fact (b).
+  spanMM?: number;
+};
+
+export type BlockoutsFromCrossingsResult = {
+  doc: DesignDoc;
+  // Findings carrying the crossing rule. Everything else in the report is
+  // ignored, `min_spacing` emphatically included.
+  crossings: number;
+  // Crossings painted. Spans that merged into one blockout still count once
+  // each, so `placed` is crossings acted on, not blockout objects added.
+  placed: number;
+  // Crossings already covered by a block-out (a previous run of this op, or
+  // one the operator painted by hand).
+  skipped: number;
+  // Crossings with no usable coordinates, or none within snapping distance of
+  // any run's live glass.
+  unresolved: number;
+};
+
+// crossingBlockoutSpanMM is the default painted span for one crossing on this
+// run: BLOCKOUT_SPAN_DIAMETERS x the diameter the validator would use for it.
+export function crossingBlockoutSpanMM(run: DesignRun, projectDiameterMM?: number): number {
+  return BLOCKOUT_SPAN_DIAMETERS * effectiveTubeDiameterMM(run, projectDiameterMM);
+}
+
+function effectiveTubeDiameterMM(run: DesignRun, projectDiameterMM?: number): number {
+  const runD = run.tube_diameter_mm;
+  if (typeof runD === 'number' && runD > 0) return runD;
+  if (typeof projectDiameterMM === 'number' && projectDiameterMM > 0) return projectDiameterMM;
+  return BLOCKOUT_FALLBACK_DIAMETER_MM;
+}
+
+type BlockoutSpan = { start: number; end: number };
+
+// LiveWalkMM is a run's live arc with a millimetre odometer against it:
+// `cumMM[k]` is the glass length from the first live vertex to `live[k]`,
+// measured on the FLATTENED curve so an arc contributes its bow and not its
+// chord — the same thing runLengthMM does, and the same thing the Go
+// validator's pipeline does.
+type LiveWalkMM = {
+  live: number[];
+  cumMM: number[];
+  totalMM: number;
+};
+
+// walkStepPoints returns the flattened points from polyline vertex `a` to
+// vertex `b`, INCLUDING both ends, for one step of a walk. An arc crossed
+// backwards is the same arc walked the other way, so the canonical flatten is
+// reversed rather than re-derived (arcFor's bow side is defined on the stored
+// segment direction, not on the walk's).
+function walkStepPoints(run: DesignRun, a: number, b: number): [number, number][] {
+  const pts = run.polyline.points;
+  const n = pts.length;
+  const hit = segmentIndexBetween(a, b, n, !!run.polyline.closed);
+  if (!hit) return [pts[a], pts[b]];
+  const p0 = pts[hit.seg];
+  const p1 = pts[(hit.seg + 1) % n];
+  const flat: [number, number][] = [p0, ...flattenSegment(p0, p1, segmentTypeAt(run, hit.seg))];
+  return hit.reversed ? flat.reverse() : flat;
+}
+
+function liveWalkMM(run: DesignRun): LiveWalkMM {
+  const { live } = runArcs(run);
+  const cumMM = new Array<number>(live.length).fill(0);
+  let total = 0;
+  for (let k = 0; k + 1 < live.length; k++) {
+    total += chordLengthMM(walkStepPoints(run, live[k], live[k + 1]));
+    cumMM[k + 1] = total;
+  }
+  return { live, cumMM, totalMM: total };
+}
+
+// projectOnSegment clamps to the CLOSED segment, so a finding past either end
+// measures to the nearer endpoint. `alongMM` is the distance from `a` to the
+// projection, which is what turns a hit into an odometer reading.
+function projectOnSegment(
+  p: [number, number],
+  a: [number, number],
+  b: [number, number],
+): { distMM: number; alongMM: number; lenMM: number } {
+  const abx = b[0] - a[0];
+  const aby = b[1] - a[1];
+  const len2 = abx * abx + aby * aby;
+  if (!(len2 > 0)) return { distMM: segLenMM(p, a), alongMM: 0, lenMM: 0 };
+  const lenMM = Math.sqrt(len2);
+  let t = ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const proj: [number, number] = [a[0] + t * abx, a[1] + t * aby];
+  return { distMM: segLenMM(p, proj), alongMM: t * lenMM, lenMM };
+}
+
+// nearestLivePositionMM answers "where along this run's live glass is the
+// point, and how far off is it" — both in millimetres, on the flattened
+// curve. Returns null for a run with no live glass.
+function nearestLivePositionMM(
+  run: DesignRun,
+  walk: LiveWalkMM,
+  target: [number, number],
+): { sMM: number; distMM: number } | null {
+  if (walk.live.length < 2) return null;
+  let bestD = Infinity;
+  let bestS = 0;
+  for (let k = 0; k + 1 < walk.live.length; k++) {
+    const step = walkStepPoints(run, walk.live[k], walk.live[k + 1]);
+    let acc = 0;
+    for (let i = 0; i + 1 < step.length; i++) {
+      const hit = projectOnSegment(target, step[i], step[i + 1]);
+      if (hit.distMM < bestD) {
+        bestD = hit.distMM;
+        bestS = walk.cumMM[k] + acc + hit.alongMM;
+      }
+      acc += hit.lenMM;
+    }
+  }
+  if (!Number.isFinite(bestD)) return null;
+  return { sMM: bestS, distMM: bestD };
+}
+
+// spanToLiveIndices converts a millimetre interval centred on `sMM` into the
+// live-index span that COVERS it: the last live vertex at or before the start
+// and the first at or after the end. Rounding outward rather than to nearest
+// is what makes "the paint covers the crossing" true rather than usually
+// true. Clamped to the ends of the live walk, so a crossing near a
+// termination paints a span inside the run instead of running off it — and
+// deliberately never wraps the seam of a closed live arc, because
+// `placeBlockout` normalizes start/end and a wrapped span read as min/max is
+// its own complement.
+function spanToLiveIndices(walk: LiveWalkMM, sMM: number, spanMM: number): BlockoutSpan {
+  const m = walk.live.length;
+  const half = Math.max(0, spanMM) / 2;
+  const startMM = Math.max(0, sMM - half);
+  const endMM = Math.min(walk.totalMM, sMM + half);
+  const EPS = 1e-9;
+  let start = 0;
+  for (let k = 0; k < m; k++) {
+    if (walk.cumMM[k] > startMM + EPS) break;
+    start = k;
+  }
+  let end = m - 1;
+  for (let k = m - 1; k >= 0; k--) {
+    if (walk.cumMM[k] < endMM - EPS) break;
+    end = k;
+  }
+  if (end < start) end = start;
+  // A one-vertex span paints a dot. Give it a segment where there is one.
+  if (start === end) {
+    if (end + 1 < m) end += 1;
+    else if (start > 0) start -= 1;
+  }
+  return { start, end };
+}
+
+// spanCovers asks whether an existing blockout already paints the whole of
+// [s, e]. A stored span with start > end is a wrapped one (it paints
+// [start .. m-1] and [0 .. end]) — the editor cannot author one, but a
+// hand-written doc can, and reading it as min/max would invert it.
+function spanCovers(b: BlockoutSpan, s: number, e: number): boolean {
+  if (b.start <= b.end) return b.start <= s && b.end >= e;
+  return s >= b.start || e <= b.end;
+}
+
+// mergeBlockoutSpans unions overlapping (and endpoint-sharing) spans so a
+// second crossing a few millimetres from the first extends the paint instead
+// of stacking a duplicate on top of it. Wrapped spans pass through untouched
+// — see spanCovers.
+function mergeBlockoutSpans(spans: BlockoutSpan[]): BlockoutSpan[] {
+  const wrapped = spans.filter((b) => b.start > b.end);
+  const plain = spans
+    .filter((b) => b.start <= b.end)
+    .sort((x, y) => x.start - y.start || x.end - y.end);
+  const out: BlockoutSpan[] = [];
+  for (const b of plain) {
+    const last = out[out.length - 1];
+    if (last && b.start <= last.end) {
+      if (b.end > last.end) last.end = b.end;
+      continue;
+    }
+    out.push({ start: b.start, end: b.end });
+  }
+  return [...out, ...wrapped];
+}
+
+// existingSpans reads a run's blockouts, clamping each to the live arc it is
+// indexed against — the same clamp `blockoutSegments` applies at render time,
+// so what we compare against is what the operator can actually see painted.
+function existingSpans(run: DesignRun, liveCount: number): BlockoutSpan[] {
+  const hi = Math.max(0, liveCount - 1);
+  const clamp = (i: number) => Math.max(0, Math.min(hi, Math.trunc(i)));
+  return mergeBlockoutSpans(
+    (run.blockouts ?? []).map((b) => {
+      const s = clamp(b.start_live_index);
+      const e = clamp(b.end_live_index);
+      // Preserve a wrapped span's direction; normalize everything else.
+      if (b.start_live_index > b.end_live_index && s !== e) return { start: s, end: e };
+      return { start: Math.min(s, e), end: Math.max(s, e) };
+    }),
+  );
+}
+
+// placeBlockoutsFromCrossings is the op: a report's issues plus a doc in, a
+// doc wearing block-out paint out, in ONE undo step. It never runs itself —
+// paint is a fabrication decision, so the operator asks for it.
+//
+// Point counts and point order are untouched, so this is not a
+// `segment_types` op. It does write live indices, which is the same family of
+// care: everything below indexes `runArcs(run).live`, never raw vertices.
+export function placeBlockoutsFromCrossings(
+  doc: DesignDoc,
+  findings: readonly CrossingFinding[] | undefined,
+  opts: BlockoutsFromCrossingsOptions = {},
+): BlockoutsFromCrossingsResult {
+  // Tuning fact (a) lives on this line. It is a rule-id filter. Adding
+  // `min_spacing` here — or switching to `severity === 'error'` — paints out
+  // every near-parallel pair on the doc and the word stops reading.
+  const crossings = (findings ?? []).filter((f) => f.rule === CROSSING_BLOCKOUT_RULE);
+  if (crossings.length === 0) {
+    return { doc, crossings: 0, placed: 0, skipped: 0, unresolved: 0 };
+  }
+
+  // One live walk per run, computed once: the doc's geometry does not move
+  // while we work, only its blockouts.
+  const walks = new Map<string, LiveWalkMM>();
+  for (const run of doc.runs) {
+    const walk = liveWalkMM(run);
+    if (walk.live.length >= 2 && walk.totalMM > 0) walks.set(run.id, walk);
+  }
+
+  const spansByRun = new Map<string, BlockoutSpan[]>();
+  const touched = new Set<string>();
+  let placed = 0;
+  let skipped = 0;
+  let unresolved = 0;
+
+  for (const finding of crossings) {
+    const x = finding.x_mm;
+    const y = finding.y_mm;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+      // No location to paint at. `x_mm` / `y_mm` are `omitempty` on the Go
+      // side, so a crossing exactly at the origin arrives indistinguishable
+      // from a locationless finding; it is reported rather than guessed at.
+      unresolved++;
+      continue;
+    }
+    const target: [number, number] = [x as number, y as number];
+    let bestRun: DesignRun | null = null;
+    let bestPos: { sMM: number; distMM: number } | null = null;
+    let bestD = Infinity;
+    for (const run of doc.runs) {
+      const walk = walks.get(run.id);
+      if (!walk) continue;
+      const pos = nearestLivePositionMM(run, walk, target);
+      if (!pos) continue;
+      if (pos.distMM < bestD - BLOCKOUT_TIE_EPS_MM) {
+        bestD = pos.distMM;
+        bestRun = run;
+        bestPos = pos;
+      }
+    }
+    if (!bestRun || !bestPos) {
+      unresolved++;
+      continue;
+    }
+    const diameterMM = effectiveTubeDiameterMM(bestRun, opts.projectDiameterMM);
+    if (bestD > Math.max(BLOCKOUT_SNAP_DIAMETERS * diameterMM, BLOCKOUT_SNAP_MIN_MM)) {
+      unresolved++;
+      continue;
+    }
+    const walk = walks.get(bestRun.id)!;
+    const spanMM =
+      opts.spanMM !== undefined && opts.spanMM > 0
+        ? opts.spanMM
+        : crossingBlockoutSpanMM(bestRun, opts.projectDiameterMM);
+    const span = spanToLiveIndices(walk, bestPos.sMM, spanMM);
+    let spans = spansByRun.get(bestRun.id);
+    if (!spans) {
+      spans = existingSpans(bestRun, walk.live.length);
+      spansByRun.set(bestRun.id, spans);
+    }
+    if (spans.some((b) => spanCovers(b, span.start, span.end))) {
+      // Already painted — this is what makes a second click a no-op.
+      skipped++;
+      continue;
+    }
+    spansByRun.set(bestRun.id, mergeBlockoutSpans([...spans, span]));
+    touched.add(bestRun.id);
+    placed++;
+  }
+
+  if (placed === 0) {
+    // Hand back the SAME doc reference so editDoc's identity guard skips the
+    // undo push and the dirty flag.
+    return { doc, crossings: crossings.length, placed, skipped, unresolved };
+  }
+  const runs = doc.runs.map((run) => {
+    if (!touched.has(run.id)) return run;
+    const spans = spansByRun.get(run.id) ?? [];
+    const blockouts: Blockout[] = spans.map((b) => ({
+      start_live_index: b.start,
+      end_live_index: b.end,
+    }));
+    return { ...run, blockouts };
+  });
+  return { doc: { ...doc, runs }, crossings: crossings.length, placed, skipped, unresolved };
 }
 
 export function placeAnnotation(
