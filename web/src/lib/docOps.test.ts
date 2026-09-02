@@ -5370,3 +5370,161 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// The invariant applied BROADLY — one arc-bearing run through every op that
+// changes its point count or point order.
+//
+// The point of a shared helper is that it can be pointed at everything, and
+// pointing it at everything is what turns "splitRun forgot segment_types" from
+// a bug report into a list. The three ops below that fail are not fixed here
+// (Bug #17's scope is the split path) — they are pinned failing, with the
+// symptom named, so that fixing one makes THIS test fail and tells whoever
+// does it to move the op up into the passing list.
+//
+// A known-limitation test that has to be deleted when the limitation goes is
+// the repo's existing pattern (see the reverseRun block above, whose
+// mirroring test was replaced by a geometric invariant when #87 landed).
+// ---------------------------------------------------------------------------
+describe('segment_types well-formedness across every point-count op', () => {
+  function openArcRun(id = 'a'): DesignRun {
+    return {
+      id,
+      polyline: {
+        points: [[0, 0], [100, 0], [200, 0], [300, 0]],
+        closed: false,
+        segment_types: ['arc', 'line', 'arc_r'],
+      },
+      tube_diameter_mm: 10,
+    };
+  }
+  function closedArcRun(id = 'a'): DesignRun {
+    return {
+      id,
+      polyline: {
+        points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+        closed: true,
+        segment_types: ['arc', 'line', 'arc_r', 'line'],
+      },
+      tube_diameter_mm: 10,
+    };
+  }
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1, view_box_mm: [0, 0, 400, 400], runs,
+  });
+
+  // Each case hands back the doc BEFORE and AFTER, because an op that quietly
+  // did nothing would satisfy the invariant for free — the exact way a sweep
+  // like this goes vacuous (CLAUDE.md bug class 7).
+  type Case = [string, () => [DesignDoc, DesignDoc]];
+  const before1 = () => docOf([openArcRun()]);
+  const beforeClosed = () => docOf([closedArcRun()]);
+
+  const passing: Case[] = [
+    ['splitRun', () => { const d = before1(); return [d, ops.splitRun(d, 'a', 2)]; }],
+    ['insertVertex on an arc', () => { const d = before1(); return [d, ops.insertVertex(d, 'a', 0, 0.5)]; }],
+    ['insertVertex on a line', () => { const d = before1(); return [d, ops.insertVertex(d, 'a', 1, 0.5)]; }],
+    ['insertVertex on a closed run', () => { const d = beforeClosed(); return [d, ops.insertVertex(d, 'a', 1, 0.5)]; }],
+    ['insertDoubleback', () => { const d = before1(); return [d, ops.insertDoubleback(d, 'a', 1, 0.5)]; }],
+    ['simplifyRun', () => {
+      const d = docOf([{
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [50, 0], [100, 0], [200, 0], [300, 0]],
+          closed: false,
+          segment_types: ['line', 'line', 'line', 'arc'],
+        },
+      }]);
+      return [d, ops.simplifyRun(d, 'a', 1)];
+    }],
+    ['reverseRun', () => { const d = before1(); return [d, ops.reverseRun(d, 'a')]; }],
+    ['joinRuns', () => {
+      const d = docOf([
+        openArcRun(),
+        {
+          id: 'b',
+          polyline: {
+            points: [[300, 0], [400, 0], [500, 0]],
+            closed: false,
+            segment_types: ['arc', 'line'],
+          },
+        },
+      ]);
+      return [d, ops.joinRuns(d, 'a', 'tail', 'b', 'head')];
+    }],
+    ['moveVertices', () => {
+      const d = before1();
+      return [d, ops.moveVertices(d, 'a', [{ pointIndex: 1, x: 150, y: 40 }])];
+    }],
+    ['autoSplitOverlongTubes', () => {
+      const d = before1();
+      return [d, ops.autoSplitOverlongTubes(d, 60).doc];
+    }],
+    ['splitTubesAtRaceway (open)', () => {
+      const d: DesignDoc = {
+        ...docOf([{
+          id: 'a',
+          polyline: {
+            points: [[0, 0], [100, 100], [200, 0]],
+            closed: false,
+            segment_types: ['arc', 'arc_r'],
+          },
+        }]),
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 50 }],
+      };
+      return [d, ops.splitTubesAtRaceway(d, 'rw1').doc];
+    }],
+    ['splitTubesAtRaceway (closed)', () => {
+      const d: DesignDoc = {
+        ...docOf([closedArcRun('sq')]),
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 50 }],
+      };
+      return [d, ops.splitTubesAtRaceway(d, 'rw1').doc];
+    }],
+  ];
+
+  // The whole geometry an op could have touched, as a string: run ids, point
+  // lists, segment types and closed-ness.
+  const shapeOf = (doc: DesignDoc) => JSON.stringify(
+    doc.runs.map((r) => [r.id, r.polyline.points, r.polyline.segment_types ?? null, !!r.polyline.closed]),
+  );
+
+  for (const [name, runCase] of passing) {
+    it(`${name} leaves every run saveable`, () => {
+      const [before, after] = runCase();
+      expect(shapeOf(after), `${name} was a no-op; the assertion below is vacuous`)
+        .not.toBe(shapeOf(before));
+      expectWellFormedDoc(after);
+    });
+  }
+
+  // KNOWN BROKEN — the same bug class, off Bug #17's split path. Each is
+  // asserted to fail so the list cannot quietly grow stale: fix one and this
+  // test goes red, which is the reminder to move it into `passing` above.
+  const knownBroken: [string, string, () => DesignRun][] = [
+    [
+      'deleteVertex',
+      'leaves the array at its old length — one entry too many, so the next save is a 400',
+      () => ops.deleteVertex(docOf([openArcRun()]), 'a', 1).runs[0],
+    ],
+  ];
+
+  for (const [name, symptom, run] of knownBroken) {
+    it(`KNOWN BROKEN: ${name} ${symptom}`, () => {
+      expect(ops.segmentTypesWellFormed(run())).toBe(false);
+    });
+  }
+
+  // breakOpen and moveOpening keep the LENGTH correct and get the ORDER wrong,
+  // which segmentTypesWellFormed cannot see — the array is the right size, the
+  // arcs are just on the wrong glass. Pinned by shape instead.
+  it('KNOWN BROKEN: breakOpen does not rotate segment_types with the walk', () => {
+    const out = ops.breakOpen(docOf([closedArcRun()]), 'a', 1).runs[0];
+    expectWellFormedRun(out); // length is fine, which is why this hides
+    // Breaking at vertex 1 rotates the walk by one, so the array should read
+    // ['line','arc_r','line','arc']. It comes back untouched, which puts the
+    // first arc on the segment that used to be straight.
+    expect(out.polyline.segment_types).toEqual(['arc', 'line', 'arc_r', 'line']);
+    expect(out.polyline.segment_types).not.toEqual(['line', 'arc_r', 'line', 'arc']);
+  });
+});
