@@ -1,6 +1,15 @@
 # Tier 3 #137 — A headless render entry point
 
-> **Status:** active · drafted 2026-09-02 · branch `task/3-headless-render`
+> **Status:** DONE · drafted 2026-09-02 · shipped 2026-09-02 · branch `task/3-headless-render`
+> · **Option 2 taken** (documented URL contract + committed driver), and
+> within it the **CLI form** rather than the HTTP endpoint — see
+> [`docs/headless-render.md`](../../docs/headless-render.md) for the
+> reasoning and the contract.
+> · One correction to the spec's framing is recorded in the PR body: the
+> two "wanted shapes" at the top (`neonbench render …` and
+> `GET …/preview.png`) both imply option 1, because either one puts the
+> render inside the Go process. The shipped CLI is a Node driver under
+> `scripts/`, not a Go subcommand.
 > · source: [`docs/proof-workflow-gaps.md`](../../docs/proof-workflow-gaps.md) A5
 
 ## Goal

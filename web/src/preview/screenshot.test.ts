@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import {
   captureCanvasToPNG,
+  renderCanvasToDataURL,
   screenshotFilename,
   type DownloadEnv,
 } from './screenshot';
@@ -170,6 +171,57 @@ describe('captureCanvasToPNG', () => {
     );
     expect(gl.render).toHaveBeenCalledOnce();
     expect(gl.render).toHaveBeenCalledWith(scene, camera);
+  });
+});
+
+// Tier 3 #137 extracted the composer-vs-bare decision into
+// `renderCanvasToDataURL` so the Save PNG button and the headless entry
+// point cannot drift apart. Tier 1 #68 shipped precisely because that
+// decision lived inline at a single call site and a second caller
+// appeared. These pin the extracted function directly.
+describe('renderCanvasToDataURL', () => {
+  it('drives the composer, not the bare renderer, when one is wired', () => {
+    const gl = makeStubRenderer('data:image/png;base64,COMPOSED');
+    const composer = { render: vi.fn() };
+    const url = renderCanvasToDataURL(
+      gl as unknown as THREE.WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+      composer,
+    );
+    expect(url).toBe('data:image/png;base64,COMPOSED');
+    expect(composer.render).toHaveBeenCalledOnce();
+    expect(gl.render).not.toHaveBeenCalled();
+    expect(composer.render.mock.invocationCallOrder[0]).toBeLessThan(
+      gl.domElement.toDataURL.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('takes the bare renderer only when there is no composer', () => {
+    const gl = makeStubRenderer();
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera();
+    renderCanvasToDataURL(gl as unknown as THREE.WebGLRenderer, scene, camera, null);
+    expect(gl.render).toHaveBeenCalledExactlyOnceWith(scene, camera);
+  });
+
+  it('is what captureCanvasToPNG hands to the download anchor', () => {
+    // Pins the delegation: if the button ever grew its own inline
+    // render-then-read again, this data URL would stop matching.
+    const gl = makeStubRenderer('data:image/png;base64,VIA_HELPER');
+    const env = makeStubEnv();
+    const composer = { render: vi.fn() };
+    captureCanvasToPNG(
+      gl as unknown as THREE.WebGLRenderer,
+      new THREE.Scene(),
+      new THREE.PerspectiveCamera(),
+      'x.png',
+      env,
+      composer,
+    );
+    expect(env._appended[0].href).toBe('data:image/png;base64,VIA_HELPER');
+    expect(composer.render).toHaveBeenCalledOnce();
+    expect(gl.render).not.toHaveBeenCalled();
   });
 });
 

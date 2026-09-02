@@ -20,6 +20,7 @@ your browser to a local web UI.
 | [User manual](docs/USER_MANUAL.md) | Feature reference and a step-by-step walkthrough, with screenshots. **Start here.** |
 | [Windows](docs/windows.md) | Download, first-launch SmartScreen, where data lives, building from source. |
 | [Architecture](docs/architecture.md) | Package layout and how to run the tests. |
+| [Headless render](docs/headless-render.md) | One command for a bloom-correct preview PNG: the URL contract and the driver script. |
 | [Design notes](docs/design-notes.md) | Why parts of it work the way they do. |
 | [Trade rules](docs/neon-rules/) | The source literature the validator is built from. |
 | [`todo.md`](todo.md) | Roadmap, parity matrix and task backlog. |

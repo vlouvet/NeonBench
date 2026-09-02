@@ -28,6 +28,32 @@ export interface Bbox {
 /** The four preset views shipped with Phase 3 #5. */
 export type CameraPreset = 'front' | 'iso' | 'top' | 'side';
 
+/**
+ * The preset names as runtime data, for anything that has to validate
+ * a string against the union (URL query parsing, CLI arg checking).
+ *
+ * The `Record<CameraPreset, true>` below is a compile-time
+ * exhaustiveness guard: widening `CameraPreset` without adding the new
+ * member here is a type error, so this list cannot silently fall
+ * behind the union. (`CLAUDE.md` recurring bug class #7 — widening an
+ * enum is how a test goes vacuous.)
+ */
+const CAMERA_PRESET_MEMBERS: Record<CameraPreset, true> = {
+  front: true,
+  iso: true,
+  top: true,
+  side: true,
+};
+
+export const CAMERA_PRESET_NAMES = Object.keys(
+  CAMERA_PRESET_MEMBERS,
+) as CameraPreset[];
+
+/** Runtime narrowing for an untrusted string (URL param, CLI flag). */
+export function isCameraPreset(v: string): v is CameraPreset {
+  return Object.prototype.hasOwnProperty.call(CAMERA_PRESET_MEMBERS, v);
+}
+
 /** Camera framing: where the camera sits, and what it's looking at. */
 export interface CameraFraming {
   position: THREE.Vector3;
