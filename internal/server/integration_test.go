@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"math"
 	"mime/multipart"
@@ -4384,5 +4386,280 @@ func TestPrintCopiesWithNoStripsStill422(t *testing.T) {
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Errorf("strips_only=1&copies=3 with no face runs: status %d, want 422 (body: %s)",
 			resp.StatusCode, body)
+	}
+}
+
+// ringRasterPNG renders a synthetic "artwork" — a rectangular ring of the
+// given wall thickness — centred in a raster with `pad` pixels of white margin
+// on every side. Black on white, so the default 128 threshold binarizes the
+// ring as foreground.
+//
+// A ring is the right probe for Tier 1 #132 because its skeleton is exactly
+// predictable: thinning collapses the wall to its mid-line, so the centerline
+// is the outer rectangle deflated by wall/2 on every side. That inset is the
+// same one that makes bbox-fitting overshoot.
+func ringRasterPNG(outerW, outerH, wall, pad int) ([]byte, error) {
+	img := image.NewGray(image.Rect(0, 0, outerW+2*pad, outerH+2*pad))
+	for i := range img.Pix {
+		img.Pix[i] = 255
+	}
+	for y := 0; y < outerH; y++ {
+		for x := 0; x < outerW; x++ {
+			if x >= wall && x < outerW-wall && y >= wall && y < outerH-wall {
+				continue // the hole
+			}
+			img.Pix[(pad+y)*img.Stride+(pad+x)] = 0
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// docPointBoundsMM returns [minX, minY, maxX, maxY] over every polyline vertex
+// in a design doc, in the mm space the vectorizer emitted. Read from the run
+// points rather than doc.ViewBoxMM so the assertion is about the geometry a
+// caller would register, not about a derived summary field.
+func docPointBoundsMM(t *testing.T, docJSON string) [4]float64 {
+	t.Helper()
+	var doc designdoc.Doc
+	if err := json.Unmarshal([]byte(docJSON), &doc); err != nil {
+		t.Fatalf("unmarshal design doc: %v", err)
+	}
+	b := [4]float64{math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)}
+	n := 0
+	for _, run := range doc.Runs {
+		for _, p := range run.Polyline.Points {
+			b[0] = math.Min(b[0], p[0])
+			b[1] = math.Min(b[1], p[1])
+			b[2] = math.Max(b[2], p[0])
+			b[3] = math.Max(b[3], p[1])
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatal("design doc has no polyline points — nothing to register")
+	}
+	return b
+}
+
+// TestVectorizeSourceFrameRegistersCenterline pins Tier 1 #132: the vectorize
+// response must carry the raster→mm frame the trace actually used, and that
+// frame must register the returned centerline against the caller's source art
+// exactly — where the plausible-looking bbox fit does not.
+//
+// The three failure modes it guards, in order:
+//
+//  1. Round trip. A known raster-pixel landmark, mapped through the reported
+//     affine, must land on the same landmark in the returned mm coordinates.
+//  2. Padding invariance. The same artwork rendered into two rasters with
+//     DIFFERENT margins must, after each is mapped through its own frame,
+//     produce the same artwork-relative centerline. This is the assertion
+//     whose absence let a 0.986 scale error ship.
+//  3. The bbox fit does not substitute. Fitting the returned centerline's
+//     bounding box onto the artwork's overshoots by ~1 + strokeWidth/extent.
+//     The test performs that fit and shows it missing the landmark the frame
+//     hits, so "just fit the bbox" is a measured wrong answer rather than an
+//     untested opinion.
+func TestVectorizeSourceFrameRegistersCenterline(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	var project map[string]any
+	postJSON(t, client, base+"/api/projects", map[string]any{
+		"name":         "source frame registration",
+		"tube_spec_id": int64(specs[0]["id"].(float64)),
+	}, &project)
+	projectID := int64(project["id"].(float64))
+
+	// The caller's artwork: 400x240 px of ring with a 40 px wall, rendered at
+	// 1.5 mm/px. So the artwork is 600 x 360 mm, the wall is 60 mm thick, and
+	// the centerline the tracer should return is the artwork rectangle
+	// deflated by 30 mm on every side.
+	const (
+		artW    = 400
+		artH    = 240
+		wall    = 40
+		mmPerPx = 1.5
+
+		artWidthMM  = artW * mmPerPx // 600
+		artHeightMM = artH * mmPerPx // 360
+
+		// The wall occupies pixel indices 0..wall-1, so its geometric centre
+		// — where thinning puts the centerline — is at (wall-1)/2 = 19.5 px,
+		// i.e. 29.25 mm in from the artwork's edge.
+		midWallPx = (wall - 1) / 2.0
+		midWallMM = midWallPx * mmPerPx
+	)
+
+	// trace renders the artwork with `pad` px of margin and vectorizes it,
+	// passing the width the RASTER represents (which is what the endpoint's
+	// target_width_mm means). Returns the reported frame and the centerline's
+	// bounds in the mm space of the response.
+	trace := func(pad int, targetWidthMM float64) (sourceFrame, [4]float64) {
+		t.Helper()
+		raw, err := ringRasterPNG(artW, artH, wall, pad)
+		if err != nil {
+			t.Fatalf("render ring raster: %v", err)
+		}
+		asset := uploadAsset(t, client, base, projectID,
+			fmt.Sprintf("ring_pad%d_%.0f.png", pad, targetWidthMM), "image/png", raw)
+		var resp vectorizeResp
+		postJSON(t, client, base+"/api/projects/"+itoa(projectID)+"/vectorize", map[string]any{
+			"asset_id":        int64(asset["id"].(float64)),
+			"target_width_mm": targetWidthMM,
+		}, &resp)
+		if resp.SourceFrame == nil {
+			t.Fatal("vectorize response carries no source_frame — a caller cannot register the result")
+		}
+		if resp.DesignDocJSON == nil || *resp.DesignDocJSON == "" {
+			t.Fatal("vectorize returned no design_doc_json")
+		}
+		return *resp.SourceFrame, docPointBoundsMM(t, *resp.DesignDocJSON)
+	}
+
+	// Two rasters, deliberately different margins.
+	const padA, padB = 12, 57
+	frameA, boundsA := trace(padA, (artW+2*padA)*mmPerPx)
+	frameB, boundsB := trace(padB, (artW+2*padB)*mmPerPx)
+
+	// --- The frame is self-consistent -------------------------------------
+	// mm_per_px and affine must agree, or a caller reading one gets a
+	// different answer than a caller reading the other.
+	for _, tc := range []struct {
+		name  string
+		frame sourceFrame
+		pad   int
+	}{{"A", frameA, padA}, {"B", frameB, padB}} {
+		f := tc.frame
+		if f.Affine[0] != f.MMPerPx || f.Affine[3] != f.MMPerPx {
+			t.Errorf("frame %s: affine scale (%g, %g) disagrees with mm_per_px %g",
+				tc.name, f.Affine[0], f.Affine[3], f.MMPerPx)
+		}
+		if f.Affine[1] != 0 || f.Affine[2] != 0 {
+			t.Errorf("frame %s: affine has rotation/shear terms (%g, %g); the tracer emits a pure scale",
+				tc.name, f.Affine[1], f.Affine[2])
+		}
+		if f.Affine[4] != f.OriginMM[0] || f.Affine[5] != f.OriginMM[1] {
+			t.Errorf("frame %s: affine translation (%g, %g) disagrees with origin_mm (%g, %g)",
+				tc.name, f.Affine[4], f.Affine[5], f.OriginMM[0], f.OriginMM[1])
+		}
+		if f.MMPerPx != mmPerPx {
+			t.Errorf("frame %s: mm_per_px = %g, want %g", tc.name, f.MMPerPx, mmPerPx)
+		}
+		if want := [2]int{artW + 2*tc.pad, artH + 2*tc.pad}; f.RasterPx != want {
+			t.Errorf("frame %s: raster_px = %v, want %v", tc.name, f.RasterPx, want)
+		}
+	}
+
+	// --- 1. Round trip through the affine ---------------------------------
+	// The mid-wall of the ring's top-left corner is a landmark whose raster
+	// pixel is known by construction. Map it through the reported affine and
+	// it must land on the centerline's own minimum corner.
+	mapPx := func(f sourceFrame, x, y float64) (float64, float64) {
+		return f.Affine[0]*x + f.Affine[2]*y + f.Affine[4],
+			f.Affine[1]*x + f.Affine[3]*y + f.Affine[5]
+	}
+	landmarkPx := padA + midWallPx
+	lmX, lmY := mapPx(frameA, landmarkPx, landmarkPx)
+	rtErr := math.Hypot(boundsA[0]-lmX, boundsA[1]-lmY)
+	// Half a raster pixel of slack per axis: Zhang-Suen puts an even-thickness
+	// wall's mid-line on one side or the other of the true half-pixel centre.
+	if rtErr > mmPerPx {
+		t.Errorf("round trip: landmark px(%.1f,%.1f) → mm(%.4f, %.4f) but centerline min corner is (%.4f, %.4f); error %.4f mm > %.4f mm",
+			landmarkPx, landmarkPx, lmX, lmY, boundsA[0], boundsA[1], rtErr, float64(mmPerPx))
+	}
+	t.Logf("round trip: affine-mapped landmark misses the centerline by %.4f mm", rtErr)
+
+	// --- 2. Padding invariance --------------------------------------------
+	// Map each centerline out of its own frame and back into artwork-relative
+	// pixels; the two rasters hold byte-identical artwork, so they must agree.
+	toArtworkPx := func(f sourceFrame, b [4]float64, pad int) [4]float64 {
+		var out [4]float64
+		for i, v := range b {
+			out[i] = (v-f.OriginMM[i%2])/f.MMPerPx - float64(pad)
+		}
+		return out
+	}
+	artA := toArtworkPx(frameA, boundsA, padA)
+	artB := toArtworkPx(frameB, boundsB, padB)
+	worst := 0.0
+	for i := range artA {
+		worst = math.Max(worst, math.Abs(artA[i]-artB[i])*mmPerPx)
+	}
+	if worst > 0.01 {
+		t.Errorf("padding invariance: pad %d gives artwork-relative bounds %v px, pad %d gives %v px; worst disagreement %.4f mm",
+			padA, artA, padB, artB, worst)
+	}
+	t.Logf("padding invariance: pad %d vs pad %d agree to %.6f mm after mapping through their own frames",
+		padA, padB, worst)
+
+	// --- 3. The bbox fit is the wrong answer, measured --------------------
+	// A caller who knows the artwork is 600 x 360 mm and fits the returned
+	// centerline's bbox onto it scales by artworkExtent/skeletonExtent. The
+	// skeleton is inset by half the 60 mm wall on every side, so that ratio is
+	// 600/540 = 1.111 — the spec's 1 + strokeWidth/extent — and every distance
+	// comes out 11% too large.
+	skelW := boundsA[2] - boundsA[0]
+	skelH := boundsA[3] - boundsA[1]
+	fitScaleX := artWidthMM / skelW
+	fitScaleY := artHeightMM / skelH
+	if fitScaleX <= 1.05 {
+		t.Fatalf("bbox-fit scale %.4f is not the overshoot this test exists to contrast against — check the synthetic ring", fitScaleX)
+	}
+	// Where each method puts the centerline's OWN minimum corner, in
+	// artwork-relative mm. Truth is the mid-wall corner: (29.25, 29.25).
+	// Both methods are fed the same measured geometry, so the only difference
+	// is the registration — which is the point.
+	frameCornerX := (boundsA[0]-frameA.OriginMM[0])/frameA.MMPerPx - float64(padA)
+	frameCornerY := (boundsA[1]-frameA.OriginMM[1])/frameA.MMPerPx - float64(padA)
+	frameErr := math.Hypot(frameCornerX*mmPerPx-midWallMM, frameCornerY*mmPerPx-midWallMM)
+	// The bbox fit maps the centerline's min corner onto the artwork's min
+	// corner, i.e. (0, 0) — by construction, whatever the geometry.
+	fitErr := math.Hypot(0-midWallMM, 0-midWallMM)
+	t.Logf("registration of the mid-wall corner (truth %.1f, %.1f mm): source_frame off by %.4f mm; bbox fit off by %.4f mm (fit scale %.4f x %.4f)",
+		float64(midWallMM), float64(midWallMM), frameErr, fitErr, fitScaleX, fitScaleY)
+	if frameErr > mmPerPx {
+		t.Errorf("source_frame registration error %.4f mm exceeds one raster pixel (%.4f mm)", frameErr, float64(mmPerPx))
+	}
+	if fitErr < 10*frameErr+10 {
+		t.Errorf("bbox fit error %.4f mm is not clearly worse than the frame's %.4f mm — the contrast this row rests on has evaporated",
+			fitErr, frameErr)
+	}
+
+	// --- The frame stays truthful when the caller passes the wrong width ---
+	// A caller who passes the ARTWORK width instead of the raster width gets
+	// geometry scaled by the padding ratio. That is the bug; the frame's job
+	// is to report it rather than hide it, so the result is still registerable.
+	frameW, boundsW := trace(padA, artWidthMM)
+	wantScale := artWidthMM / float64(artW+2*padA)
+	if math.Abs(frameW.MMPerPx-wantScale) > 1e-9 {
+		t.Errorf("wrong-width call: mm_per_px = %g, want %g (the scale actually used)", frameW.MMPerPx, wantScale)
+	}
+	ratio := (boundsW[2] - boundsW[0]) / skelW
+	t.Logf("passing the artwork width (%.0f mm) instead of the raster width (%.0f mm) shrinks the centerline by %.4f — reported honestly as mm_per_px %.6f",
+		float64(artWidthMM), (artW+2*padA)*mmPerPx, ratio, frameW.MMPerPx)
+	if math.Abs(ratio-wantScale/mmPerPx) > 1e-6 {
+		t.Errorf("wrong-width call: centerline scaled by %.6f, expected %.6f", ratio, wantScale/mmPerPx)
 	}
 }

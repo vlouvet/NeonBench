@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,6 +42,88 @@ type cropReq struct {
 	H int `json:"h"`
 }
 
+// sourceFrame reports the raster→mm mapping the tracer actually used, so a
+// caller can register the returned centerline against its own source art
+// exactly instead of inferring the scale.
+//
+// RasterPx is the *post-preprocess* raster (after rotate and crop), which is
+// the grid the skeleton was thinned on. MMPerPx is that grid's scale, and
+// OriginMM is where raster pixel (0,0) landed in the mm space of the returned
+// coordinates. Affine is the same mapping in SVG `matrix(a b c d e f)` order:
+//
+//	mm.x = a*px.x + c*px.y + e
+//	mm.y = b*px.x + d*px.y + f
+//
+// Both forms are emitted from one derivation (see frameFromResult) so a caller
+// reading MMPerPx and a caller reading Affine can never get different answers.
+type sourceFrame struct {
+	RasterPx [2]int     `json:"raster_px"`
+	MMPerPx  float64    `json:"mm_per_px"`
+	OriginMM [2]float64 `json:"origin_mm"`
+	Affine   [6]float64 `json:"affine"`
+}
+
+// vectorizeResp is the created design version plus the frame the trace used.
+// The embedded struct keeps the existing top-level fields byte-identical for
+// clients that only know about DesignVersion; source_frame is additive and is
+// omitted entirely on the SVG pass-through path, where there is no raster and
+// therefore no frame to report.
+type vectorizeResp struct {
+	storage.DesignVersion
+	SourceFrame *sourceFrame `json:"source_frame,omitempty"`
+}
+
+// frameFromResult derives the source frame from the values the vectorizer
+// reported alongside the coordinates it emitted — NOT from the request's
+// target_width_mm. Recomputing the scale from the request would let the
+// reported frame drift away from the geometry it claims to describe, which is
+// the exact failure this field exists to close.
+//
+// The tracer converts pixel→mm as a pure scale about the raster origin
+// (internal/vectorize/polyline.go pixelsToMM), so the origin is (0,0) and the
+// affine has no rotation or shear. The height terms are asserted against the
+// width-derived scale rather than assumed: if the two ever disagree the frame
+// is not a uniform scale any more and reporting one number would be a lie.
+func frameFromResult(widthPx, heightPx int, widthMM, heightMM float64) *sourceFrame {
+	if widthPx <= 0 || heightPx <= 0 {
+		return nil
+	}
+	mmPerPx := widthMM / float64(widthPx)
+	if mmPerPx <= 0 {
+		return nil
+	}
+	// Non-uniform scale would mean the pure-scale assumption above no longer
+	// holds; refuse to report a frame rather than report a wrong one.
+	if d := math.Abs(heightMM-float64(heightPx)*mmPerPx) / mmPerPx; d > 1e-6 {
+		slog.Warn("vectorize: non-uniform raster scale, omitting source_frame",
+			"width_px", widthPx, "height_px", heightPx, "width_mm", widthMM, "height_mm", heightMM)
+		return nil
+	}
+	const originX, originY = 0.0, 0.0
+	return &sourceFrame{
+		RasterPx: [2]int{widthPx, heightPx},
+		MMPerPx:  mmPerPx,
+		OriginMM: [2]float64{originX, originY},
+		Affine:   [6]float64{mmPerPx, 0, 0, mmPerPx, originX, originY},
+	}
+}
+
+// handleVectorize traces a raster asset into a centerline design version.
+//
+// `target_width_mm` describes the **raster**, not the artwork inside it. The
+// handler maps the full post-crop pixel grid onto that width, so a caller who
+// passes the artwork's known width — the intuitive thing to do — silently
+// scales every returned coordinate by the padding ratio (0.986 on a raster
+// with 0.7% margin: enough to walk the tube visibly off the letterforms).
+// Pass the width the *raster* represents, then register the result through
+// the `source_frame` on the response, which reports the exact pixel→mm
+// mapping the trace used.
+//
+// Do not register by fitting the returned centerline's bounding box onto the
+// artwork's. That looks right and overshoots: a skeleton's bbox is inset from
+// its outline's by about half a stroke width on every side, so the fit scales
+// up by roughly 1 + strokeWidth/extent — worst exactly where strokes are
+// thick, which is what channel letters are. Only `source_frame` registers.
 func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 	pid, ok := pathID(w, r, "id")
 	if !ok {
@@ -122,6 +205,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var svg []byte
+	var frame *sourceFrame
 	switch asset.MIME {
 	case "image/png", "image/jpeg":
 		threshold := uint8(req.Threshold)
@@ -167,6 +251,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		svg = res.SVG
+		frame = frameFromResult(res.WidthPx, res.HeightPx, res.WidthMM, res.HeightMM)
 	case "image/svg+xml":
 		// Pass-through: persist the SVG as-is. Normalization to mm space comes later.
 		svg = data
@@ -194,7 +279,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 		writeStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, dv)
+	writeJSON(w, http.StatusCreated, vectorizeResp{DesignVersion: dv, SourceFrame: frame})
 }
 
 // generateDesignDoc converts an SVG into the structured design doc model
