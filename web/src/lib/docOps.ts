@@ -1981,6 +1981,134 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
   return { ...doc, runs: nextRuns };
 }
 
+// Tier 1 #128 — default search radius for "Join touching runs".
+//
+// Deliberately NOT `COINCIDENT_MM` (0.01). That number answers "are these the
+// same weld", which is the right question once the operator has aimed at two
+// specific endpoints by hand. This one answers "did the operator mean these to
+// be one tube", asked of a whole selection at once, and font-derived or
+// vectorized geometry lands near rather than on. A millimetre is under the
+// glass diameter of the thinnest tube any of this ships with, so two ends
+// inside it could not be separate tubes in the real world.
+export const JOIN_TOUCH_DEFAULT_MM = 1.0;
+
+export type JoinTouchingResult = {
+  doc: DesignDoc;
+  /** Welds performed. Each one removes exactly one run. */
+  joined: number;
+  runsBefore: number;
+  runsAfter: number;
+  /** Selected runs with no endpoints to offer. */
+  skippedClosed: number;
+};
+
+type EndpointRef = { runId: string; endpoint: 'head' | 'tail'; x: number; y: number };
+
+// joinTouchingRuns welds every pair of selected runs whose ENDPOINTS meet,
+// folding them through `joinRuns` until nothing else touches (Tier 1 #128).
+//
+// The demo's complaint: typing "OPEN" at 200mm emits ten runs for four
+// letters, and the only way to make them continuous tube was the two-click
+// sidebar arm-then-pick flow, three steps per weld, behind a control that does
+// not appear until you have already picked the node tool and a run.
+//
+// WHAT IT CANNOT DO, AND WHY THAT IS NOT A SHORTFALL. It welds END to END.
+// "OPEN" goes from ten runs to five, and five is the floor: `E`'s middle bar
+// and `P`'s bowl tail land partway ALONG another stroke, not on its endpoint.
+// That is a T-junction — a physically different joint, made by welding a tube
+// onto the side of another — and it needs a vertex inserted into the target
+// first. Snapping a T onto a nearby endpoint to make the number look better
+// would move glass the operator drew, so this refuses to.
+//
+// Self-joins are excluded too (only DISTINCT runs pair up). A run whose own
+// ends meet is already one continuous tube; closing it into a loop is a
+// topology change with its own gesture — `isGeometricLoop` and the node menu's
+// "Break loop open here" (Tier 1 #127).
+//
+// DETERMINISM IS A REQUIREMENT, not a nicety: the same selection must weld the
+// same way every time, or the same design comes off the bench differently on
+// two afternoons. Each pass takes the CLOSEST touching pair, and ties break by
+// document order — never by the order the operator happened to shift-click.
+//
+// Every fold goes through `joinRuns` itself. A private concatenation path here
+// would be a fourth copy of the reverse-and-remap logic, and copies of it are
+// what shipped Bug #14 and Bug #15 — twice, under comments claiming the field
+// list was complete.
+export function joinTouchingRuns(
+  doc: DesignDoc,
+  runIds: readonly string[],
+  toleranceMM: number = JOIN_TOUCH_DEFAULT_MM,
+): JoinTouchingResult {
+  const wanted = new Set(runIds);
+  const runsBefore = doc.runs.filter((r) => wanted.has(r.id)).length;
+  const skippedClosed = doc.runs.filter((r) => wanted.has(r.id) && r.polyline.closed).length;
+  // A tolerance of 0 is legitimate and means "exactly coincident only" —
+  // font-derived geometry often is. A non-finite or negative one is a caller
+  // bug, and welding glass on the strength of a NaN is worse than declining.
+  if (!Number.isFinite(toleranceMM) || toleranceMM < 0) {
+    return { doc, joined: 0, runsBefore, runsAfter: runsBefore, skippedClosed };
+  }
+  const tol = toleranceMM;
+
+  // Pairs `joinRuns` declined. It signals refusal by returning the doc
+  // unchanged rather than throwing, so without this the loop would re-pick the
+  // same pair forever.
+  const refused = new Set<string>();
+  let joined = 0;
+
+  for (;;) {
+    // Endpoints in DOC order, which is what makes the tie-break stable.
+    const ends: EndpointRef[] = [];
+    for (const run of doc.runs) {
+      if (!wanted.has(run.id) || run.polyline.closed) continue;
+      const pts = run.polyline.points;
+      if (pts.length < 2) continue;
+      ends.push({ runId: run.id, endpoint: 'head', x: pts[0][0], y: pts[0][1] });
+      ends.push({
+        runId: run.id,
+        endpoint: 'tail',
+        x: pts[pts.length - 1][0],
+        y: pts[pts.length - 1][1],
+      });
+    }
+
+    let best: { a: EndpointRef; b: EndpointRef; d: number } | null = null;
+    for (let i = 0; i < ends.length; i++) {
+      for (let j = i + 1; j < ends.length; j++) {
+        const a = ends[i];
+        const b = ends[j];
+        if (a.runId === b.runId) continue; // no self-joins — see above
+        if (refused.has(`${a.runId}:${a.endpoint}|${b.runId}:${b.endpoint}`)) continue;
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d > tol) continue;
+        // Strict `<` keeps the first pair found — i.e. the doc-order one —
+        // when two candidates are equidistant, which is the common case at a
+        // corner where three strokes meet.
+        if (!best || d < best.d) best = { a, b, d };
+      }
+    }
+    if (!best) break;
+
+    const next = joinRuns(doc, best.a.runId, best.a.endpoint, best.b.runId, best.b.endpoint);
+    if (next === doc) {
+      refused.add(`${best.a.runId}:${best.a.endpoint}|${best.b.runId}:${best.b.endpoint}`);
+      continue;
+    }
+    // `joinRuns` keeps runA's id and drops runB, so runB leaves the selection.
+    wanted.delete(best.b.runId);
+    doc = next;
+    joined++;
+  }
+
+  return {
+    doc,
+    joined,
+    runsBefore,
+    runsAfter: doc.runs.filter((r) => wanted.has(r.id)).length,
+    skippedClosed,
+  };
+}
+
 // joinRuns merges two polylines into one. `endpointA` and `endpointB`
 // are 'head' (first vertex) or 'tail' (last vertex) — which end of each
 // run participates in the join. The implementation reverses one or both

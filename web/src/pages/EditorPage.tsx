@@ -1578,6 +1578,44 @@ export default function EditorPage() {
   // The toast is the only place the operator learns what the op traded away
   // — flattened curves, dropped electrodes — so it says all of it rather
   // than "Merged.".
+  // Tier 1 #128 — weld every touching pair in the selection, one undo step.
+  // Goes through `applyOp` (eager compute) like every other op dispatched from
+  // this panel; see breakOpenOnRun for why that matters.
+  function joinTouchingSelected(toleranceMM: number) {
+    if (!doc || selectedRunIds.length < 2) return;
+    const result = applyOp((prev) => ops.joinTouchingRuns(prev, selectedRunIds, toleranceMM));
+    if (!result) return;
+    if (result.joined === 0) {
+      // Saying nothing here is how this reads as broken. Name the reason.
+      const why = result.skippedClosed === result.runsBefore
+        ? 'every selected run is a closed loop, so none has an end to weld'
+        : `no two selected ends are within ${toleranceMM}mm of each other`;
+      setStatusMessage(`Nothing welded — ${why}.`);
+      return;
+    }
+    // Keep whatever survived selected so the operator can weld again at a
+    // wider tolerance without re-picking.
+    setSelectedRunIds(result.doc.runs.filter((r) => selectedRunIds.includes(r.id)).map((r) => r.id));
+    const bits = [
+      `Welded ${result.joined} joint${result.joined === 1 ? '' : 's'} — `
+        + `${result.runsBefore} runs into ${result.runsAfter}.`,
+    ];
+    if (result.skippedClosed > 0) {
+      bits.push(
+        `${result.skippedClosed} closed run${result.skippedClosed === 1 ? '' : 's'} skipped `
+          + '(no ends to weld).',
+      );
+    }
+    if (result.runsAfter > 1) {
+      // The honest footnote: what is left is usually a T, not a miss.
+      bits.push(
+        'Ends that meet partway ALONG another tube are T-junctions, not '
+          + 'end-to-end joins — insert a vertex there first.',
+      );
+    }
+    setStatusMessage(bits.join(' '));
+  }
+
   async function mergeOutlinesSelected() {
     if (!doc) return;
     const ids = selectedRunIds.slice();
@@ -2807,6 +2845,28 @@ export default function EditorPage() {
               picked: a union needs an inside, so an open polyline has
               nothing to contribute, and a disabled button with nothing
               selected is just more sidebar noise. */}
+          {/* Tier 1 #128 — weld the selection into continuous tube. Sits above
+              "Merge outlines" because it is the far more common intent: that
+              one unions closed OUTLINES before Neonize, this one welds drawn
+              strokes end to end. Shown for any 2+ selection rather than
+              gated on openness, because "why is this button missing" is a
+              worse experience than a message saying nothing touched. */}
+          {selectedRunIds.length >= 2 && (
+            <div className="arrange-section">
+              <div className="groups-header">
+                <h3>Join tubes</h3>
+              </div>
+              <p className="meta">
+                Welds every pair of selected runs whose ENDS meet into one continuous tube,
+                in one undo step. Ends that land partway along another tube are T-junctions
+                and are left alone — insert a vertex there first.
+              </p>
+              <JoinTouchingRow
+                count={selectedRunIds.length}
+                onJoin={joinTouchingSelected}
+              />
+            </div>
+          )}
           {closedSelectedCount >= 2 && (
             <div className="arrange-section">
               <div className="groups-header">
@@ -3338,6 +3398,44 @@ export default function EditorPage() {
         <PrintHost src={printSrc} onClose={() => setPrintSrc(null)} />
       )}
     </section>
+  );
+}
+
+// Tier 1 #128 — button + its tolerance. The tolerance is an input rather than
+// a constant because the right value depends on where the geometry came from:
+// font glyphs meet exactly, a traced bitmap does not. Local state, like
+// PathOpsRow's epsilon — it is UI-local and need not survive a reselect.
+function JoinTouchingRow({
+  count,
+  onJoin,
+}: {
+  count: number;
+  onJoin: (toleranceMM: number) => void;
+}) {
+  const [tol, setTol] = useState(ops.JOIN_TOUCH_DEFAULT_MM);
+  return (
+    <div className="path-ops-row">
+      <label className="diameter-picker">
+        Gap (mm)
+        {/* NumericField, not a raw number input: this is a millimetre value in
+            an imperial trade and 0.397 (1/64") has to be typeable. */}
+        <NumericField
+          min="0"
+          value={tol}
+          onChange={(e) => setTol(Number(e.target.value))}
+        />
+      </label>
+      <div className="path-ops-buttons">
+        <button
+          type="button"
+          className="btn-secondary"
+          onClick={() => onJoin(tol)}
+          title={`Weld every pair among the ${count} selected runs whose endpoints are within ${tol}mm of each other, folding them into continuous tubes. One undo step. T-junctions (an end landing partway along another tube) are not welded.`}
+        >
+          Join touching runs
+        </button>
+      </div>
+    </div>
   );
 }
 
