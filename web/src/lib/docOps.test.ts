@@ -6194,12 +6194,13 @@ describe('Tier 2 #135 — placeBlockoutsFromCrossings', () => {
       // (150,100) is raw vertex 0 — on the loop, but on the INACTIVE half
       // when direction is forward. Painting the nearest live glass there
       // would put paint 70mm from the crossing.
-      const dead = ops.placeBlockoutsFromCrossings(docOf([ring('forward')]), [
+      const forwardDoc = docOf([ring('forward')]);
+      const dead = ops.placeBlockoutsFromCrossings(forwardDoc, [
         { rule: CROSSING, x_mm: 150, y_mm: 100 },
       ]);
       expect(dead.placed).toBe(0);
       expect(dead.unresolved).toBe(1);
-      expect(dead.doc).toBe(dead.doc);
+      expect(dead.doc).toBe(forwardDoc);
 
       // Flip the direction and the same point is live glass, so it paints.
       const live = ops.placeBlockoutsFromCrossings(docOf([ring('backward')]), [
