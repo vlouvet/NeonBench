@@ -2699,20 +2699,6 @@ export default function EditorPage() {
               Block out {crossingFindingCount} crossing
               {crossingFindingCount === 1 ? '' : 's'}
             </button>
-            {crossingFindingCount > 0 && (
-              <label className="blockout-span-picker">
-                Block-out span (mm)
-                {/* NumericField, not a raw number input: a numeric `step`
-                    makes `min` a lattice and silently swallows the submit
-                    (CLAUDE.md recurring bug class 3). */}
-                <NumericField
-                  min="0"
-                  value={blockoutSpanInput}
-                  placeholder={`${(2 * projDiam).toFixed(1)} (2 × Ø)`}
-                  onChange={(e) => setBlockoutSpanInput(e.target.value)}
-                />
-              </label>
-            )}
             {/* Tier 2 #75 — one-click remedy for the max_segment_length
                 validator error. Disabled when the spec carries no limit, or
                 when nothing on the doc exceeds it. */}
@@ -2876,6 +2862,23 @@ export default function EditorPage() {
               </button>
             )}
           </div>
+          {crossingFindingCount > 0 && (
+            <label
+              className="diameter-picker"
+              title="Painted span per crossing. Blank derives it from the tube diameter (2 × Ø), which is the number measured against a rendered script: ~90mm severed the letterforms, ~2 diameters kills the bright X and leaves the letter readable."
+            >
+              Block-out span (mm)
+              {/* NumericField, not a raw number input: a numeric `step` makes
+                  `min` a lattice and silently swallows the submit (CLAUDE.md
+                  recurring bug class 3). */}
+              <NumericField
+                min="0"
+                value={blockoutSpanInput}
+                placeholder={`${(2 * projDiam).toFixed(1)} (2 × Ø)`}
+                onChange={(e) => setBlockoutSpanInput(e.target.value)}
+              />
+            </label>
+          )}
           {/* Tier 2 #90 — Arrange. Renders only with a live selection: with
               nothing picked every control would be disabled, which is just
               noise in an already-dense sidebar. Depth order works on one run
