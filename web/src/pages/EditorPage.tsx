@@ -35,7 +35,14 @@ import * as ops from '../lib/docOps';
 import { stepRepeat, stepRepeatPlan, type StepRepeatOptions } from '../lib/stepRepeat';
 import * as guides from '../lib/guides';
 import { hersheyRunsBBox, type HersheyRun } from '../lib/hershey/text';
-import { formatFootageMM, normalizeUnits, type DisplayUnits } from '../lib/units';
+import {
+  formatFootageMM,
+  formatLengthMM,
+  formatSizeMM,
+  normalizeUnits,
+  type DisplayUnits,
+} from '../lib/units';
+import { selectionMetrics } from '../lib/selectionMetrics';
 import { FONTS, type FontKey } from '../lib/hershey/fonts';
 import {
   isSessionEmpty,
@@ -740,6 +747,20 @@ export default function EditorPage() {
     // the closure fresh as those change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleIssueIndices, selectedIssueIndex, doc, report, textCaretActive]);
+
+  // Tier 1 #129 — flatten-aware size + glass length of the current selection,
+  // shared with the on-canvas label so the panel and the canvas can never
+  // disagree. Memoised because it walks every selected run's flattened
+  // geometry, and the sidebar re-renders on every pointer move.
+  //
+  // Declared HERE, above the loading/error early returns, because it is a
+  // hook: the three `return`s below make any hook after them conditional, and
+  // the doc-still-loading case is exactly when they fire. Hence the `doc &&`
+  // rather than relying on the guards underneath.
+  const selectionInfo = useMemo(
+    () => (doc ? selectionMetrics(doc, selectedRunIds) : null),
+    [doc, selectedRunIds],
+  );
 
   if (error) return <p className="error">{error}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
@@ -2726,6 +2747,35 @@ export default function EditorPage() {
               noise in an already-dense sidebar. Depth order works on one run
               (it permutes doc.runs, the draw order), so the gate is 1 rather
               than the 2 that align needs. */}
+          {/* Tier 1 #129 — how big is what I have selected. The demo's first
+              complaint: there was no width, no height and no length anywhere
+              in the editor, for one run or for many. Reads through the same
+              `selectionMetrics` the on-canvas label uses, so the panel and the
+              canvas can never disagree. */}
+          {selectionInfo && (
+            <div className="arrange-section selection-dimensions">
+              <div className="groups-header">
+                <h3>Dimensions</h3>
+              </div>
+              <p className="meta selection-size">
+                <strong>{formatSizeMM(selectionInfo.widthMM, selectionInfo.heightMM, displayUnits)}</strong>
+                {' '}w × h
+              </p>
+              <p
+                className="meta"
+                title={
+                  selectionInfo.closedCount > 0
+                    ? 'Total glass in the selection. A closed run counts its WHOLE perimeter, including the closing chord — not just the lit arc between its electrodes — because that is the tube that gets cut and bent, and it is what the "total tube" figure above sums.'
+                    : 'Total glass in the selection: the summed path length of every selected run.'
+                }
+              >
+                {formatLengthMM(selectionInfo.lengthMM, displayUnits)} tube
+                {selectionInfo.runCount > 1 && ` · ${selectionInfo.runCount} runs`}
+                {selectionInfo.closedCount > 0 &&
+                  ` · ${selectionInfo.closedCount} closed (full perimeter)`}
+              </p>
+            </div>
+          )}
           {selectedRunIds.length > 0 && (
             <div className="arrange-section">
               <div className="groups-header">

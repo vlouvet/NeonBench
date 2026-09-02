@@ -33,6 +33,7 @@ import {
 } from '../lib/inlineTextState';
 import CanvasRulers from './CanvasRulers';
 import { formatLengthMM, formatSizeMM, type DisplayUnits } from '../lib/units';
+import { selectionMetrics } from '../lib/selectionMetrics';
 import {
   RULER_PX,
   guidePositionMM,
@@ -1940,26 +1941,32 @@ export default function EditorCanvas({
   // feat-editor-scale-handles — axis-aligned bbox of the current selection
   // (Select tool, ≥1 run). null when there's nothing to resize or the
   // selection is too thin on an axis (resizing it would divide by zero).
+  //
+  // Tier 1 #129 — this walked `run.polyline.points` RAW, which broke the
+  // flatten-for-drawing rule and was worse than "the box is a bit small". At
+  // ARC_BULGE 0.5 an arc bows a quarter of its chord off that chord, so a
+  // two-vertex arc run measured 40 × 0 — under MIN_RESIZE_MM on the y axis —
+  // and the whole overlay returned null. Selecting an arc run gave you no
+  // resize handles AND no move handle, with nothing on screen to say why.
+  // `selectionBBoxMM` flattens first, so the box now contains the glass.
+  //
+  // The drag math below still scales the RAW control points, which is correct:
+  // `arcFor` bows by a fixed fraction of the chord, so scaling the chord
+  // scales the bow with it. Uniform scale is therefore exact. A non-uniform
+  // scale of an arc run is approximate — the arc is recomputed as a circle on
+  // the new chord rather than squashed into an ellipse — so the handle can sit
+  // a hair off the cursor there. That is a better trade than a box which does
+  // not enclose what it claims to.
+  const selectionMetricsForBox = useMemo(
+    () => (tool === 'select' ? selectionMetrics(doc, selectedRunIds) : null),
+    [doc, selectedRunIds, tool],
+  );
   const selectionResizeBox = useMemo(() => {
-    if (tool !== 'select' || selectedRunIds.length === 0) return null;
-    const ids = new Set(selectedRunIds);
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const run of doc.runs) {
-      if (!ids.has(run.id)) continue;
-      for (const [x, y] of run.polyline.points) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-    if (!Number.isFinite(minX)) return null;
-    if (maxX - minX < MIN_RESIZE_MM || maxY - minY < MIN_RESIZE_MM) return null;
-    return { minX, minY, maxX, maxY };
-  }, [doc.runs, selectedRunIds, tool]);
+    const m = selectionMetricsForBox;
+    if (!m) return null;
+    if (m.widthMM < MIN_RESIZE_MM || m.heightMM < MIN_RESIZE_MM) return null;
+    return m.bbox;
+  }, [selectionMetricsForBox]);
 
   // The 8 handles for a box: corners scale both axes, edge midpoints one. Each
   // carries its world position, the fixed anchor (opposite corner/edge), which
@@ -3429,6 +3436,31 @@ export default function EditorCanvas({
                   />
                 );
               })}
+              {/* Tier 1 #129 — the size of what is selected, above the box.
+                  Rendered here rather than only during a drag because the
+                  question "how big is this" is asked far more often than it is
+                  answered by changing it, and this costs one line of chrome.
+                  It recomputes from the doc every frame, so it reads live
+                  while a handle is dragged. Scaled by 1/k like every other
+                  overlay so it stays a constant size on screen. */}
+              {(() => {
+                const m = selectionMetricsForBox;
+                if (!m) return null;
+                const cx = (selectionResizeBox.minX + selectionResizeBox.maxX) / 2;
+                return (
+                  <text
+                    x={cx}
+                    y={selectionResizeBox.minY - 7 / transform.k}
+                    fontSize={11 / transform.k}
+                    fill="#3b82f6"
+                    textAnchor="middle"
+                    fontFamily="-apple-system, system-ui, sans-serif"
+                    className="selection-size-label"
+                  >
+                    {formatSizeMM(m.widthMM, m.heightMM, units)}
+                  </text>
+                );
+              })()}
               {/* Center grab handle — drag to translate the whole selection. */}
               {(() => {
                 const cx = (selectionResizeBox.minX + selectionResizeBox.maxX) / 2;
