@@ -1,8 +1,10 @@
 # Bug #17 — every cut straightens the glass: `splitRun` drops `segment_types`
 
-> **Status:** ready to implement · found 2026-09-01 while implementing Tier 3
-> #111 (PR "Make TS run length arc-aware"). The shape decision it was blocked
-> on has been made — see "The decision" below.
+> **Status:** done · found 2026-09-01 while implementing Tier 3 #111 (PR "Make
+> TS run length arc-aware"). The shape decision it was blocked on was made by
+> the repo owner — see "The decision" below — and implemented as described.
+> Outcome, including the two interactions it asked to be checked, is recorded
+> at the bottom under "As implemented".
 
 Two defects in the same family: an op that changes a run's point count or point
 order must carry `segment_types` (`CLAUDE.md` → Recurring bug classes → 1).
@@ -149,3 +151,112 @@ false. **Add it**: for a cut at a vertex, the arc-aware lengths of the pieces
 must sum to the original's. For a cut inside an arc, they must sum to the
 original minus exactly the glass lost on the one straightened segment — which
 is a number you can compute, not a tolerance to hand-wave.
+
+
+---
+
+## As implemented
+
+`web/src/lib/docOps.ts`:
+
+* **`splitRun`** builds each piece's `segment_types` through `segmentTypeAt`
+  rather than by slicing, so a piece comes out exactly `segmentCount(run)` long
+  even when the source array is malformed — which matters, because docs written
+  by the pre-fix `insertVertex` are already out there and an op that propagated
+  the malformation could not be the repair path. A closed source drops the
+  closing segment's entry along with the closing chord. A source with no array
+  does not grow one.
+* **`insertVertex`** splices two `'line'` entries in place of the segment the
+  vertex lands in, exactly as `insertDoubleback` splices five. The new vertex is
+  interpolated along the CHORD, so straightening that one segment is what the
+  geometry actually did; every other arc keeps its position and its side.
+* **`openClosedRunAtCrossing`** (private, the closed-run half of the raceway
+  splitter) had the same defect one call further down: it rotates a closed loop
+  into an open walk, which moves every `segment_types` index, and in the
+  mid-segment case adds two vertices — so the array came out both misaligned
+  and the wrong length. Fixed alongside, because leaving it would have meant
+  "split at raceway" still produced unsaveable docs for closed curved runs,
+  which is the case the fix exists for.
+
+`web/src/lib/docOps.test.ts` gained `expectWellFormedRun` / `expectWellFormedDoc`
+over a new exported `ops.segmentTypesWellFormed` — the TypeScript twin of the
+decoder's check, so the suite can assert at the op what the server could only
+assert at save time.
+
+### Interaction 1 — `autoSplitOverlongTubes` convergence: it MOSTLY converges
+
+Measured over 19,386 randomly generated curved runs (1–8 segments, 50–1000mm
+chords, ~60% arcs, random limits), each split and re-measured arc-aware:
+
+| retries used | cases |
+|---|---|
+| 0 (nominal `ceil(L/limit)`) | 18,930 |
+| 1 (`n+1`) | 452 |
+| 2 (`n+2`) | 3 |
+| budget exhausted, run left uncut | **1** |
+
+So the retry does real work now — before this fix every piece came back
+straight and `n` always sufficed — and one extra cut covers all but a handful.
+**It does not always converge**, and per the spec that is reported rather than
+papered over with a wider budget.
+
+The failure is structural, not float slop. `pieces` comes from the arc-aware
+length while `cutIntoEqualPieces` places its cuts in the CHORD metric, so a
+piece that happens to contain a whole INTACT arc measures up to 15.9% more
+glass than its chord. Raising `n` shrinks the pieces but does not guarantee a
+cut lands inside that arc, and once `n` is large the lattice can keep missing
+it across all three attempts. Minimal reproduction:
+
+```
+run    [[0,0],[2000,0],[2100,0]]  segment_types ["line","arc"]
+limit  125mm      L = 2115.878mm      nominal n = 17
+result runsSplit 0 — the run is left exactly as found
+```
+
+It needs a run ~15x the limit carrying a short arc, so it is out of reach at
+the stock 2500mm / 3000mm tube specs without a 37-metre polyline. Declining is
+the honest failure — the operator sees the run still flagged — where the
+pre-fix code "succeeded" by straightening the arc and dropping that glass from
+the takeoff. Pinned as a KNOWN LIMIT in `docOps.test.ts` ("declines rather than
+lying when the retry budget cannot clear an arc") and in the op's own header.
+
+**The real fix is an arc-aware cut walk**: `splitRunAtArcLength` sums chords
+over raw vertices, which is the same half of Tier 3 #111 that was deferred.
+Worth a follow-up row; widening the retry budget only moves the case.
+
+### Interaction 2 — the total-length assertion Tier 3 #111 left unwritten
+
+Written, in both forms the spec asked for:
+
+* cut AT a vertex — the pieces' arc-aware lengths sum to the original's to 9
+  decimal places, and `flatRunPoints(head) ++ flatRunPoints(tail)` equals
+  `flatRunPoints(original)`, with a negative control asserting the same
+  comparison FAILS against straightened pieces;
+* cut INSIDE an arc — they sum to the original minus exactly the bow of the one
+  straightened segment, computed rather than tolerated.
+
+One trap worth recording: the bow constant must be measured with
+`runLengthMM` (which flattens, as the Go validator does), not with
+`segmentLengthMM` (the ideal circular arc). The two differ by 0.2% — 47.6328 vs
+47.7357 for a 300mm chord — and deriving the constant from the formula makes
+every total-length assertion fail by exactly that sampling difference.
+
+### Still broken, out of this fix's scope
+
+The same audit, run over every op that changes a run's point count or order,
+found three more instances. None is on the split path, so they are left for a
+follow-up rather than widening this PR — but all three are pinned as FAILING
+tests in `docOps.test.ts` ("segment_types well-formedness across every
+point-count op"), so fixing one turns that block red and says which list to
+move it to:
+
+| op | symptom |
+|---|---|
+| `deleteVertex` | leaves the array at its old length — one entry too many, so the next save is a 400. Same failure as `insertVertex`, opposite sign |
+| `breakOpen` | length stays correct by luck (n closed segments → n open ones) but the array is NOT rotated, so after breaking a loop at vertex k every arc is k segments away from the glass it describes |
+| `moveOpening` | rotates the walk the same way and does not move the array with it |
+
+`racewayCrossings` is a fourth, different, gap: it finds crossings by walking
+raw chords, so a raceway that crosses an arc's bow but not its chord is not
+seen at all. That one is arc-awareness rather than bookkeeping, and belongs
+with the `splitRunAtArcLength` follow-up above.
