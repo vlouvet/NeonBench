@@ -275,3 +275,29 @@ func TestCircuitWithNoElectrodesBuysNothing(t *testing.T) {
 		t.Errorf("breakdown = %+v", got.Circuits)
 	}
 }
+
+// TestUndeclaredCircuitIDFallsBackToPerRun — a circuit_id naming nothing in
+// Doc.Circuits must derive exactly what it derived before this field existed.
+// designdoc's decoder rejects that shape so it cannot arrive over the wire,
+// but an in-memory doc must not silently lose its pairs to a typo'd id.
+// designdoc.RacewayTransformerCount makes the same choice.
+func TestUndeclaredCircuitIDFallsBackToPerRun(t *testing.T) {
+	d := fourLetters()
+	for i := range d.Runs {
+		d.Runs[i].CircuitID = "ghost" // never declared
+	}
+	got := compute(d)
+	if got.Summary.ElectrodePairs != 4 || got.Summary.PumpedSections != 4 {
+		t.Errorf("pairs=%d sections=%d, want 4/4 — an undeclared id must cap nothing",
+			got.Summary.ElectrodePairs, got.Summary.PumpedSections)
+	}
+	if got.Summary.CircuitCount != 0 || got.Circuits != nil {
+		t.Errorf("undeclared id invented a circuit: count=%d %+v",
+			got.Summary.CircuitCount, got.Circuits)
+	}
+	// Negative control: declaring it collapses to one pair.
+	d.Circuits = []designdoc.Circuit{{ID: "ghost"}}
+	if got := compute(d); got.Summary.ElectrodePairs != 1 {
+		t.Errorf("pairs = %d, want 1 once the circuit is declared", got.Summary.ElectrodePairs)
+	}
+}

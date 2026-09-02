@@ -238,6 +238,30 @@ func TestRacewayTransformerCountMixesCircuitedAndFree(t *testing.T) {
 	}
 }
 
+// TestUndeclaredCircuitIDFallsBackToPerRun — a run naming a circuit that is
+// not in Doc.Circuits must behave exactly as it did before circuits existed.
+// The decoder rejects that shape so it cannot arrive over the wire, but a doc
+// assembled in memory must not lose its electrode pair to a typo'd id, and
+// takeoff.Compute makes the same choice.
+func TestUndeclaredCircuitIDFallsBackToPerRun(t *testing.T) {
+	pair := []Electrode{{PointIndex: 0}, {PointIndex: 1}}
+	doc := &Doc{
+		Version: 1,
+		Runs: []Run{
+			{ID: "r1", RacewayID: "rw1", CircuitID: "ghost", Electrodes: pair},
+			{ID: "r2", RacewayID: "rw1", CircuitID: "ghost", Electrodes: pair},
+		},
+	}
+	if got := RacewayTransformerCount(doc, "rw1"); got != 2 {
+		t.Errorf("count = %d, want 2 — an undeclared circuit id must cap nothing", got)
+	}
+	// Negative control: declaring it caps to one.
+	doc.Circuits = []Circuit{{ID: "ghost"}}
+	if got := RacewayTransformerCount(doc, "rw1"); got != 1 {
+		t.Errorf("count = %d, want 1 once the circuit is declared", got)
+	}
+}
+
 // TestCircuitFlipsRacewayTransformerFit is the end-to-end claim of Tier 2
 // #136, driven through the exact bridge the server uses: RacewayInputs →
 // validate.CheckRaceways. The fixture is the Chachi case reduced — a 2170 mm

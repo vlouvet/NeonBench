@@ -98,6 +98,16 @@ func RacewayTransformerCount(doc *Doc, racewayID string) int {
 	}
 	electrodes := 0
 	spent := map[string]int{}
+	// Only ids that are actually declared cap anything. A run naming a circuit
+	// that is not in Doc.Circuits behaves exactly as it did before circuits
+	// existed — the decoder rejects that shape, so it is unreachable for
+	// anything persisted or posted, but a doc assembled in memory must not
+	// silently lose its pair to a typo'd id. takeoff.Compute makes the same
+	// choice; the two have to agree.
+	declared := make(map[string]bool, len(doc.Circuits))
+	for _, c := range doc.Circuits {
+		declared[c.ID] = true
+	}
 	for i := range doc.Runs {
 		run := &doc.Runs[i]
 		// The literal matches internal/takeoff/takeoff.go, which is where
@@ -106,7 +116,7 @@ func RacewayTransformerCount(doc *Doc, racewayID string) int {
 			continue
 		}
 		n := len(run.Electrodes)
-		if run.CircuitID != "" {
+		if declared[run.CircuitID] {
 			room := CircuitElectrodeCap - spent[run.CircuitID]
 			if room < 0 {
 				room = 0

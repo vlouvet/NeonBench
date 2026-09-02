@@ -375,7 +375,13 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 		// unless it belongs to a circuit that has already spent its budget.
 		elecs := run.Electrodes
 		circuit := circuits[run.CircuitID]
-		if run.CircuitID != "" {
+		// `circuit != nil` rather than `run.CircuitID != ""`: a run naming a
+		// circuit that is not in Doc.Circuits behaves exactly as it did
+		// before this field existed. designdoc's decoder rejects that shape,
+		// so it is unreachable for anything persisted or posted — but a doc
+		// assembled in memory must not silently lose its electrode pair to a
+		// typo'd id.
+		if circuit != nil {
 			room := budget[run.CircuitID]
 			if room < 0 {
 				room = 0
@@ -386,7 +392,7 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 			budget[run.CircuitID] = room - len(elecs)
 		}
 		t.Summary.ElectrodeCount += len(elecs)
-		if run.CircuitID == "" && len(elecs) >= 2 {
+		if circuit == nil && len(elecs) >= 2 {
 			// Pumped sections for circuit members are counted once per
 			// circuit after the loop — a circuit is one pumped section
 			// however many runs it is spliced from.
@@ -420,7 +426,7 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 		// interior ends are splices, and a splice has no lead-in.
 		glassMM := liveMM
 		switch {
-		case run.CircuitID != "":
+		case circuit != nil:
 			glassMM += float64(len(elecs)) * leadIn
 		case len(run.Electrodes) > 0:
 			glassMM += 2 * leadIn
