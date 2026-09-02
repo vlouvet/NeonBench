@@ -245,7 +245,10 @@ every total-length assertion fail by exactly that sampling difference.
 
 The same audit, run over every op that changes a run's point count or order,
 found three more instances. None is on the split path, so they are left for a
-follow-up rather than widening this PR:
+follow-up rather than widening this PR — but all three are pinned as FAILING
+tests in `docOps.test.ts` ("segment_types well-formedness across every
+point-count op"), so fixing one turns that block red and says which list to
+move it to:
 
 | op | symptom |
 |---|---|
