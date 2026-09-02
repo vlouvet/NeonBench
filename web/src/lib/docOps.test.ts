@@ -3,7 +3,13 @@ import type { DesignDoc, DesignRun, SegmentKind } from '../api';
 import * as ops from './docOps';
 import { rectToPoints } from './shapes/rect';
 import { circleToPoints } from './shapes/circle';
-import { flatRunPoints, isArcKind, segmentTypeAt, walkSegmentLengthMM } from './arcGeom';
+import {
+  flatRunPoints,
+  isArcKind,
+  segmentLengthMM,
+  segmentTypeAt,
+  walkSegmentLengthMM,
+} from './arcGeom';
 import { blockoutSegments, runArcs } from './runArcs';
 import { threePointArcToPoints } from './shapes/arc';
 
@@ -41,6 +47,39 @@ function makeDoc(): DesignDoc {
     view_box_mm: [0, 0, 60, 60],
     runs,
   };
+}
+
+// ---------------------------------------------------------------------------
+// The segment_types length invariant, shared so the whole suite can assert it.
+//
+// `ops.segmentTypesWellFormed` is the TypeScript twin of the check
+// `(*Polyline).UnmarshalJSON` runs in internal/designdoc/types.go. Until
+// Bug #17 that decoder was the ONLY thing in the system that checked it, and
+// it checks at SAVE time: an op that leaves the array the wrong length hands
+// back an editor that looks like it is working and 400s on the next save.
+// Asserting it here says which op broke it, at the op.
+//
+// Use `expectWellFormedRun` after ANY op that changes a run's point count or
+// point order. It is deliberately silent about a run with no array at all —
+// that is a pre-#78 run and means "every segment straight" — so pair it with
+// an assertion that the arcs you expect are still there, or it passes
+// vacuously on a run whose segment_types the op simply dropped.
+// ---------------------------------------------------------------------------
+function expectWellFormedRun(run: DesignRun) {
+  const st = run.polyline.segment_types;
+  const want = run.polyline.closed
+    ? run.polyline.points.length
+    : run.polyline.points.length - 1;
+  expect(
+    ops.segmentTypesWellFormed(run),
+    `run ${run.id}: segment_types ${JSON.stringify(st)} (${st?.length ?? 'absent'}) `
+    + `against ${run.polyline.points.length} points, closed=${run.polyline.closed}, `
+    + `want ${want} entries`,
+  ).toBe(true);
+}
+
+function expectWellFormedDoc(doc: DesignDoc) {
+  for (const r of doc.runs) expectWellFormedRun(r);
 }
 
 describe('electrode ops', () => {
@@ -2874,17 +2913,152 @@ describe('autoSplitOverlongTubes', () => {
   // point the whole split is abandoned and the run stays overlong — a
   // regression the earlier "is it over the limit" test cannot see.
   //
-  // NOTE the pieces come back STRAIGHT: `splitRun` drops `segment_types`, so
-  // cutting a curved run straightens it and the doc loses 143mm of glass.
-  // That is a pre-existing bug (reported with #111, not fixed here — a
-  // mid-arc cut has no representation in a fixed-bulge schema), so this
-  // asserts the piece count and the limit, not the total.
+  // The whole run is ONE arc segment, so the first cut lands inside it and
+  // straightens it (Bug #17's decision: a cut inside an arc straightens that
+  // segment and only that segment). Every piece is therefore straight and the
+  // doc keeps exactly the chord — which is the original glass minus the bow of
+  // the one segment that was cut, a number rather than a tolerance.
   it('still cuts a long arc run into enough pieces to clear the limit', () => {
+    const before = ops.runLengthMM(arcDoc(900).runs[0]);
     const res = ops.autoSplitOverlongTubes(arcDoc(900), 100);
     expect(res.runsSplit).toBe(1);
     expect(res.piecesCreated).toBe(11);
     expect(res.doc.runs).toHaveLength(11);
     for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(100);
+
+    // Tier 3 #111 left this assertion unwritten because straightening every
+    // arc made it false. Post-Bug #17 the loss is bounded and computable: the
+    // one arc the cuts went through, and nothing else.
+    const after = lengthsOf(res.doc).reduce((a, b) => a + b, 0);
+    expect(after).toBeCloseTo(900, 6);
+    expect(before - after).toBeCloseTo(before - 900, 9);
+  });
+
+  // The other half of the same decision, and the case the fix exists for: when
+  // the cuts land ON vertices nothing is straightened, so every arc survives
+  // and the doc keeps every millimetre of glass. Pre-fix this returned four
+  // straight 300mm pieces and 190mm of tube vanished from the takeoff.
+  it('keeps the arcs when the cuts land on vertices, and the glass with them', () => {
+    const curvy: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [300, 0], [600, 0], [900, 0], [1200, 0]],
+        closed: false,
+        segment_types: ['arc', 'arc_r', 'arc', 'arc'],
+      },
+    };
+    const before = ops.runLengthMM(curvy);
+    const res = ops.autoSplitOverlongTubes(docOf([curvy]), 348);
+    expect(res.piecesCreated).toBe(4);
+    for (const r of res.doc.runs) {
+      expect(r.polyline.points).toHaveLength(2);
+      expect(isArcKind(segmentTypeAt(r, 0))).toBe(true);
+    }
+    // Both sides of the bow survive as themselves — a fix that carried the
+    // array but normalised 'arc_r' to 'arc' would mirror that curve.
+    expect(res.doc.runs.map((r) => r.polyline.segment_types))
+      .toEqual([['arc'], ['arc_r'], ['arc'], ['arc']]);
+    const after = lengthsOf(res.doc).reduce((a, b) => a + b, 0);
+    expect(after).toBeCloseTo(before, 6);
+    for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(348);
+  });
+
+  // The coincidence Bug #17 breaks, and the reason the retry loop is not
+  // decoration. `pieces` comes from the ARC-AWARE length while the cuts are
+  // placed in the CHORD metric; until arcs survived a split those two agreed
+  // after the cut, because every piece came back straight. Now they don't:
+  // two chord-equal pieces of this run are 600mm of chord each, but the first
+  // is an intact arc measuring 695mm of glass, still over the limit. The
+  // postcondition catches it and n+1 clears it.
+  it('retries with more pieces when chord-equal pieces still exceed the limit', () => {
+    const mixed: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [600, 0], [1200, 0]],
+        closed: false,
+        segment_types: ['arc', 'line'],
+      },
+    };
+    const L = ops.runLengthMM(mixed);
+    const nominal = Math.max(2, Math.ceil(L / 650));
+    expect(nominal).toBe(2);
+
+    const res = ops.autoSplitOverlongTubes(docOf([mixed]), 650);
+    expect(res.runsSplit).toBe(1);
+    // One retry: n=2 leaves a 695mm arc piece, n=3 does not. Asserted as a
+    // COUNT rather than "it converged", because the budget is n+2 and knowing
+    // how much of it a real case eats is the point.
+    expect(res.piecesCreated).toBe(nominal + 1);
+    for (const pieceLength of lengthsOf(res.doc)) {
+      expect(pieceLength).toBeLessThanOrEqual(650);
+    }
+
+    // At a limit one arc-bow higher the first attempt succeeds and the arc
+    // survives whole — the retry is a response to the geometry, not a tax on
+    // every curved run.
+    const easier = ops.autoSplitOverlongTubes(docOf([mixed]), 700);
+    expect(easier.piecesCreated).toBe(2);
+    expect(easier.doc.runs[0].polyline.segment_types).toEqual(['arc']);
+  });
+
+  // KNOWN LIMIT, pinned deliberately (Bug #17). The retry is bounded at n+2
+  // and the cuts are placed in the chord metric, so a piece can contain a
+  // whole intact arc plus a length of line: its glass exceeds its chord by the
+  // arc's bow no matter how the lattice shifts, and if the lattice keeps
+  // missing the arc across all three attempts the op gives up and leaves the
+  // run ALONE. That needs the run to be ~15x the limit with a short arc on it
+  // — 2100mm against a 125mm limit here — so it is out of reach at the stock
+  // 2500mm/3000mm tube-spec limits without a 37-metre polyline.
+  //
+  // Declining is the honest failure: the operator sees the run still flagged.
+  // The pre-fix code "succeeded" here by straightening the arc and silently
+  // dropping 16mm of glass from the takeoff. The fix for the underlying
+  // mismatch is an arc-aware cut walk (splitRunAtArcLength sums chords), not
+  // a wider retry budget, and it is filed rather than guessed at here.
+  it('declines rather than lying when the retry budget cannot clear an arc', () => {
+    const stubborn: DesignRun = {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [2000, 0], [2100, 0]],
+        closed: false,
+        segment_types: ['line', 'arc'],
+      },
+    };
+    const doc = docOf([stubborn]);
+    const L = ops.runLengthMM(stubborn);
+    expect(L).toBeGreaterThan(125);
+    const res = ops.autoSplitOverlongTubes(doc, 125);
+    expect(res.runsSplit).toBe(0);
+    expect(res.piecesCreated).toBe(0);
+    // Left exactly as found — no half-cut doc, no straightened arc.
+    expect(res.doc).toBe(doc);
+    expect(res.doc.runs[0].polyline.segment_types).toEqual(['line', 'arc']);
+  });
+
+  // Every piece the pass emits has to be saveable, whatever route it took.
+  it('emits well-formed segment_types on every piece it creates', () => {
+    const shapes: DesignRun[] = [
+      { id: 'a', polyline: { points: [[0, 0], [900, 0]], closed: false, segment_types: ['arc'] } },
+      {
+        id: 'b',
+        polyline: {
+          points: [[0, 0], [300, 0], [600, 0], [900, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+      },
+      {
+        id: 'c',
+        polyline: {
+          points: [[0, 0], [300, 0], [300, 300], [0, 300]],
+          closed: true,
+          segment_types: ['arc', 'arc', 'arc', 'line'],
+        },
+      },
+    ];
+    for (const limit of [100, 250, 400, 700]) {
+      expectWellFormedDoc(ops.autoSplitOverlongTubes(docOf(shapes), limit).doc);
+    }
   });
 
   it('measures a closed arc-bearing loop as glass before deciding to open it', () => {
@@ -4758,15 +4932,6 @@ describe('neonize classification carry (Tier 3 #110)', () => {
 // the touch point also lands on the wrong segment in the meantime.
 // ---------------------------------------------------------------------------
 describe('segment_types survives vertex-count changes (Bug #16 neighbour audit)', () => {
-  // The invariant the Go decoder enforces: one entry per gap, plus the
-  // closing segment when the run is closed.
-  function expectWellFormed(run: DesignRun) {
-    const st = run.polyline.segment_types;
-    if (!st) return;
-    const n = run.polyline.points.length;
-    expect(st.length).toBe(run.polyline.closed ? n : n - 1);
-  }
-
   describe('simplifyRun', () => {
     // A long straight with redundant collinear vertices, then one arc. RDP
     // measures deviation from the CHORD, so it cannot see an arc's bow at all
@@ -4790,7 +4955,7 @@ describe('segment_types survives vertex-count changes (Bug #16 neighbour audit)'
       const out = ops.simplifyRun(doc(), 'a', 1).runs[0];
       // The collinear middles collapse, so something was actually dropped.
       expect(out.polyline.points.length).toBeLessThan(6);
-      expectWellFormed(out);
+      expectWellFormedRun(out);
     });
 
     it('keeps the arc: the drawn shape is unchanged where the curve lives', () => {
@@ -4844,7 +5009,7 @@ describe('segment_types survives vertex-count changes (Bug #16 neighbour audit)'
     it('splices four line entries into segment_types for the four new vertices', () => {
       const out = ops.insertDoubleback(doc(['line', 'arc']), 'a', 0, 0.5).runs[0];
       expect(out.polyline.points.length).toBe(7);
-      expectWellFormed(out);
+      expectWellFormedRun(out);
       // The arc was on segment 1 and must still be, four vertices later.
       expect(out.polyline.segment_types)
         .toEqual(['line', 'line', 'line', 'line', 'line', 'arc']);
@@ -4873,6 +5038,335 @@ describe('segment_types survives vertex-count changes (Bug #16 neighbour audit)'
       const out = ops.insertDoubleback(plain, 'a', 0, 0.5).runs[0];
       expect(out.polyline.points.length).toBe(7);
       expect('segment_types' in out.polyline).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bug #17 — splitRun dropped segment_types entirely and insertVertex left it
+// the wrong LENGTH.
+//
+// Two defects in CLAUDE.md's recurring bug class 1 (an op that changes a run's
+// point count forgetting a sibling field), and they fail differently:
+//
+//   splitRun straightened every arc on both pieces, so a 2782mm curved run
+//   came back as two 1200mm straights and 382mm of glass left the takeoff, the
+//   pattern and the DXF in one click — with the validator reporting the
+//   shorter number as fact. Silent.
+//
+//   insertVertex left the array one entry short, which the Go decoder rejects
+//   at unmarshal, so every subsequent save of that doc was a 400. Loud, but
+//   only at save time and only to the operator.
+//
+// The shape decision (repo owner, 2026-09-01, recorded in
+// specs/done/bug-17-splitrun-drops-arcs.md): a cut INSIDE an arc segment
+// straightens ONLY that segment, because there is no bulge value that draws
+// the two halves of a fixed-bulge arc. A cut AT a vertex is pure bookkeeping
+// and must preserve every arc exactly — that is what these tests pin.
+// ---------------------------------------------------------------------------
+describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
+  const CHORD = 300;
+  // The bow one 300mm chord gains by being drawn as an arc — the glass a
+  // straightening loses.
+  //
+  // MEASURED THE WAY THE CONSUMER MEASURES: runLengthMM sums chords over the
+  // FLATTENED curve (that is what the Go validator does, so it is the number
+  // that decides whether a run comes back flagged), which lands a shade under
+  // the ideal circular arc length that segmentLengthMM computes — 47.6328 vs
+  // 47.7357 here, 0.2%. Deriving this constant from the arc formula instead
+  // makes every total-length assertion below fail by exactly that sampling
+  // difference, which is a real trap rather than a hypothetical one.
+  const BOW = ops.runLengthMM({
+    id: 'bow',
+    polyline: { points: [[0, 0], [CHORD, 0]], closed: false, segment_types: ['arc'] },
+  }) - CHORD;
+
+  function docOf(runs: DesignRun[]): DesignDoc {
+    return { version: 1, view_box_mm: [0, 0, 2000, 2000], runs };
+  }
+
+  // Four segments, deliberately mixed: both sides of bow and one straight, so
+  // a helper that only recognises 'arc' cannot make these pass vacuously
+  // (CLAUDE.md bug class 7).
+  function arcRun(): DesignRun {
+    return {
+      id: 'r1',
+      polyline: {
+        points: [[0, 0], [300, 0], [600, 0], [900, 0], [1200, 0]],
+        closed: false,
+        segment_types: ['arc', 'arc_r', 'line', 'arc'],
+      },
+      tube_diameter_mm: 12,
+      color: 'classic-red',
+    };
+  }
+
+  describe('splitRun at a vertex', () => {
+    it('draws exactly the glass the original drew', () => {
+      // The invariant that actually pins this: the two pieces concatenate to
+      // the same flattened curve. Field assertions pass while the drawn shape
+      // is wrong, which is how this bug survived two previous fixes to the
+      // same function.
+      const src = arcRun();
+      const out = ops.splitRun(docOf([src]), 'r1', 2);
+      const [head, tail] = out.runs;
+      expectSamePoints(
+        [...flatRunPoints(head), ...flatRunPoints(tail).slice(1)],
+        flatRunPoints(src),
+      );
+    });
+
+    it('and the straightened pieces do NOT — the negative control', () => {
+      // The same comparison against the pieces the pre-fix code produced.
+      // Without this, "the points match" would be a claim about a test that
+      // has never been seen to fail.
+      const src = arcRun();
+      const out = ops.splitRun(docOf([src]), 'r1', 2);
+      const straighten = (r: DesignRun): DesignRun => ({
+        ...r,
+        polyline: { points: r.polyline.points, closed: r.polyline.closed },
+      });
+      expect(() => expectSamePoints(
+        [
+          ...flatRunPoints(straighten(out.runs[0])),
+          ...flatRunPoints(straighten(out.runs[1])).slice(1),
+        ],
+        flatRunPoints(src),
+      )).toThrow();
+    });
+
+    it('hands each piece the segments that belong to it', () => {
+      const out = ops.splitRun(docOf([arcRun()]), 'r1', 2);
+      expect(out.runs[0].polyline.segment_types).toEqual(['arc', 'arc_r']);
+      expect(out.runs[1].polyline.segment_types).toEqual(['line', 'arc']);
+      expectWellFormedDoc(out);
+    });
+
+    // Tier 3 #111 left this assertion deliberately unwritten because
+    // straightening made it false. It is the whole point of the fix.
+    it('preserves the total arc-aware length exactly', () => {
+      const src = arcRun();
+      const before = ops.runLengthMM(src);
+      const out = ops.splitRun(docOf([src]), 'r1', 2);
+      const after = out.runs.reduce((acc, r) => acc + ops.runLengthMM(r), 0);
+      expect(after).toBeCloseTo(before, 9);
+
+      // Stated in glass rather than in ratios: the run is 1200mm of chord
+      // carrying three bows, and the pre-fix pieces summed to the chord.
+      expect(before).toBeCloseTo(1200 + 3 * BOW, 9);
+      expect(ops.chordLengthMM(src.polyline.points, false)).toBeCloseTo(1200, 9);
+      expect(after).not.toBeCloseTo(1200, 3);
+
+      // And the flattened measure is the ideal circular arc to within the
+      // sampling error the flattener is documented to have — so `BOW` is a
+      // measurement of the right curve, not of whatever the sampler drew.
+      const idealBow = segmentLengthMM([0, 0], [CHORD, 0], 'arc') - CHORD;
+      expect(Math.abs(BOW - idealBow) / idealBow).toBeLessThan(0.003);
+    });
+
+    it('drops the closing segment with the closing glass on a closed source', () => {
+      const loop: DesignRun = {
+        id: 'sq',
+        polyline: {
+          points: [[0, 0], [300, 0], [300, 300], [0, 300]],
+          closed: true,
+          segment_types: ['arc', 'line', 'arc_r', 'arc'],
+        },
+      };
+      const out = ops.splitRun(docOf([loop]), 'sq', 2);
+      // Both pieces open, and the closing segment's entry ('arc', index 3)
+      // leaves with the closing chord rather than landing on other glass.
+      expect(out.runs[0].polyline.segment_types).toEqual(['arc', 'line']);
+      expect(out.runs[1].polyline.segment_types).toEqual(['arc_r']);
+      expectWellFormedDoc(out);
+      const drawn = [
+        ...flatRunPoints(out.runs[0]),
+        ...flatRunPoints(out.runs[1]).slice(1),
+      ];
+      // The open walk 0 -> 1 -> 2 -> 3 of the original loop, which is the
+      // closed flatten minus its closing arc.
+      const openSource: DesignRun = { ...loop, polyline: { ...loop.polyline, closed: false } };
+      expectSamePoints(drawn, flatRunPoints(openSource));
+    });
+
+    it('a run with no segment_types does not grow one', () => {
+      const plain: DesignRun = {
+        id: 'r1',
+        polyline: { points: [[0, 0], [300, 0], [600, 0], [900, 0]], closed: false },
+      };
+      const out = ops.splitRun(docOf([plain]), 'r1', 2);
+      for (const r of out.runs) expect('segment_types' in r.polyline).toBe(false);
+      // …and the JSON is byte-identical to what a pre-#78 doc holds.
+      expect(JSON.parse(JSON.stringify(out.runs[0].polyline)))
+        .toStrictEqual({ points: [[0, 0], [300, 0], [600, 0]], closed: false });
+    });
+
+    // The exact runs internal/server/segment_types_integration_test.go hands
+    // the validator. The Go side cannot call splitRun, so the two are pinned
+    // to each other here — the takeoff number that test asserts is only
+    // meaningful if these really are the runs the op emits.
+    it('emits the two polylines the API takeoff test posts', () => {
+      const bugReport: DesignRun = {
+        id: 'r1',
+        polyline: {
+          points: [[200, 700], [1400, 700], [2600, 700]],
+          closed: false,
+          segment_types: ['arc', 'arc'],
+        },
+        tube_diameter_mm: 12,
+      };
+      const out = ops.splitRun(docOf([bugReport]), 'r1', 1);
+      expect(out.runs.map((r) => JSON.stringify(r.polyline))).toEqual([
+        '{"points":[[200,700],[1400,700]],"closed":false,"segment_types":["arc"]}',
+        '{"points":[[1400,700],[2600,700]],"closed":false,"segment_types":["arc"]}',
+      ]);
+    });
+
+    it('a malformed source array still yields exact-length pieces', () => {
+      // Docs written by the pre-fix insertVertex are already out there. The Go
+      // decoder refuses them, so the repair path has to run through an op —
+      // and an op that propagated the malformation could not be that path.
+      const broken: DesignRun = {
+        id: 'r1',
+        polyline: {
+          points: [[0, 0], [300, 0], [600, 0], [900, 0], [1200, 0]],
+          closed: false,
+          segment_types: ['arc', 'arc_r'],
+        },
+      };
+      expect(ops.segmentTypesWellFormed(broken)).toBe(false);
+      const out = ops.splitRun(docOf([broken]), 'r1', 2);
+      expectWellFormedDoc(out);
+      expect(out.runs[0].polyline.segment_types).toEqual(['arc', 'arc_r']);
+      expect(out.runs[1].polyline.segment_types).toEqual(['line', 'line']);
+    });
+  });
+
+  describe('insertVertex', () => {
+    it('leaves an array the Go decoder will accept', () => {
+      const out = ops.insertVertex(docOf([arcRun()]), 'r1', 1, 0.5).runs[0];
+      expect(out.polyline.points.length).toBe(6);
+      expectWellFormedRun(out);
+    });
+
+    it('straightens only the segment the vertex lands in', () => {
+      const out = ops.insertVertex(docOf([arcRun()]), 'r1', 1, 0.5).runs[0];
+      // Segment 1 was 'arc_r'; its two halves are lines and every other arc
+      // keeps both its position and its SIDE.
+      expect(out.polyline.segment_types).toEqual(['arc', 'line', 'line', 'line', 'arc']);
+    });
+
+    it('loses exactly the bow of that one segment, and nothing else', () => {
+      const src = arcRun();
+      const before = ops.runLengthMM(src);
+      const after = ops.runLengthMM(ops.insertVertex(docOf([src]), 'r1', 1, 0.5).runs[0]);
+      // A number, not a tolerance: the 300mm chord that was an arc is now two
+      // collinear halves summing to 300.
+      expect(before - after).toBeCloseTo(BOW, 9);
+      expect(after).toBeCloseTo(1200 + 2 * BOW, 9);
+    });
+
+    it('inserting on a LINE segment costs no glass at all', () => {
+      const src = arcRun();
+      const before = ops.runLengthMM(src);
+      const out = ops.insertVertex(docOf([src]), 'r1', 2, 0.5).runs[0];
+      expect(ops.runLengthMM(out)).toBeCloseTo(before, 9);
+      expect(out.polyline.segment_types).toEqual(['arc', 'arc_r', 'line', 'line', 'arc']);
+    });
+
+    it('a run with no segment_types does not grow one', () => {
+      const plain: DesignRun = {
+        id: 'r1',
+        polyline: { points: [[0, 0], [300, 0], [600, 0]], closed: false },
+      };
+      const out = ops.insertVertex(docOf([plain]), 'r1', 0, 0.5).runs[0];
+      expect(out.polyline.points.length).toBe(4);
+      expect('segment_types' in out.polyline).toBe(false);
+    });
+
+    it('keeps a closed run closing entry at the end of the array', () => {
+      const loop: DesignRun = {
+        id: 'sq',
+        polyline: {
+          points: [[0, 0], [300, 0], [300, 300], [0, 300]],
+          closed: true,
+          segment_types: ['arc', 'line', 'arc_r', 'arc'],
+        },
+      };
+      const out = ops.insertVertex(docOf([loop]), 'sq', 0, 0.5).runs[0];
+      expect(out.polyline.segment_types).toEqual(['line', 'line', 'line', 'arc_r', 'arc']);
+      expectWellFormedRun(out);
+    });
+
+    // The exact bytes internal/server/segment_types_integration_test.go POSTs.
+    // The Go side cannot call this function, so the two are pinned to each
+    // other here: change the op's output and this fails, pointing at the
+    // fixture that has to move with it.
+    it('emits the polyline the API round-trip test posts', () => {
+      const src: DesignRun = {
+        id: 'r1',
+        polyline: {
+          points: [[0, 0], [300, 0], [600, 0]],
+          closed: false,
+          segment_types: ['arc', 'line'],
+        },
+      };
+      const out = ops.insertVertex(docOf([src]), 'r1', 0, 0.5).runs[0];
+      expect(JSON.stringify(out.polyline)).toBe(
+        '{"points":[[0,0],[150,0],[300,0],[600,0]],"closed":false,'
+        + '"segment_types":["line","line","line"]}',
+      );
+    });
+  });
+
+  describe('the ops that cut through both of them', () => {
+    it('splitTubesAtRaceway keeps the arcs off the cut and stays saveable', () => {
+      // A closed loop crossing the guideline at two vertices: the loop is
+      // opened at the first crossing (which ROTATES segment_types) and then
+      // cut, so this exercises the rotation and the split in one pass.
+      const doc: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 0 }],
+        runs: [{
+          id: 'sq',
+          polyline: {
+            points: [[0, 0], [300, 0], [300, 300], [0, 300]],
+            closed: true,
+            segment_types: ['line', 'arc', 'line', 'arc_r'],
+          },
+        }],
+      };
+      const res = ops.splitTubesAtRaceway(doc, 'rw1');
+      expect(res.runsSplit).toBe(1);
+      expectWellFormedDoc(res.doc);
+      // The crossings land on vertices, so nothing is straightened: both
+      // curved segments survive, each on its original side.
+      const kinds = res.doc.runs.flatMap((r) => r.polyline.segment_types ?? []);
+      expect(kinds.filter((k) => k === 'arc').length).toBe(1);
+      expect(kinds.filter((k) => k === 'arc_r').length).toBe(1);
+    });
+
+    it('an open run cut at a vertex by the raceway keeps its arcs', () => {
+      const doc: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 100 }],
+        runs: [{
+          id: 'o',
+          polyline: {
+            points: [[0, 0], [100, 100], [200, 200]],
+            closed: false,
+            segment_types: ['arc', 'arc_r'],
+          },
+        }],
+      };
+      const res = ops.splitTubesAtRaceway(doc, 'rw1');
+      expect(res.runsSplit).toBe(1);
+      expectWellFormedDoc(res.doc);
+      expect(res.doc.runs.map((r) => r.polyline.segment_types))
+        .toEqual([['arc'], ['arc_r']]);
+      expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
     });
   });
 });
