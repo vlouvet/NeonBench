@@ -327,6 +327,35 @@ func emitPath(buf *bytes.Buffer, indices []int, pl *Polyline, closed, isBlockout
 		}
 		fmt.Fprintf(buf, "L%s %s ", fmtFloat(p[0]), fmtFloat(p[1]))
 	}
+	// Bug #18 — the CLOSING segment carries a type like every other one. The
+	// loop above only ever asks about steps between two entries of `indices`,
+	// so the wrap-around step points[n-1] -> points[0] never got asked and fell
+	// through to a bare Z: a straight chord on screen and in print, while
+	// FlatPoints (and therefore every length, takeoff and hit test) had already
+	// walked the curve. setSegmentType exposes this segment on a closed run, and
+	// a full circle drawn as four arcs needs it.
+	//
+	// The index is taken as n-1 directly rather than through
+	// SegmentIndexBetween: at n == 2 that helper's "b == a-1" case wins over its
+	// wrap case and answers segment 0 traversed backwards, which would retrace
+	// the outbound arc instead of drawing the closing one. FlatPoints takes n-1
+	// directly too, and the drawn shape has to agree with the measured one.
+	//
+	// The guard pins the invariant this relies on: `closed` is only ever set for
+	// a walk over the whole polyline in index order (see liveArcIndices and
+	// splitByBlockouts), so the pen is sitting on points[n-1] here. If that ever
+	// stops holding we emit the old bare Z rather than a curve hanging off the
+	// wrong vertex.
+	if closed && len(indices) == n && indices[0] == 0 && indices[n-1] == n-1 {
+		if seg := n - 1; IsArcType(pl.SegmentType(seg)) {
+			for _, c := range ArcCubics(points[seg], points[0], pl.SegmentType(seg), false) {
+				fmt.Fprintf(buf, "C%s %s %s %s %s %s ",
+					fmtFloat(c.C1X), fmtFloat(c.C1Y),
+					fmtFloat(c.C2X), fmtFloat(c.C2Y),
+					fmtFloat(c.X), fmtFloat(c.Y))
+			}
+		}
+	}
 	if closed {
 		buf.WriteByte('Z')
 	}

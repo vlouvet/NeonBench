@@ -1,8 +1,13 @@
 # Bug #18 — a closed run's closing segment is drawn straight and measured curved
 
-> **Status:** open · found 2026-09-01 while implementing Tier 3 #111.
-> Not fixed there: the fix lands in `runArcs.ts` and `internal/designdoc`, both
-> outside that task's file scope.
+> **Status:** done · found 2026-09-01 while implementing Tier 3 #111.
+> Fixed by the "honour it" option. A THIRD consumer with the same hole turned up
+> during the fix and moved with the twins: `RenderFromDoc` in
+> `internal/printpdf/render.go` closed a closed run with a straight `LineTo`, so
+> the bender's printed pattern would have kept the chord after the canvas and
+> the SVG learned the curve. The DXF emitter was already correct — it writes a
+> vertex bulge for `SegmentType(i)` at every vertex including `n-1`, so a
+> closing arc has always reached CAM.
 
 ## Symptom
 

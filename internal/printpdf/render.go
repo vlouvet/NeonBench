@@ -659,6 +659,32 @@ func RenderFromDoc(doc *designdoc.Doc, opts Options, projectDiameterMM float64) 
 							}
 							pdf.LineTo(px, py)
 						}
+						// Bug #18 — the closing segment of a closed run is a
+						// segment like any other and may be an arc. The walk
+						// above only asks about steps between two entries of
+						// seg.Indices, so this one has to ask separately or the
+						// bender is handed a straight chord where the screen,
+						// the DXF bulge and every length already say curve. Same
+						// tail as emitPath in internal/designdoc/convert.go —
+						// n-1 taken directly (SegmentIndexBetween answers the
+						// non-wrap segment at n == 2), and guarded on the walk
+						// really being the whole polyline in index order.
+						if seg.Closed && len(seg.Indices) == nPts &&
+							seg.Indices[0] == 0 && seg.Indices[nPts-1] == nPts-1 {
+							if si := nPts - 1; designdoc.IsArcType(run.Polyline.SegmentType(si)) {
+								for _, c := range designdoc.ArcCubics(
+									run.Polyline.Points[si],
+									run.Polyline.Points[0],
+									run.Polyline.SegmentType(si),
+									false,
+								) {
+									c1x, c1y := toPage(c.C1X, c.C1Y)
+									c2x, c2y := toPage(c.C2X, c.C2Y)
+									ex, ey := toPage(c.X, c.Y)
+									pdf.CurveBezierCubicTo(c1x, c1y, c2x, c2y, ex, ey)
+								}
+							}
+						}
 						if seg.Closed {
 							pdf.LineTo(sx, sy)
 						}
