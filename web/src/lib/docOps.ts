@@ -83,6 +83,30 @@ function mapRun(doc: DesignDoc, runId: string, fn: (run: DesignRun) => DesignRun
   return { ...doc, runs: doc.runs.map((r) => (r.id === runId ? fn(r) : r)) };
 }
 
+// segmentTypesWellFormed is the TypeScript twin of the check
+// `(*Polyline).UnmarshalJSON` runs in internal/designdoc/types.go: an array
+// that is present must hold exactly one entry per segment, and only known
+// values.
+//
+// It exists because that decoder was, until Bug #17, the ONLY thing in the
+// system that checked it — and it checks at save time, which is the worst
+// possible moment to find out. An op that leaves the array the wrong length
+// hands the operator an editor that looks like it is working and 400s on
+// every subsequent save (`insertVertex` did exactly this), and an op that
+// leaves it the right length but misaligned moves each arc onto glass it does
+// not describe with no error at all. Either way the fault is in the op, and
+// this is what lets a test say so at the op rather than at the server.
+//
+// Mirrors the Go reading of absent-or-empty: no array means every segment is a
+// straight line, which is what keeps the field omittable and every pre-#78
+// document byte-identical.
+export function segmentTypesWellFormed(run: DesignRun): boolean {
+  const st = run.polyline.segment_types;
+  if (!st || st.length === 0) return true;
+  if (st.length !== segmentCount(run)) return false;
+  return st.every((t) => t === 'line' || isArcKind(t));
+}
+
 export function placeElectrode(doc: DesignDoc, runId: string, pointIndex: number): DesignDoc {
   return mapRun(doc, runId, (run) => {
     const existing = run.electrodes ?? [];
@@ -1259,6 +1283,11 @@ export function connectTubes(
 // position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
 // index segmentIndex + 1; everything after shifts up by 1.
 //
+// The vertex is placed on the CHORD, so the segment it lands in is
+// straightened (both halves come back 'line') while every other arc on the run
+// keeps its type — see the segment_types block below for why a fixed-bulge
+// schema leaves no other honest answer.
+//
 // Index-shifting follows the same pattern as insertDoubleback's bigger
 // 4-vertex splice — anchors strictly before the insertion stay put,
 // anchors at or after the insertion bump by 1. live_index handling for
@@ -1290,9 +1319,37 @@ export function insertVertex(
     ];
     const shiftPoint = (i: number) => (i >= k + 1 ? i + 1 : i);
     const shiftLive = (i: number) => (i >= k + 1 ? i + 1 : i);
+
+    // segment_types shifts with the points, exactly as insertDoubleback's
+    // bigger splice does. Segment k becomes the two halves k and k+1 and
+    // everything after slides up by one. Left as found the array was both the
+    // WRONG LENGTH — internal/designdoc/types.go rejects that at unmarshal, so
+    // the next save is a 400 and the operator loses the edit with no idea why
+    // (Bug #17 defect B) — and mis-indexed, moving every later arc one segment
+    // off the glass it describes.
+    //
+    // Both halves are 'line': the new vertex is placed by interpolating the
+    // CHORD, so the cut segment's bow has nowhere to live. ARC_BULGE is fixed
+    // at 0.5 and halving a bulge-0.5 arc needs bulge ~0.2361 on each half, so
+    // there is no value of this field that draws the two halves of the curve
+    // the operator drew. Straightening the ONE segment the vertex lands in is
+    // the repo owner's decision (Bug #17); every other arc on the run keeps
+    // its type, which is the whole difference from the old behaviour of
+    // straightening all of them. Only rebuilt when an array already exists,
+    // so a pre-#78 run doesn't grow one.
+    const polyline = { ...run.polyline, points: newPts };
+    if (run.polyline.segment_types) {
+      polyline.segment_types = [
+        ...run.polyline.segment_types.slice(0, k),
+        'line' as SegmentKind,
+        'line' as SegmentKind,
+        ...run.polyline.segment_types.slice(k + 1),
+      ];
+    }
+
     return {
       ...run,
-      polyline: { ...run.polyline, points: newPts },
+      polyline,
       electrodes: run.electrodes
         ? run.electrodes.map((e) => ({ ...e, point_index: shiftPoint(e.point_index) }))
         : run.electrodes,
@@ -1681,18 +1738,42 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
     }
   }
 
+  // segment_types travels with the segments it describes. Index i is the
+  // segment LEAVING vertex i, so the head keeps [0, pointIndex) and the tail
+  // takes the rest re-based to its own vertex 0. A CLOSED source loses its
+  // closing segment along with the closing glass, so that entry is dropped
+  // with it.
+  //
+  // Dropping the array — which is what this did until Bug #17 — straightened
+  // EVERY arc on both pieces: a 2782mm curved run came back as two 1200mm
+  // straights, 382mm of glass gone from the takeoff, the pattern and the DXF
+  // in one click, with the validator reporting the shorter number as fact.
+  //
+  // Built through segmentTypeAt rather than by slicing, so the pieces come out
+  // exactly `segmentCount` long even if the source array was short or long —
+  // the Go decoder rejects a mismatch at unmarshal and that is a failed save,
+  // not a rendering quirk. A source with no array does not grow one.
+  const typesFor = (offset: number, count: number): SegmentKind[] | undefined => {
+    if (!run.polyline.segment_types) return undefined;
+    const out: SegmentKind[] = [];
+    for (let j = 0; j < count; j++) out.push(segmentTypeAt(run, offset + j));
+    return out;
+  };
+  const aTypes = typesFor(0, aPts.length - 1);
+  const bTypes = typesFor(pointIndex, bPts.length - 1);
+
   function withMeta(
     id: string,
     points: [number, number][],
+    segTypes: SegmentKind[] | undefined,
     electrodes: Electrode[],
     blockouts: Blockout[],
     annotations: Annotation[],
     bends: Bend[],
   ): DesignRun {
-    const next: DesignRun = {
-      id,
-      polyline: { points, closed: false },
-    };
+    const polyline: DesignRun['polyline'] = { points, closed: false };
+    if (segTypes) polyline.segment_types = segTypes;
+    const next: DesignRun = { id, polyline };
     if (run!.tube_diameter_mm != null) next.tube_diameter_mm = run!.tube_diameter_mm;
     if (run!.color != null) next.color = run!.color;
     if (run!.notes != null) next.notes = run!.notes;
@@ -1710,8 +1791,8 @@ export function splitRun(doc: DesignDoc, runId: string, pointIndex: number): Des
     return next;
   }
 
-  const aRun = withMeta(aId, aPts, aElectrodes, aBlockouts, aAnnotations, aBends);
-  const bRun = withMeta(bId, bPts, bElectrodes, bBlockouts, bAnnotations, bBends);
+  const aRun = withMeta(aId, aPts, aTypes, aElectrodes, aBlockouts, aAnnotations, aBends);
+  const bRun = withMeta(bId, bPts, bTypes, bElectrodes, bBlockouts, bAnnotations, bBends);
 
   // Replace the original run in-place (preserves position in the run list)
   // with the two new runs.
@@ -3093,6 +3174,25 @@ export type AutoSplitResult = {
 // The postcondition is therefore real rather than nominal: no run on the
 // returned doc exceeds `maxLengthMM`.
 //
+// SINCE BUG #17 THE RETRY DOES REAL WORK, and it can also run out. `pieces`
+// comes from the arc-aware length while the cuts are placed in the chord
+// metric; those two used to agree after the cut only because `splitRun`
+// straightened everything it touched. Now a piece that contains a whole
+// INTACT arc measures up to 15.9% more glass than its chord, so a set of
+// chord-equal pieces can each still be over the limit — a real retry, not
+// float slop, measured at one retry on ordinary curved runs.
+//
+// When the lattice of cuts keeps missing a short arc across all three
+// attempts, no attempt satisfies the postcondition and the run is left
+// UNCUT and uncounted (see the bail-out below). Reproduced at a 2000mm line
+// followed by a 100mm arc against a 125mm limit — it needs a run ~15x the
+// limit carrying a short arc, so it is out of reach at the stock 2500mm and
+// 3000mm tube specs without a 37-metre polyline. Declining is the honest
+// failure: the operator sees the run still flagged, where the pre-#17 code
+// "succeeded" by straightening the arc and dropping that glass from the
+// takeoff. The fix is an arc-aware cut walk (`splitRunAtArcLength` sums
+// chords), not a wider retry budget — widening it just moves the case.
+//
 // Closed runs: an electrodeless decorative loop is opened at vertex 0
 // (duplicating it as the last vertex, which preserves every live index)
 // and then split, per spec — the operator places electrodes afterwards.
@@ -3183,14 +3283,16 @@ export function autoSplitOverlongTubes(
     // when the produced geometry doesn't actually clear the limit. It comes
     // from the arc-aware length — the count the drawn glass needs — not from
     // the chord sum the cuts are placed with. On a curved run that means one
-    // or two more pieces than the straightened chord strictly requires, which
-    // is the safe direction: too few pieces is a run that comes back flagged.
+    // or two more pieces than the chord strictly requires, which is the safe
+    // direction: too few pieces is a run that comes back flagged.
     const pieces = Math.max(2, Math.ceil(length / maxLengthMM));
     let applied: DesignDoc | null = null;
     let appliedPieces = 0;
-    // At most two retries: n, n+1, n+2. Floating-point slop is
-    // sub-picometre, so one extra cut always suffices in practice; the
-    // bound keeps a pathological doc from spinning.
+    // At most two retries: n, n+1, n+2. One extra cut clears both the
+    // float-slop case and the surviving-arc case on ordinary geometry; the
+    // bound keeps a pathological doc from spinning, at the cost of the
+    // uncuttable case described in the header — which leaves the run alone
+    // rather than shortening it.
     for (let attempt = 0; attempt < 3 && applied === null; attempt++) {
       const n = pieces + attempt;
       const candidate = cutIntoEqualPieces(out, sourceId, chordMM, n);
@@ -3198,10 +3300,9 @@ export function autoSplitOverlongTubes(
       const overlong = candidate.pieceIds.some((id) => {
         const r = candidate.doc.runs.find((x) => x.id === id);
         // Arc-aware, so the postcondition is stated in the validator's terms.
-        // Today every piece comes back straight — `splitRun` drops
-        // `segment_types`, so cutting a curved run straightens it — and this
-        // reads the same as a chord sum. It stops reading the same the moment
-        // that is fixed, which is the point.
+        // Since Bug #17 the pieces keep their arcs, so this genuinely differs
+        // from a chord sum — it is what catches a chord-equal piece that is
+        // still over the limit as glass, and what drives the retry above.
         return r ? runLengthMM(r) > maxLengthMM : false;
       });
       if (!overlong) {
@@ -3701,9 +3802,22 @@ function openClosedRunAtCrossing(
   // already a vertex we rotate to it and duplicate it, exactly as breakOpen
   // does.
   const k = at.segmentIndex;
+  const hasTypes = !!run.polyline.segment_types;
   let rotated: [number, number][];
+  // segment_types rotates with the vertices. Index i is the segment LEAVING
+  // vertex i, and this walk starts somewhere else, so every entry moves —
+  // leaving the array as found both mis-indexes each arc and (in the
+  // mid-segment case, which adds two vertices) makes it the wrong length,
+  // which the Go decoder turns into a 400 on the next save. Same family as
+  // Bug #17's splitRun: this is the closed-run half of the raceway split.
+  let rotTypes: SegmentKind[] | undefined;
   if (at.t <= RACEWAY_ON_LINE_TOL_MM) {
     rotated = [...pts.slice(k), ...pts.slice(0, k), pts[k]];
+    // n+1 vertices, so n segments: new segment j is old segment (k+j) mod n.
+    if (hasTypes) {
+      rotTypes = [];
+      for (let j = 0; j < n; j++) rotTypes.push(segmentTypeAt(run, (k + j) % n));
+    }
   } else {
     const p1 = pts[k];
     const p2 = pts[(k + 1) % n];
@@ -3716,12 +3830,24 @@ function openClosedRunAtCrossing(
     const after = pts.slice(k + 1);
     const before = pts.slice(0, k + 1);
     rotated = [cut, ...after, ...before, cut];
+    // n+2 vertices, so n+1 segments. The two ends are the halves of old
+    // segment k, which the cut point straightens (it is placed on the chord);
+    // the n-1 segments between them are untouched arcs, walked in order from
+    // k+1. Straightening only the segment the cut lands in is the Bug #17
+    // decision, applied here for the same reason it applies to insertVertex.
+    if (hasTypes) {
+      rotTypes = ['line'];
+      for (let j = 1; j < n; j++) rotTypes.push(segmentTypeAt(run, (k + j) % n));
+      rotTypes.push('line');
+    }
   }
 
   return mapRun(doc, runId, (r) => {
+    const polyline = { ...r.polyline, points: rotated, closed: false };
+    if (rotTypes) polyline.segment_types = rotTypes;
     const next: DesignRun = {
       ...r,
-      polyline: { ...r.polyline, points: rotated, closed: false },
+      polyline,
     };
     // Direction is meaningless on an open run (runArcs walks the whole
     // polyline); a stale value would misdirect the live-arc walk later.
