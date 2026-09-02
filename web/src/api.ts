@@ -541,6 +541,47 @@ export type UpdateTubeSpecBody = {
 
 export type VectorizeCrop = { x: number; y: number; w: number; h: number };
 
+/**
+ * The raster→mm mapping the tracer actually used (Tier 1 #132). Mirrors the
+ * Go `sourceFrame` in internal/server/handlers_vectorize.go.
+ *
+ * `target_width_mm` on the request describes the RASTER, not the artwork
+ * inside it. Pass the artwork's width instead and every returned coordinate
+ * comes back scaled by the padding ratio, with nothing in the response saying
+ * so. Register the result through this frame instead of inferring the scale.
+ *
+ * `affine` is `[a, b, c, d, e, f]` in SVG `matrix(...)` order, mapping raster
+ * pixel space to the mm space of the returned coordinates:
+ *   mm.x = a*px.x + c*px.y + e
+ *   mm.y = b*px.x + d*px.y + f
+ * It is invertible, so a caller that rendered its artwork into a padded raster
+ * can recover the artwork's placement exactly. `mm_per_px` is the same scale
+ * for callers that only need the number; the server emits both from one
+ * derivation so they cannot disagree.
+ *
+ * Do NOT register by fitting the returned centerline's bbox onto the
+ * artwork's — a skeleton's bbox is inset from its outline's by about half a
+ * stroke width per side, so that fit overshoots by roughly
+ * `1 + strokeWidth/extent`.
+ */
+export type VectorizeSourceFrame = {
+  raster_px: [number, number];
+  mm_per_px: number;
+  origin_mm: [number, number];
+  affine: [number, number, number, number, number, number];
+};
+
+/**
+ * What POST /api/projects/{id}/vectorize returns: the created design version,
+ * plus the frame the trace used. `source_frame` is optional — an SVG
+ * pass-through import has no raster, and an older server omits it entirely —
+ * so it stays off the shared `DesignVersion` type, which is decoded server-side
+ * with DisallowUnknownFields.
+ */
+export type VectorizeResponse = DesignVersion & {
+  source_frame?: VectorizeSourceFrame;
+};
+
 export type VectorizeRequest = {
   asset_id: number;
   target_width_mm: number;
@@ -676,7 +717,7 @@ export const api = {
   assetURL: (projectId: number, assetId: number) =>
     `/api/projects/${projectId}/assets/${assetId}`,
   vectorize: (projectId: number, body: VectorizeRequest) =>
-    req<DesignVersion>(`/api/projects/${projectId}/vectorize`, {
+    req<VectorizeResponse>(`/api/projects/${projectId}/vectorize`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
