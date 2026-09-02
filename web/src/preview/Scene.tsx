@@ -373,6 +373,7 @@ export default function Scene({
   doc,
   defaultDiameterMM,
   presetRequest,
+  initialPreset = 'front',
   selectedGroupId = null,
   backgroundColor = '#1a1a1a',
   ambientIntensity = 0.3,
@@ -387,6 +388,16 @@ export default function Scene({
   defaultDiameterMM?: number;
   /** When this changes (by nonce), Scene animates the camera to the named preset. */
   presetRequest?: PresetRequest;
+  /**
+   * The preset the camera *snaps* to on first doc load. Defaults to
+   * `'front'` (the historical behaviour). Tier 3 #137 wires this to
+   * `?preset=` so a shared or automated URL opens already framed,
+   * rather than flying in from the front view — the headless capture
+   * would otherwise have to wait out the animation, and a driver
+   * waiting on a fixed timer is exactly the kind of moving part this
+   * task set out to remove.
+   */
+  initialPreset?: CameraPreset;
   /**
    * Tier 3 #63 — when non-null/non-empty, restrict rendered runs to
    * those whose `group_id` matches. Camera-fit, wall-plane sizing,
@@ -525,14 +536,14 @@ export default function Scene({
     if (didInitialFitRef.current) return;
     if (!doc) return;
     const bbox = bboxOfDoc(doc, effectiveGroupId);
-    const { position, target } = cameraPositionForPreset('front', bbox);
+    const { position, target } = cameraPositionForPreset(initialPreset, bbox);
     camera.position.copy(position);
     if (controlsRef.current) {
       controlsRef.current.target.copy(target);
       controlsRef.current.update();
     }
     didInitialFitRef.current = true;
-  }, [doc, camera, effectiveGroupId]);
+  }, [doc, camera, effectiveGroupId, initialPreset]);
 
   // Tier 3 #63 — when the user changes the focused group (URL → prop)
   // the camera should reframe to the new bbox. We re-use the front-
