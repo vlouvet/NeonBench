@@ -5459,6 +5459,22 @@ describe('segment_types well-formedness across every point-count op', () => {
       ]);
       return [d, ops.joinRuns(d, 'a', 'tail', 'b', 'head')];
     }],
+    // Tier 2 #134 — folds through joinRuns, so it changes point count and
+    // point order and belongs in this sweep on its own account.
+    ['joinRunsAlongArtwork', () => {
+      const d = docOf([
+        openArcRun(),
+        {
+          id: 'b',
+          polyline: {
+            points: [[300, 0], [400, 0], [500, 0]],
+            closed: false,
+            segment_types: ['arc', 'line'],
+          },
+        },
+      ]);
+      return [d, ops.joinRunsAlongArtwork(d, ['a', 'b']).doc];
+    }],
     ['moveVertices', () => {
       const d = before1();
       return [d, ops.moveVertices(d, 'a', [{ pointIndex: 1, x: 150, y: 40 }])];
@@ -5547,7 +5563,8 @@ describe('segment_types well-formedness across every point-count op', () => {
     const swept = new Set(passing.map(([name]) => name.replace(/ .*/, '')));
     for (const op of [
       'splitRun', 'insertVertex', 'insertDoubleback', 'simplifyRun', 'reverseRun',
-      'joinRuns', 'moveVertices', 'autoSplitOverlongTubes', 'splitTubesAtRaceway',
+      'joinRuns', 'joinRunsAlongArtwork', 'moveVertices', 'autoSplitOverlongTubes',
+      'splitTubesAtRaceway',
       'deleteVertex', 'breakOpen', 'moveOpening', 'closeGeometricLoop',
     ]) {
       expect(swept.has(op), `${op} is not covered by the well-formedness sweep`).toBe(true);

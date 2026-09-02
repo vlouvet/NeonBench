@@ -45,6 +45,14 @@ import {
   segmentTypeAt,
 } from './arcGeom';
 import {
+  HOP_CORRIDOR_DIAMETERS,
+  HOP_CORRIDOR_MAX_DIAMETERS,
+  HOP_SAMPLE_DIAMETERS,
+  artworkFromRuns,
+  effectiveTubeDiameterMM as hopTubeDiameterMM,
+  hopStaysOnArtwork,
+} from './onArtwork';
+import {
   offsetOpenPolyline,
   offsetPolygon,
   type CornerStyle,
@@ -2494,6 +2502,252 @@ export function joinTouchingRuns(
     runsBefore,
     runsAfter: doc.runs.filter((r) => wanted.has(r.id)).length,
     skippedClosed,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 #134 — join fragments back into runs, ALONG THE ARTWORK.
+//
+// The tracer splits a run at every junction, so a connected script comes back
+// as ~50 fragments meeting in V-shaped wedges. A bender runs one tube through
+// as much of a script as possible and splices only where necessary; until this
+// op there was no way to say so.
+//
+// THE CONSTRAINT IS THE FEATURE, and it is worth being blunt about why. On
+// Chachi's job a naive greedy join swept like this:
+//
+//     near     runs   glass    transformers   raceway
+//     35 mm     15     80 ft        15        does not fit
+//     90 mm      9     60 ft         9        FITS
+//    120 mm      6     50 ft         6        FITS
+//
+// Every number improves. Fewer runs, less glass, fewer transformers, and the
+// raceway/transformer conflict the validator found simply evaporates. All of
+// it came from letting the tube leave the letterforms and cut diagonally
+// across blank sign face — which is not a sign, it is a scribble. It was
+// caught by rendering the runs in per-run colours and looking at them. NO
+// NUMBER IN THE TAKEOFF SAYS IT, because a shortcut across the face really is
+// shorter.
+//
+// So: the acceptance criterion here is emphatically NOT "fewest runs". A hop
+// whose path leaves the artwork is refused, and the count of refusals is part
+// of the result — an operator who cannot see what was declined cannot tell a
+// tight design from a broken op. With the constraint on, the same sweep tops
+// out at 12-14 runs and the raceway still does not fit. That is the honest
+// answer, and defaults are NOT to be tuned until it fits.
+//
+// RELATIONSHIP TO #128. `joinTouchingRuns` welds ends that ALREADY MEET and
+// refuses to invent travel; that is still the right first gesture and this op
+// does not replace it. This one decides where a tube is ALLOWED TO TRAVEL to
+// reach an end that meets nothing. Both fold through `joinRuns` — a private
+// concatenation path here would be the fourth copy of the reverse-and-remap
+// logic, and copies of it are what shipped Bug #14 and Bug #15.
+//
+// NOT AN AUTOMATIC PASS. It changes run count, glass and transformer count —
+// fabrication cost. A pass that silently restructured a design would be the
+// same class of error as the cheating join, one level up.
+// ---------------------------------------------------------------------------
+
+// Default reach for a hop. The tightest row of the sweep above, which is also
+// the only one that did not cheat. Bigger values are the operator's call and
+// the on-artwork test still has to pass at any of them.
+export const JOIN_ALONG_NEAR_DEFAULT_MM = 35;
+
+// A hop this op declined, kept so the UI can say what it refused and (later)
+// draw it. Deduped by endpoint geometry, not by run id — see the memo below.
+export type RefusedHop = {
+  from: [number, number];
+  to: [number, number];
+  gapMM: number;
+  /** Distance from the worst sample to the nearest glass. */
+  worstOffsetMM: number;
+  /** Where that sample was. */
+  worstPoint: [number, number];
+};
+
+export type JoinAlongArtworkOptions = {
+  /** Max endpoint separation considered for a hop. */
+  nearMM?: number;
+  /** Project tube spec diameter, for runs carrying no override. */
+  projectDiameterMM?: number;
+  /** Corridor half-width in tube diameters. Capped — see HOP_CORRIDOR_MAX_DIAMETERS. */
+  corridorDiameters?: number;
+  /** Sample spacing in tube diameters. */
+  sampleDiameters?: number;
+};
+
+export type JoinAlongArtworkResult = {
+  doc: DesignDoc;
+  /** Welds performed. Each one removes exactly one run. */
+  joined: number;
+  /** Hops within reach that were declined because the path left the artwork. */
+  refusedOffArtwork: number;
+  /** The declined hops themselves, worst-offset first. */
+  refused: RefusedHop[];
+  /** Hops `joinRuns` itself declined (degenerate input); not an artwork call. */
+  refusedByJoin: number;
+  runsBefore: number;
+  runsAfter: number;
+  /** Selected runs with no ends to offer. */
+  skippedClosed: number;
+  /** The corridor actually applied, after the cap. For the UI to state. */
+  corridorMM: number;
+  /** The sample spacing actually applied. For the UI to state. */
+  sampleMM: number;
+};
+
+// joinRunsAlongArtwork welds selected runs whose ends are within `nearMM` AND
+// whose connecting hop stays on drawn glass, closest pair first, folding each
+// through `joinRuns`.
+//
+// THE ARTWORK IS THE WHOLE DOC, not the selection. "Blank sign face" is a
+// property of the design, not of what happens to be highlighted; a hop that
+// runs along an unselected stroke is on the artwork by any reading a bender
+// would accept, and scoping the corridor to the selection would refuse it for
+// a reason that has nothing to do with glass.
+//
+// DETERMINISM, as in #128: each pass takes the closest eligible pair and ties
+// break by document order, never by the order the operator shift-clicked.
+export function joinRunsAlongArtwork(
+  doc: DesignDoc,
+  runIds: readonly string[],
+  opts: JoinAlongArtworkOptions = {},
+): JoinAlongArtworkResult {
+  const wanted = new Set(runIds);
+  const runsBefore = doc.runs.filter((r) => wanted.has(r.id)).length;
+  const skippedClosed = doc.runs.filter((r) => wanted.has(r.id) && r.polyline.closed).length;
+
+  // The corridor and the sampling are derived from the largest tube in the
+  // selection: the corridor answers "could this glass be where the tube goes",
+  // and the widest tube is the one that has to fit. One number for the whole
+  // op rather than one per pair, because it is a number the operator reads off
+  // the panel and has to be able to reason about.
+  const selected = doc.runs.filter((r) => wanted.has(r.id));
+  const baseDiameterMM = selected.reduce(
+    (acc, r) => Math.max(acc, hopTubeDiameterMM(r, opts.projectDiameterMM)),
+    0,
+  ) || hopTubeDiameterMM(undefined, opts.projectDiameterMM);
+
+  const corridorReq = opts.corridorDiameters !== undefined && opts.corridorDiameters > 0
+    ? opts.corridorDiameters
+    : HOP_CORRIDOR_DIAMETERS;
+  // The cap is the whole reason this op can be trusted; see the constant.
+  const corridorMM = Math.min(corridorReq, HOP_CORRIDOR_MAX_DIAMETERS) * baseDiameterMM;
+  const sampleReq = opts.sampleDiameters !== undefined && opts.sampleDiameters > 0
+    ? opts.sampleDiameters
+    : HOP_SAMPLE_DIAMETERS;
+  const sampleMM = sampleReq * baseDiameterMM;
+
+  const nearMM = opts.nearMM !== undefined ? opts.nearMM : JOIN_ALONG_NEAR_DEFAULT_MM;
+  const empty: JoinAlongArtworkResult = {
+    doc,
+    joined: 0,
+    refusedOffArtwork: 0,
+    refused: [],
+    refusedByJoin: 0,
+    runsBefore,
+    runsAfter: runsBefore,
+    skippedClosed,
+    corridorMM,
+    sampleMM,
+  };
+  // A reach of 0 is legitimate ("only ends that already coincide"). A negative
+  // or non-finite one is a caller bug, and welding glass on a NaN is worse
+  // than declining.
+  if (!Number.isFinite(nearMM) || nearMM < 0) return empty;
+
+  // Joining never moves a vertex — `joinRuns` concatenates point lists — so
+  // the glass the corridor measures against is the same before and after every
+  // weld. Build the flattened artwork ONCE.
+  const artwork = artworkFromRuns(doc.runs);
+
+  // The memo is keyed on ENDPOINT GEOMETRY, not on run ids. `joinRuns` keeps
+  // runA's id for the merged run, so after one weld the id `a` names a
+  // different pair of ends than it did — a run-id key would then suppress a
+  // hop it never actually judged. The verdict depends only on the two points
+  // and the (unchanging) artwork, so the geometric key is exactly right.
+  const key = (p: readonly [number, number], q: readonly [number, number]) => {
+    const a = `${p[0].toFixed(4)},${p[1].toFixed(4)}`;
+    const b = `${q[0].toFixed(4)},${q[1].toFixed(4)}`;
+    return a <= b ? `${a}|${b}` : `${b}|${a}`;
+  };
+  const judged = new Set<string>();
+  const refused: RefusedHop[] = [];
+  let refusedByJoin = 0;
+  let joined = 0;
+
+  for (;;) {
+    // Endpoints in DOC order, which is what makes the tie-break stable.
+    const ends: EndpointRef[] = [];
+    for (const run of doc.runs) {
+      if (!wanted.has(run.id) || run.polyline.closed) continue;
+      const pts = run.polyline.points;
+      if (pts.length < 2) continue;
+      ends.push({ runId: run.id, endpoint: 'head', x: pts[0][0], y: pts[0][1] });
+      ends.push({
+        runId: run.id,
+        endpoint: 'tail',
+        x: pts[pts.length - 1][0],
+        y: pts[pts.length - 1][1],
+      });
+    }
+
+    let best: { a: EndpointRef; b: EndpointRef; d: number } | null = null;
+    for (let i = 0; i < ends.length; i++) {
+      for (let j = i + 1; j < ends.length; j++) {
+        const a = ends[i];
+        const b = ends[j];
+        if (a.runId === b.runId) continue; // no self-joins — a loop is its own gesture
+        if (judged.has(key([a.x, a.y], [b.x, b.y]))) continue;
+        const d = Math.hypot(a.x - b.x, a.y - b.y);
+        if (d > nearMM) continue;
+        // Strict `<` keeps the doc-order pair when two are equidistant.
+        if (!best || d < best.d) best = { a, b, d };
+      }
+    }
+    if (!best) break;
+
+    const from: [number, number] = [best.a.x, best.a.y];
+    const to: [number, number] = [best.b.x, best.b.y];
+    const verdict = hopStaysOnArtwork(from, to, artwork, corridorMM, sampleMM);
+    if (!verdict.onArtwork) {
+      judged.add(key(from, to));
+      refused.push({
+        from,
+        to,
+        gapMM: verdict.gapMM,
+        worstOffsetMM: verdict.worstOffsetMM,
+        worstPoint: verdict.worstPoint,
+      });
+      continue;
+    }
+
+    const next = joinRuns(doc, best.a.runId, best.a.endpoint, best.b.runId, best.b.endpoint);
+    if (next === doc) {
+      // `joinRuns` signals refusal by returning the doc unchanged rather than
+      // throwing, so without the memo the loop would re-pick this pair forever.
+      judged.add(key(from, to));
+      refusedByJoin++;
+      continue;
+    }
+    // `joinRuns` keeps runA's id and drops runB, so runB leaves the selection.
+    wanted.delete(best.b.runId);
+    doc = next;
+    joined++;
+  }
+
+  refused.sort((x, y) => y.worstOffsetMM - x.worstOffsetMM);
+  return {
+    doc,
+    joined,
+    refusedOffArtwork: refused.length,
+    refused,
+    refusedByJoin,
+    runsBefore,
+    runsAfter: doc.runs.filter((r) => wanted.has(r.id)).length,
+    skippedClosed,
+    corridorMM,
+    sampleMM,
   };
 }
 
