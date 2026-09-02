@@ -23,6 +23,14 @@ type Request struct {
 	Crop        *Crop   // nil = full image (post-rotation coordinates)
 	Brightness  int     // -100..+100, 0 = no change
 	Contrast    float64 // 0.5..2.0, 0 or 1 = no change
+
+	// Curves additionally fits a smooth centerline (centripetal
+	// Catmull-Rom cubics) through the polyline vertices and returns it in
+	// Result.Curves / Result.CurvesSVG. It is a rendering extra: it does
+	// not touch SmoothingMM, the polyline, or Result.SVG. Default false,
+	// so a caller that does not ask pays nothing and gets exactly what it
+	// gets today.
+	Curves bool
 }
 
 // Result holds the output of a successful vectorize call.
@@ -34,6 +42,13 @@ type Result struct {
 	HeightMM      float64
 	ThresholdUsed uint8
 	Polylines     []MMPolyline // optional fast-path for callers skipping SVG round-trip
+
+	// Curves / CurvesSVG are populated only when Request.Curves is set.
+	// They are a smooth *picture* of the same centerline; Polylines and
+	// SVG remain the fabrication source of truth. See the emission site in
+	// VectorizeRaster and internal/vectorize/curvefit.go.
+	Curves    []CurvePath
+	CurvesSVG []byte
 }
 
 const (
@@ -42,9 +57,10 @@ const (
 )
 
 // VectorizeRaster runs the centerline-extraction pipeline:
-//   decode raster → binarize → Zhang-Suen thin → classify pixels →
-//   merge thick junction clusters → walk graph into polylines → prune
-//   spurs (iterate until stable) → convert to mm → RDP simplify → emit SVG.
+//
+//	decode raster → binarize → Zhang-Suen thin → classify pixels →
+//	merge thick junction clusters → walk graph into polylines → prune
+//	spurs (iterate until stable) → convert to mm → RDP simplify → emit SVG.
 //
 // The output SVG has paths in mm coordinates with a viewBox in mm so the
 // downstream validator and design-doc parsers see identity-mapped paths.
@@ -125,7 +141,7 @@ func VectorizeRaster(ctx context.Context, req Request) (*Result, error) {
 	}
 
 	svg := EmitSVG(mmPolys, req.TargetWidthMM, heightMM)
-	return &Result{
+	res := &Result{
 		SVG:           svg,
 		WidthPx:       widthPx,
 		HeightPx:      heightPx,
@@ -133,7 +149,25 @@ func VectorizeRaster(ctx context.Context, req Request) (*Result, error) {
 		HeightMM:      heightMM,
 		ThresholdUsed: req.Threshold,
 		Polylines:     mmPolys,
-	}, nil
+	}
+
+	// The polyline above is the fabrication source of truth — it is what the
+	// bender bends and what the design doc is built from; the curves below
+	// are for pictures only and are emitted into a separate document so they
+	// can never be mistaken for it.
+	if req.Curves {
+		curves := make([]CurvePath, 0, len(mmPolys))
+		for _, mp := range mmPolys {
+			cp := FitCurve(mp)
+			if len(cp.Cubics) == 0 {
+				continue
+			}
+			curves = append(curves, cp)
+		}
+		res.Curves = curves
+		res.CurvesSVG = EmitCurvesSVG(curves, req.TargetWidthMM, heightMM)
+	}
+	return res, nil
 }
 
 // polylinesToBinary rebuilds a 1-pixel-wide skeleton image from a set of
