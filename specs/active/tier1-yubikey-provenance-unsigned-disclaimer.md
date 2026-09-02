@@ -1,7 +1,16 @@
 # Tier 1 — YubiKey provenance signing + "unsigned binary" disclaimer
 
 > **Status:** active · drafted 2026-06-05 · **rewritten 2026-08-24 for FIDO reality** ·
-> requested by user · partially shipped in v0.1.0
+> requested by user · **signing shipped; the disclaimer surfaces are what remain**
+>
+> **Status refreshed 2026-09-02.** The header read "partially shipped in v0.1.0"
+> for three releases after that stopped being true. Tags are signed (v0.1.0,
+> v0.2.0, v0.4.0 verify; **v0.3.0 is annotated only** — it degraded silently, so
+> check `git cat-file tag vX.Y.Z | grep "BEGIN SSH SIGNATURE"` after tagging),
+> `SHA256SUMS.sig` is produced and verified by `scripts/sign-release.sh`, and
+> `docs/allowed_signers` is in the repo. Neither hygiene check in AGENTS.md can
+> catch a header like the old one: the spec is not duplicated in `done/` and has
+> no `todo.md` row to disagree with. Same trap as `tier1-70-self-update.md`.
 
 ## Goal
 
