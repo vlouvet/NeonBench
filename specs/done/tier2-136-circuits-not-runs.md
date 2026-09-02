@@ -1,7 +1,19 @@
 # Tier 2 #136 — Transformers should hang off circuits, not runs
 
-> **Status:** active · drafted 2026-09-02 · branch `task/2-circuits`
+> **Status:** done · drafted 2026-09-02 · shipped in PR #200 from `task/2-circuits`
 > · source: [`docs/proof-workflow-gaps.md`](../../docs/proof-workflow-gaps.md) B2
+>
+> **Deliverable 5 was implemented differently from what this spec asked for,
+> and deliberately.** "Glass yield reported per circuit — the 90 ft / 26 ft gap
+> is the number a shop most wants to see move" reads as an instruction to ceil
+> sticks per circuit. That would **under-order glass**: four 700 mm letters in
+> one circuit are four separate physical pieces of bent glass and need four
+> sticks, while `ceil(2800/1219)` says three. Sticks therefore stay **per run**,
+> `CircuitSummary.StickCount` is the sum over members rather than a re-ceil, and
+> what is reported per circuit is a genuine breakdown. The 90/26 gap belongs to
+> Tier 2 #134 (joining fragments into runs), not to this row; the glass that
+> does move here is the lead-in allowance, which follows the electrodes. See the
+> PR body for the worked numbers.
 
 ## Goal
 
