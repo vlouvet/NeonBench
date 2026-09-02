@@ -63,6 +63,19 @@ function summary(over: Partial<TakeoffSummary> = {}): TakeoffSummary {
   };
 }
 
+describe('quantityRows circuits row (Tier 2 #136)', () => {
+  it('is absent on a takeoff that models no circuits', () => {
+    const keys = quantityRows(summary()).map(([k]) => k);
+    expect(keys).not.toContain('Circuits');
+  });
+
+  it('appears once circuits exist', () => {
+    const rows = quantityRows(summary({ circuit_count: 3 }));
+    const row = rows.find(([k]) => k === 'Circuits');
+    expect(row?.[1]).toContain('3');
+  });
+});
+
 describe('quantityRows', () => {
   it('labels a derived backing area as a bounding box', () => {
     const rows = quantityRows(summary());

@@ -10,6 +10,7 @@ import type {
   Annotation,
   Bend,
   Blockout,
+  Circuit,
   Guideline,
   DesignDoc,
   DesignRun,
@@ -3862,6 +3863,146 @@ export function setGroupLocked(
   }
   next[idx] = replacement;
   return { ...doc, groups: next };
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 #136 — circuits
+//
+// A circuit is the WIRING grouping: several runs the shop will splice into one
+// continuous tube, in series between one pair of electrodes, on one
+// transformer. It is not a Group (an editor selection convenience) and not a
+// Raceway (a box); a run can legitimately be in all three.
+//
+// These ops only ever move the `circuit_id` FK and the `circuits` array. None
+// of them touches electrodes — the takeoff CAPS its derivation at one pair per
+// circuit, which is a different thing from deleting the electrodes a designer
+// placed, and conflating the two would silently rewrite the drawing.
+//
+// The Go decoder rejects a `circuit_id` naming no circuit, so `dissolveCircuit`
+// clearing its members' FKs is load-bearing, not tidiness: leave one behind and
+// the next save 400s.
+// ---------------------------------------------------------------------------
+
+// nextCircuitId returns the lowest unused id of the form `${prefix}${n}`
+// (n starting at 1), defaulting to "c1", "c2", … Mirrors nextGroupId /
+// nextRunId: ids that don't match the pattern are ignored, so a hand-edited
+// doc using names like "left-bank" doesn't eat integer slots.
+export function nextCircuitId(doc: DesignDoc, prefix: string = 'c'): string {
+  const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
+  const taken = new Set<number>();
+  for (const c of doc.circuits ?? []) {
+    const m = re.exec(c.id);
+    if (m) taken.add(parseInt(m[1], 10));
+  }
+  let n = 1;
+  while (taken.has(n)) n++;
+  return `${prefix}${n}`;
+}
+
+// createCircuit allocates a fresh circuit and assigns the named runs to it,
+// returning the new doc plus the id so the caller can wire follow-up UI without
+// re-deriving it.
+//
+// One run is a legal circuit. Unlike a Group — where a one-member group is
+// meaningless clutter — a single-run circuit is a real statement ("this run is
+// its own transformer"), and more importantly it is the starting point for
+// dragging more runs in.
+//
+// Run ids not present in the doc are silently dropped, so a stale selection
+// from a deleted run can't strand the editor.
+export function createCircuit(
+  doc: DesignDoc,
+  runIds: string[],
+  name?: string,
+): { doc: DesignDoc; circuitId: string } {
+  const circuitId = nextCircuitId(doc);
+  const entry: Circuit = { id: circuitId };
+  const trimmed = name?.trim();
+  if (trimmed) entry.name = trimmed;
+  const circuits: Circuit[] = [...(doc.circuits ?? []), entry];
+  const next = assignRunsToCircuit({ ...doc, circuits }, runIds, circuitId);
+  return { doc: next, circuitId };
+}
+
+// assignRunsToCircuit sets `circuit_id` on the named runs. Re-assigning an
+// already-circuited run REPLACES its membership (a run is in zero or one
+// circuits — series wiring is a chain, not a lattice); the old circuit entry
+// stays and simply loses that member.
+//
+// Passing an empty circuitId REMOVES the runs from whatever circuit they were
+// in. The field is deleted rather than set to '' so the encoded JSON matches
+// the Go side's omitempty shape.
+//
+// No-ops on an id that names no circuit, and returns the same object reference
+// when nothing changed, so `editDoc`'s identity check doesn't push a spurious
+// undo entry.
+export function assignRunsToCircuit(
+  doc: DesignDoc,
+  runIds: string[],
+  circuitId: string,
+): DesignDoc {
+  const targets = new Set(runIds);
+  if (targets.size === 0) return doc;
+  if (circuitId && !(doc.circuits ?? []).some((c) => c.id === circuitId)) return doc;
+  let changed = false;
+  const runs = doc.runs.map((r) => {
+    if (!targets.has(r.id)) return r;
+    if ((r.circuit_id ?? '') === circuitId) return r;
+    changed = true;
+    const nextRun: DesignRun = { ...r };
+    if (circuitId) nextRun.circuit_id = circuitId;
+    else delete nextRun.circuit_id;
+    return nextRun;
+  });
+  if (!changed) return doc;
+  return { ...doc, runs };
+}
+
+// dissolveCircuit removes the circuit entry AND clears every member's
+// `circuit_id`. Both halves are required: a dangling FK is a 400 on the next
+// save, which is exactly the failure mode Tier 3 #140 recorded for raceways.
+export function dissolveCircuit(doc: DesignDoc, circuitId: string): DesignDoc {
+  if (!circuitId) return doc;
+  const existing = doc.circuits ?? [];
+  const hasEntry = existing.some((c) => c.id === circuitId);
+  const hasMember = doc.runs.some((r) => r.circuit_id === circuitId);
+  if (!hasEntry && !hasMember) return doc;
+  const circuits = existing.filter((c) => c.id !== circuitId);
+  const runs = doc.runs.map((r) => {
+    if (r.circuit_id !== circuitId) return r;
+    const next: DesignRun = { ...r };
+    delete next.circuit_id;
+    return next;
+  });
+  return { ...doc, runs, circuits };
+}
+
+// renameCircuit updates one circuit's display name. An empty name drops the
+// key entirely (the editor then labels the circuit by its id), keeping the
+// encoded JSON in the shape the Go struct's omitempty produces.
+export function renameCircuit(
+  doc: DesignDoc,
+  circuitId: string,
+  newName: string,
+): DesignDoc {
+  if (!circuitId) return doc;
+  const circuits = doc.circuits ?? [];
+  const idx = circuits.findIndex((c) => c.id === circuitId);
+  if (idx < 0) return doc;
+  const trimmed = newName.trim();
+  if ((circuits[idx].name ?? '') === trimmed) return doc;
+  const next = circuits.slice();
+  const replacement: Circuit = { ...next[idx] };
+  if (trimmed) replacement.name = trimmed;
+  else delete replacement.name;
+  next[idx] = replacement;
+  return { ...doc, circuits: next };
+}
+
+// circuitMemberIds lists the runs wired into one circuit, in doc order.
+export function circuitMemberIds(doc: DesignDoc, circuitId: string): string[] {
+  if (!circuitId) return [];
+  return doc.runs.filter((r) => r.circuit_id === circuitId).map((r) => r.id);
 }
 
 // scalePoints scales a list of points about an anchor: p' = anchor + (p -

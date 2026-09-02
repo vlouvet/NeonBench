@@ -6422,3 +6422,122 @@ describe('Tier 2 #135 — placeBlockoutsFromCrossings', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tier 2 #136 — circuits
+// ---------------------------------------------------------------------------
+describe('circuits', () => {
+  function circuitDoc(): DesignDoc {
+    const mk = (id: string, y: number): DesignRun => ({
+      id,
+      polyline: { points: [[0, y], [100, y]], closed: false },
+      electrodes: [{ point_index: 0 }, { point_index: 1 }],
+    });
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 200, 100],
+      runs: [mk('r1', 0), mk('r2', 10), mk('r3', 20), mk('r4', 30)],
+    };
+  }
+
+  it('allocates c1, c2, … and skips ids already taken', () => {
+    const doc = circuitDoc();
+    expect(ops.nextCircuitId(doc)).toBe('c1');
+    const withOne = { ...doc, circuits: [{ id: 'c1' }, { id: 'c3' }, { id: 'left-bank' }] };
+    // Non-matching ids do not eat integer slots.
+    expect(ops.nextCircuitId(withOne)).toBe('c2');
+  });
+
+  it('wires four runs into one circuit without touching their electrodes', () => {
+    const doc = circuitDoc();
+    const { doc: next, circuitId } = ops.createCircuit(
+      doc,
+      ['r1', 'r2', 'r3', 'r4'],
+      'Script',
+    );
+    expect(circuitId).toBe('c1');
+    expect(next.circuits).toEqual([{ id: 'c1', name: 'Script' }]);
+    expect(next.runs.map((r) => r.circuit_id)).toEqual(['c1', 'c1', 'c1', 'c1']);
+    // The whole point: the derivation is what collapses, not the drawing.
+    for (const r of next.runs) expect(r.electrodes).toHaveLength(2);
+    // And the geometry is untouched.
+    expect(next.runs.map((r) => r.polyline.points)).toEqual(
+      doc.runs.map((r) => r.polyline.points),
+    );
+  });
+
+  it('omits the name key for an unnamed circuit (matches Go omitempty)', () => {
+    const { doc } = ops.createCircuit(circuitDoc(), ['r1'], '   ');
+    expect(doc.circuits).toEqual([{ id: 'c1' }]);
+    expect(JSON.stringify(doc.circuits)).not.toContain('name');
+  });
+
+  it('re-assigning replaces membership rather than adding a second one', () => {
+    let doc = ops.createCircuit(circuitDoc(), ['r1', 'r2'], 'A').doc;
+    doc = ops.createCircuit(doc, ['r2', 'r3'], 'B').doc;
+    expect(doc.circuits?.map((c) => c.id)).toEqual(['c1', 'c2']);
+    const byId = Object.fromEntries(doc.runs.map((r) => [r.id, r.circuit_id]));
+    expect(byId).toEqual({ r1: 'c1', r2: 'c2', r3: 'c2', r4: undefined });
+  });
+
+  it('deletes the circuit_id key rather than blanking it', () => {
+    const doc = ops.createCircuit(circuitDoc(), ['r1'], 'A').doc;
+    const cleared = ops.assignRunsToCircuit(doc, ['r1'], '');
+    expect('circuit_id' in cleared.runs[0]).toBe(false);
+    expect(JSON.stringify(cleared)).not.toContain('circuit_id');
+  });
+
+  it('refuses to assign to a circuit that does not exist', () => {
+    const doc = circuitDoc();
+    // A dangling FK is a 400 from the Go decoder, so the op must not create
+    // one. Same object back = editDoc pushes no undo entry.
+    expect(ops.assignRunsToCircuit(doc, ['r1'], 'c9')).toBe(doc);
+  });
+
+  it('dissolve clears every member FK as well as the entry', () => {
+    const doc = ops.createCircuit(circuitDoc(), ['r1', 'r2', 'r3'], 'A').doc;
+    const after = ops.dissolveCircuit(doc, 'c1');
+    expect(after.circuits).toEqual([]);
+    // Leaving one behind would 400 the next save — this is the Tier 3 #140
+    // failure mode, not tidiness.
+    expect(JSON.stringify(after)).not.toContain('circuit_id');
+    // Negative control: a doc that still has the entry is NOT clean.
+    expect(JSON.stringify(doc)).toContain('circuit_id');
+  });
+
+  it('dissolve and rename are no-ops for an unknown id', () => {
+    const doc = ops.createCircuit(circuitDoc(), ['r1'], 'A').doc;
+    expect(ops.dissolveCircuit(doc, 'c9')).toBe(doc);
+    expect(ops.renameCircuit(doc, 'c9', 'x')).toBe(doc);
+    expect(ops.renameCircuit(doc, 'c1', 'A')).toBe(doc);
+  });
+
+  it('rename to an empty string drops the key', () => {
+    const doc = ops.createCircuit(circuitDoc(), ['r1'], 'A').doc;
+    const after = ops.renameCircuit(doc, 'c1', '  ');
+    expect(after.circuits).toEqual([{ id: 'c1' }]);
+  });
+
+  it('circuitMemberIds lists members in doc order', () => {
+    const doc = ops.createCircuit(circuitDoc(), ['r3', 'r1'], 'A').doc;
+    expect(ops.circuitMemberIds(doc, 'c1')).toEqual(['r1', 'r3']);
+    expect(ops.circuitMemberIds(doc, 'c9')).toEqual([]);
+  });
+
+  it('a circuit is orthogonal to groups and raceways', () => {
+    // The same run can legitimately be in all three: a selection group, a
+    // box, and a wiring circuit. Collapsing any two makes one answer wrong.
+    let doc = circuitDoc();
+    doc = ops.groupRuns(doc, ['r1', 'r2'], 'Trim').doc;
+    doc = { ...doc, runs: doc.runs.map((r) => ({ ...r, raceway_id: 'rw1' })) };
+    doc = ops.createCircuit(doc, ['r1', 'r2', 'r3'], 'Wire').doc;
+    const r1 = doc.runs[0];
+    expect(r1.group_id).toBe('g1');
+    expect(r1.raceway_id).toBe('rw1');
+    expect(r1.circuit_id).toBe('c1');
+    // Dissolving the circuit leaves the other two alone.
+    const after = ops.dissolveCircuit(doc, 'c1');
+    expect(after.runs[0].group_id).toBe('g1');
+    expect(after.runs[0].raceway_id).toBe('rw1');
+  });
+});
