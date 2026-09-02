@@ -119,7 +119,32 @@ export function indicesToD(
     }
     parts.push(`L${x} ${y}`);
   }
-  if (closed) parts.push('Z');
+  // Bug #18 — the CLOSING segment carries a type like every other one. The loop
+  // above only ever asks about steps between two entries of `indices`, so the
+  // wrap-around step points[n-1] -> points[0] never got asked and fell through
+  // to a bare Z: a straight chord on screen while flatRunPoints (and therefore
+  // the arc-aware run length and the curve-aware hit test) had already walked
+  // the curve. setSegmentType exposes this segment on a closed run, and a full
+  // circle drawn as four arcs needs it.
+  //
+  // Twin of the tail of emitPath in internal/designdoc/convert.go, including
+  // why the index is taken as n-1 directly rather than through
+  // segmentIndexBetween (at n === 2 its `b === a - 1` case wins over the wrap
+  // case and answers segment 0 reversed, which retraces the outbound arc) and
+  // why the walk shape is guarded (`closed` is only ever passed for a walk over
+  // the whole polyline in index order, so the pen is on points[n-1] here).
+  if (closed) {
+    if (hasArcs && run && indices.length === n && indices[0] === 0 && indices[n - 1] === n - 1) {
+      const seg = n - 1;
+      const segType = segmentTypeAt(run, seg);
+      if (isArcKind(segType)) {
+        for (const c of arcCubics(points[seg], points[0], segType, false)) {
+          parts.push(`C${c.c1x} ${c.c1y} ${c.c2x} ${c.c2y} ${c.x} ${c.y}`);
+        }
+      }
+    }
+    parts.push('Z');
+  }
   return parts.join(' ');
 }
 
