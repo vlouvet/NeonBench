@@ -1,7 +1,24 @@
 # Tier 1 #132 — Vectorize should return the frame it used
 
-> **Status:** active · drafted 2026-09-02 · branch `task/1-vectorize-source-frame`
+> **Status:** done · drafted 2026-09-02 · shipped 2026-09-02 · branch
+> `task/1-vectorize-source-frame`
 > · source: [`docs/proof-workflow-gaps.md`](../../docs/proof-workflow-gaps.md) C1
+>
+> **Premise correction made while implementing.** The spec says to "add the
+> frame to the response struct". There is no vectorize response struct —
+> `handleVectorize` writes `storage.DesignVersion` straight out, and
+> `internal/storage/` is outside this row's file scope. Resolved by declaring
+> `vectorizeResp` in `handlers_vectorize.go`, embedding `storage.DesignVersion`
+> so every existing top-level field marshals byte-identically, and hanging
+> `source_frame` off that. The TS side mirrors it as
+> `VectorizeResponse = DesignVersion & { source_frame?: … }` rather than
+> widening `DesignVersion`, which several other endpoints share.
+>
+> The spec also says the handler "knows the raster's pixel dimensions and the
+> mm-per-pixel scale it derived". It knows the dimensions but not the scale:
+> `vectorize.Result` reports `WidthPx`/`HeightPx`/`WidthMM`/`HeightMM` and no
+> `mmPerPx`. Deriving `WidthMM / WidthPx` reproduces the tracer's own
+> expression exactly, so no change inside `internal/vectorize/` was needed.
 
 ## Goal
 
