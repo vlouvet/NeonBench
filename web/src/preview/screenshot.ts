@@ -46,6 +46,38 @@ export interface ComposerLike {
 }
 
 /**
+ * Render one frame and read it back as a PNG data URL. **The single
+ * place in the codebase that decides composer-vs-bare-renderer**, so
+ * both the Save PNG button and the headless entry point (Tier 3 #137)
+ * are guaranteed to agree about what lands in the file.
+ *
+ * When `composer` is provided we drive `composer.render()` so the
+ * post-process chain (bloom) writes the final image into the canvas
+ * backbuffer. When it's absent or `null` we fall back to
+ * `gl.render(scene, camera)` — that's the `?nobloom` debug path, and it
+ * is deliberately the *only* way to reach the bare renderer. Tier 1 #68
+ * shipped when this decision lived inline at the one call site; keeping
+ * it in one function is what stops a second call site re-introducing it.
+ *
+ * The render must be synchronous and immediately precede the read:
+ * `preserveDrawingBuffer` is false on the preview Canvas, so the
+ * backbuffer is cleared once the browser composites the frame.
+ */
+export function renderCanvasToDataURL(
+  gl: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  composer?: ComposerLike | null,
+): string {
+  if (composer) {
+    composer.render();
+  } else {
+    gl.render(scene, camera);
+  }
+  return gl.domElement.toDataURL('image/png');
+}
+
+/**
  * Render one frame to the WebGL canvas, then trigger a PNG download
  * of that canvas via a transient `<a download>` element.
  *
@@ -80,20 +112,7 @@ export function captureCanvasToPNG(
     : (undefined as unknown as DownloadEnv)),
   composer?: ComposerLike | null,
 ): void {
-  // Force a fresh frame so the backbuffer is populated. Without this
-  // the dataURL is usually transparent black on Chrome/Firefox.
-  //
-  // When a composer is wired up (bloom path), drive its `render()` so
-  // the post-process chain writes the final image (with bloom halos)
-  // into the canvas backbuffer. Otherwise fall back to the bare
-  // renderer — used by the `?nobloom` URL flag and any pre-bloom
-  // callers.
-  if (composer) {
-    composer.render();
-  } else {
-    gl.render(scene, camera);
-  }
-  const dataURL = gl.domElement.toDataURL('image/png');
+  const dataURL = renderCanvasToDataURL(gl, scene, camera, composer);
   const a = env.createElement('a');
   a.href = dataURL;
   a.download = filename;
