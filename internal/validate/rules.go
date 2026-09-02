@@ -43,13 +43,14 @@ func resampleUniform(pl Polyline, step float64) Polyline {
 	return Polyline{Points: out, Closed: pl.Closed}
 }
 
-// checkBendRadiusClustered clusters bend-radius issues so a single tight
-// curve doesn't fire 30 markers along its arc. Hairpin double-backs (180°
-// structural turns flanked by parallel legs, named "DB" in Blazek's
-// alphabet books) are exempted from the bend-radius failure.
+// checkBendRadiusClustered is retained as the name ValidateSVG calls.
+// Grouping now happens inside checkBendRadius (one issue per contiguous
+// too-tight stretch of a run), because the old post-hoc distance cluster
+// used a radius of 1.5 × the limit — which made a stricter tube spec MERGE
+// physically distinct bends and report FEWER errors. See the Tier 1 #131
+// finding in specs/done/tier1-131-bend-radius-measurement-validity.md.
 func checkBendRadiusClustered(polylines []Polyline, limits Limits) []Issue {
-	raw := checkBendRadius(polylines, limits)
-	return clusterIssues(raw, math.Max(limits.MinBendRadiusMM*1.5, 5))
+	return checkBendRadius(polylines, limits)
 }
 
 // runDiameterMM returns the effective tube diameter for a polyline: the
@@ -146,71 +147,324 @@ func runBendLimitMM(pl Polyline, limits Limits) float64 {
 	return base
 }
 
-// checkBendRadius scans each polyline using a 3-point discrete circumradius
-// and emits an issue at any vertex where r < limit, EXCEPT where the
-// vertex is the apex of a structural double-back hairpin (legitimate
-// construction, not an error). When a polyline carries a per-run diameter
-// override, both the limit and the hairpin look-ahead scale with it.
-func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
-	if limits.MinBendRadiusMM <= 0 {
-		return nil
+// bendHeatZoneDiameters is the length of glass a bender heats to form a
+// right-angle bend, expressed in tube diameters: 2 × tube ø.
+//
+// Source: Strattman NT Fig. 7.20 ("Steps to making a basic angle bend"),
+// transcribed in docs/neon-rules/bend-radius.md under "Heat-zone length
+// rule". The same note derives the bend radius implied by that heat zone:
+// a clean 90° turn formed over 2·D of heated glass has radius
+// arc/(π/2) = 2D/1.571 ≈ 1.27·D. That identity — radius = arc length ÷
+// turn angle — is exactly the estimator below, which is why the heat zone
+// is the right measurement window.
+const bendHeatZoneDiameters = 2.0
+
+// bendWindowHalfSamples is how many resample steps sit either side of the
+// sample under test, so the measurement window spans 2 × this many steps.
+// Combined with bendHeatZoneDiameters it fixes the resample spacing at
+// D/4 — fine enough to land a sample near any real feature, coarse enough
+// that the walk stays cheap.
+const bendWindowHalfSamples = 4
+
+// bendFallbackDiameterMM is used only when neither the project spec nor a
+// per-run override supplies a tube diameter. The tube_specs column is NOT
+// NULL and the API validates 1..100, so this cannot happen through the
+// app; it exists so a hand-built Limits in a test or an external caller
+// still measures something physical rather than dividing by zero.
+const bendFallbackDiameterMM = 12.0
+
+// bendMeasureGeometry returns the resample spacing and half-window sample
+// count for a polyline. BOTH derive from the tube diameter alone. Nothing
+// here may depend on limits.MinBendRadiusMM: the whole Tier 1 #131 defect
+// was that the measurement's own parameters were derived from the
+// threshold it was being compared against, so tightening the threshold
+// also coarsened the measurement and the two cancelled.
+func bendMeasureGeometry(pl Polyline, limits Limits) (stepMM float64, half int) {
+	stepMM, half, _ = bendMeasureParams(pl, limits)
+	return stepMM, half
+}
+
+// bendMeasureParams also returns the effective tube diameter the window
+// and the gentle-bend floor are both sized from, so the two cannot drift.
+func bendMeasureParams(pl Polyline, limits Limits) (stepMM float64, half int, diameterMM float64) {
+	d := runDiameterMM(pl, limits)
+	if d <= 0 {
+		d = bendFallbackDiameterMM
 	}
+	diameterMM = d
+	half = bendWindowHalfSamples
+	windowMM := bendHeatZoneDiameters * d
+	// The measured window spans from the midpoint of segment i-half to the
+	// midpoint of segment i+half-1 — that is 2*half-1 steps, not 2*half.
+	// Sizing the step off the wrong one biases every radius by
+	// 2*half/(2*half-1): probed at half=4 on a true r=25mm circle it read
+	// 28.55mm, a 14% over-estimate, enough to clear a 27mm limit.
+	return windowMM / float64(2*half-1), half, d
+}
+
+// bendSweepRadiusMM is where a curve stops being a discrete bend and
+// becomes a ribbon-burner sweep: 150 mm. Curves gentler than this are one
+// continuous heat along the pattern rather than a formed bend, so they
+// are not segmented into separate bends for reporting.
+//
+// Source: docs/neon-rules/bend-radius.md — "for ribbon-burner curved
+// bends in tall letters, the practical curvature radius observed in
+// Miller's worked example bottoms out around 150 mm (6 in) for a 12-mm
+// tube" (an 18-inch "O", Miller p. 118).
+//
+// Deliberately NOT scaled by tube diameter. How a design divides into
+// bends is a property of the drawing; two shops quoting the same artwork
+// in ø8 and ø15 must see the same bends and differ only in the verdict on
+// each. A ø-scaled floor was tried and inverted the headline result:
+// probed on the OPEN raster fixture at 6 mm smoothing it reported 9, 7,
+// 6, 5 errors across ø8/10/12/15 — falling as the tube got harder to
+// bend, because the bigger floor merged more of the letterform into
+// fewer bends.
+const bendSweepRadiusMM = 150.0
+
+// gentleBendRadiusMM is the loosest curve still counted as a bend.
+func gentleBendRadiusMM(float64) float64 {
+	return bendSweepRadiusMM
+}
+
+// wrapPi folds an angle into (-π, π].
+func wrapPi(a float64) float64 {
+	for a <= -math.Pi {
+		a += 2 * math.Pi
+	}
+	for a > math.Pi {
+		a -= 2 * math.Pi
+	}
+	return a
+}
+
+// bendRadiiOverWindow returns, for each sample of the resampled polyline,
+// the bend radius measured at design scale: the arc length of the
+// heat-zone window centred on that sample divided by the net turn of the
+// tangent across it (r = L / Δθ). Samples where the window runs off the
+// end of an open run — or where the turn is negligible — come back +Inf.
+//
+// This estimator, not a 3-point circumradius, is what makes the number
+// mean "bend radius". A circumradius through three consecutive samples
+// measures the corner *as drawn*, so it reports the sampling density: on
+// a 90° corner the answer is 0.75 × the resample step and on the same
+// corner sampled twice as finely it halves. Net turn over a fixed
+// physical window is a property of the shape alone — a corner and a
+// smooth arc that turn through the same angle over the same length of
+// glass get the same answer, which is also true of the glass.
+//
+// It is deliberately blind to detail finer than the window: sub-millimetre
+// vectorizer staircase noise contributes turns that cancel to ~0, and an
+// S-bend whose two halves fit inside one heat zone cancels too (see the
+// finding's "known limits" — sharp_bend_angle still fires on those).
+func bendRadiiOverWindow(pts []Point, closed bool, half int) []float64 {
+	n := len(pts)
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = math.Inf(1)
+	}
+	// Segment count: a closed run has one more segment than an open one
+	// (the seam from the last point back to the first).
+	segs := n - 1
+	if closed {
+		segs = n
+	}
+	if segs < 2*half {
+		return out
+	}
+	dirs := make([]float64, segs)
+	segLen := make([]float64, segs)
+	for k := 0; k < segs; k++ {
+		a, b := pts[k], pts[(k+1)%n]
+		dirs[k] = math.Atan2(b.Y-a.Y, b.X-a.X)
+		segLen[k] = dist(a, b)
+	}
+	lo, hi := half, n-1-half
+	if closed {
+		lo, hi = 0, n-1
+	}
+	for i := lo; i <= hi; i++ {
+		var turn, arc float64
+		// Walk segments i-half .. i+half-1. A vertex turn sits between two
+		// segments, so the arc length that turn acts over runs from the
+		// midpoint of the first segment to the midpoint of the last —
+		// hence the half weights on the ends. Weighting whole segments
+		// against one fewer turn is what produced the 14% bias above.
+		for t := 0; t < 2*half; t++ {
+			k := i - half + t
+			if closed {
+				k = ((k % segs) + segs) % segs
+			}
+			if t == 0 || t == 2*half-1 {
+				arc += segLen[k] / 2
+			} else {
+				arc += segLen[k]
+			}
+			if t > 0 {
+				prev := i - half + t - 1
+				if closed {
+					prev = ((prev % segs) + segs) % segs
+				}
+				turn += wrapPi(dirs[k] - dirs[prev])
+			}
+		}
+		turn = math.Abs(turn)
+		// A turn this small over a whole heat zone is a straight leg; the
+		// radius is effectively infinite and dividing by it is noise.
+		if turn < 1e-9 || arc <= 0 {
+			continue
+		}
+		out[i] = arc / turn
+	}
+	return out
+}
+
+// checkBendRadius measures, for every sample of every run, the bend radius
+// the bender would actually have to form — arc length over net turn across
+// one heat zone (2 × tube ø) — and emits ONE issue per contiguous stretch
+// that comes out below the tube's minimum, located at the worst sample in
+// that stretch.
+//
+// Structural double-back hairpins (180° turns flanked by parallel legs,
+// "DB" in Blazek's alphabet books) and user-marked double-backs are exempt:
+// they are construction, not error.
+//
+// Two properties this rule now has and did not before, both pinned by
+// tests in rules_test.go:
+//
+//   - The measurement never consults the threshold, so the set of failing
+//     samples grows monotonically as min_bend_radius_mm rises.
+//   - Resampling the same drawn shape at a different vertex density does
+//     not change the answer, so the count reports the design rather than
+//     how the raster was prepared.
+func checkBendRadius(polylines []Polyline, limits Limits) []Issue {
 	var issues []Issue
 	for _, pl := range polylines {
 		limitMM := runBendLimitMM(pl, limits)
 		if limitMM <= 0 {
 			continue
 		}
-		// We need fairly tight sampling for stable curvature. Resample at
-		// ~limit/4 spacing — capped to a sensible range.
-		step := math.Max(0.5, math.Min(limitMM/4, 5))
-		sampled := resampleUniform(pl, step)
-		pts := sampled.Points
-		n := len(pts)
-		if n < 3 {
+		stepMM, half, measureD := bendMeasureParams(pl, limits)
+		if stepMM <= 0 {
 			continue
 		}
+		sampled := resampleUniform(pl, stepMM)
+		pts := sampled.Points
+		n := len(pts)
+		if n < 2*half+1 {
+			continue
+		}
+		radii := bendRadiiOverWindow(pts, sampled.Closed, half)
 		hairpinD := runDiameterMM(pl, limits)
-		emitted := map[int]bool{} // suppress dense duplicate flags
-		for i := 1; i < n-1; i++ {
-			r := circumradius3(pts[i-1], pts[i], pts[i+1])
-			if r < limitMM {
-				// Skip if we just emitted within ~3 samples.
-				skip := false
-				for j := i - 3; j <= i; j++ {
-					if emitted[j] {
-						skip = true
-						break
-					}
+
+		// Segment the run into BENDS before applying the limit, and do it
+		// with a threshold the limit cannot move. Grouping by "is this
+		// sample failing" instead would make the grouping limit-dependent:
+		// as the limit rises, neighbouring failures merge, and the reported
+		// count falls again. Probed on the OPEN raster fixture at ø12,
+		// sweeping the limit 10→60 mm under failure-grouping: 0, 3, 4, 6,
+		// 6, 9, 8, 8, 6, 6, 6 — non-monotone, the original defect wearing
+		// a different hat. Segmenting on curvature first makes the group
+		// set a property of the drawn shape, so the count can only rise.
+		floorMM := math.Max(gentleBendRadiusMM(measureD), limitMM)
+		curving := make([]bool, n)
+		exempt := make([]bool, n)
+		for i := 0; i < n; i++ {
+			curving[i] = radii[i] < floorMM
+			exempt[i] = isDoubleBackHairpin(pts, sampled.Closed, i, stepMM, hairpinD) ||
+				hasUserDoubleback(pts[i], pl.DoublebackMarks, hairpinD)
+		}
+
+		suffix := ""
+		if pl.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
+			suffix = fmt.Sprintf(" (run override: ø%.1fmm)", pl.DiameterMM)
+		}
+		// Two curving stretches less than half a heat zone apart are one
+		// bend — the bender forms them in a single heating. The gap is
+		// physical (D/2), never a function of the limit.
+		for _, g := range contiguousGroups(curving, sampled.Closed, half) {
+			// The exemption is a property of the BEND, not of a sample. A
+			// double-back's apex is recognised as a hairpin, but samples a
+			// few millimetres either side of it sit off-centre in the
+			// look-around window and are not — so a per-sample test let the
+			// shoulders of an exempted DB fire as two errors flanking the
+			// apex it had just excused. If any sample in the stretch is a
+			// recognised (or user-marked) double-back, the whole stretch is
+			// that construction.
+			skip := false
+			for _, i := range g {
+				if exempt[i] {
+					skip = true
+					break
 				}
-				if skip {
-					continue
-				}
-				if isDoubleBackHairpin(pts, sampled.Closed, i, step, hairpinD) {
-					// Legitimate 180° construction; not a bend-radius failure.
-					continue
-				}
-				if hasUserDoubleback(pts[i], pl.DoublebackMarks, hairpinD) {
-					// User explicitly marked this region as a double-back —
-					// trust their intent over the geometric heuristic.
-					continue
-				}
-				emitted[i] = true
-				suffix := ""
-				if pl.DiameterMM > 0 && pl.DiameterMM != limits.DiameterMM {
-					suffix = fmt.Sprintf(" (run override: ø%.1fmm)", pl.DiameterMM)
-				}
-				issues = append(issues, Issue{
-					Rule:     RuleMinBendRadius,
-					Severity: SeverityError,
-					Message:  fmt.Sprintf("bend radius %.1fmm below tube minimum %.1fmm%s", r, limitMM, suffix),
-					XMM:      pts[i].X,
-					YMM:      pts[i].Y,
-				})
 			}
+			if skip {
+				continue
+			}
+			worst, worstR := g[0], radii[g[0]]
+			for _, i := range g {
+				if radii[i] < worstR {
+					worst, worstR = i, radii[i]
+				}
+			}
+			// One issue per bend, judged on the tightest point the bender
+			// has to reach in it.
+			if worstR >= limitMM {
+				continue
+			}
+			issues = append(issues, Issue{
+				Rule:     RuleMinBendRadius,
+				Severity: SeverityError,
+				Message: fmt.Sprintf("bend radius %.1fmm below tube minimum %.1fmm%s",
+					worstR, limitMM, suffix),
+				XMM: pts[worst].X,
+				YMM: pts[worst].Y,
+			})
 		}
 	}
 	return issues
+}
+
+// contiguousGroups splits a per-sample boolean mask into runs of true
+// indices, bridging gaps of up to maxGap false samples. For a closed
+// polyline a group spanning the seam (index 0 adjacent to index n-1) is
+// joined into one, so a tight bend that happens to sit where the loop was
+// cut still reports as one bend rather than two.
+func contiguousGroups(mask []bool, closed bool, maxGap int) [][]int {
+	n := len(mask)
+	var groups [][]int
+	var cur []int
+	gap := 0
+	for i := 0; i < n; i++ {
+		if mask[i] {
+			cur = append(cur, i)
+			gap = 0
+			continue
+		}
+		if len(cur) == 0 {
+			continue
+		}
+		gap++
+		if gap > maxGap {
+			groups = append(groups, cur)
+			cur = nil
+			gap = 0
+		}
+	}
+	if len(cur) > 0 {
+		groups = append(groups, cur)
+	}
+	if closed && len(groups) > 1 {
+		first, last := groups[0], groups[len(groups)-1]
+		// Count the false samples that separate the last group's tail from
+		// the first group's head around the seam.
+		seamGap := (n - 1 - last[len(last)-1]) + first[0]
+		if seamGap <= maxGap {
+			groups[0] = append(last, first...)
+			groups = groups[:len(groups)-1]
+		}
+	}
+	return groups
 }
 
 // hasUserDoubleback returns true if the vertex p is within an exemption
@@ -237,9 +491,21 @@ func hasUserDoubleback(p Point, marks []Point, diameterMM float64) bool {
 // fabrication error.
 //
 // Heuristic: look K samples back and forward along the polyline. If those
-// points are physically close (within ~4× tube diameter) and have tangent
-// directions that are anti-parallel (cos < -0.7), the vertex is between
-// two opposing legs, i.e. a hairpin apex.
+// points are physically close (within ~4× tube diameter), have tangent
+// directions that are anti-parallel (cos < -0.7), AND the flanks are
+// substantially straighter than the apex, the vertex is between two
+// opposing legs, i.e. a hairpin apex.
+//
+// The flank-straightness test is load-bearing, not belt-and-braces. The
+// first three conditions are ALL satisfied by a small closed loop — an
+// "o" bowl a few tube diameters across puts two near-antipodal samples
+// close together with anti-parallel tangents, exactly like a U-turn — so
+// without it the rule silently exempted the tight bowls it exists to
+// catch. Probed on ø12 tube: closed loops of radius 20 mm and 24 mm were
+// both exempted as double-backs and reported zero bend errors at a 40 mm
+// limit. A real double-back turns through ~180° at the apex and then runs
+// straight; a bowl keeps turning at the same rate all the way round, so
+// its outer quarters carry ~half the total turn against a hairpin's ~none.
 func isDoubleBackHairpin(points []Point, closed bool, idx int, stepMM, tubeDiameterMM float64) bool {
 	if tubeDiameterMM <= 0 {
 		return false
@@ -249,7 +515,7 @@ func isDoubleBackHairpin(points []Point, closed bool, idx int, stepMM, tubeDiame
 	lookMM := math.Max(3*tubeDiameterMM, 10)
 	K := int(math.Ceil(lookMM / stepMM))
 	n := len(points)
-	if n < 2*K+1 {
+	if n < 2*K+1 || K < 2 {
 		return false
 	}
 	prev, next := idx-K, idx+K
@@ -266,8 +532,57 @@ func isDoubleBackHairpin(points []Point, closed bool, idx int, stepMM, tubeDiame
 	}
 	tBefore := tangentAt(points, prev, closed)
 	tAfter := tangentAt(points, next, closed)
-	cos := dot(tBefore, tAfter)
-	return cos < -0.7
+	if cos := dot(tBefore, tAfter); cos >= -0.7 {
+		return false
+	}
+	// Flanks straighter than the apex: the outer quarter of the look-around
+	// window on each side must carry well under a quarter of the total turn.
+	total := math.Abs(turnBetween(points, closed, idx-K, idx+K))
+	if total < 1e-9 {
+		return false
+	}
+	half := K / 2
+	flank := math.Abs(turnBetween(points, closed, idx-K, idx-half)) +
+		math.Abs(turnBetween(points, closed, idx+half, idx+K))
+	return flank < 0.25*total
+}
+
+// turnBetween returns the signed net turn of the tangent walking forward
+// from sample `from` to sample `to`. Indices are unwrapped — negative and
+// past-the-end values are folded around the seam for closed polylines and
+// clamped for open ones.
+func turnBetween(points []Point, closed bool, from, to int) float64 {
+	n := len(points)
+	segs := n - 1
+	if closed {
+		segs = n
+	}
+	if segs < 2 || to <= from {
+		return 0
+	}
+	if !closed {
+		if from < 0 {
+			from = 0
+		}
+		if to > segs {
+			to = segs
+		}
+		if to <= from {
+			return 0
+		}
+	}
+	dirAt := func(k int) float64 {
+		if closed {
+			k = ((k % segs) + segs) % segs
+		}
+		a, b := points[k], points[(k+1)%n]
+		return math.Atan2(b.Y-a.Y, b.X-a.X)
+	}
+	total := 0.0
+	for k := from + 1; k < to; k++ {
+		total += wrapPi(dirAt(k) - dirAt(k-1))
+	}
+	return total
 }
 
 // checkSegmentLength flags each subpath whose total arc length exceeds limit.
