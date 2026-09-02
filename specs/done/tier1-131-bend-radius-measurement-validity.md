@@ -1,7 +1,13 @@
 # Tier 1 #131 — `min_bend_radius` is measuring the wrong thing
 
-> **Status:** active · drafted 2026-09-02 · branch `task/1-bend-radius-validity`
+> **Status:** done · drafted 2026-09-02 · shipped 2026-09-02 in PR #197 ·
+> branch `task/1-bend-radius-validity`
 > · source: [`docs/proof-workflow-gaps.md`](../../docs/proof-workflow-gaps.md) B1
+>
+> Outcome: the hypothesis held but was the smaller of two terms, and the
+> dominant one was not in the spec. See **Findings** at the bottom — including
+> the two leads that were investigated and refuted, and the residual limits
+> the number carries. The rule keeps its name and severity.
 
 ## Goal
 
