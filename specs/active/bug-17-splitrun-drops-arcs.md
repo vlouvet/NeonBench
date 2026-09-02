@@ -1,8 +1,8 @@
 # Bug #17 — every cut straightens the glass: `splitRun` drops `segment_types`
 
-> **Status:** open · found 2026-09-01 while implementing Tier 3 #111
-> (PR "Make TS run length arc-aware"). Not fixed there — the fix needs a
-> shape decision, see below.
+> **Status:** ready to implement · found 2026-09-01 while implementing Tier 3
+> #111 (PR "Make TS run length arc-aware"). The shape decision it was blocked
+> on has been made — see "The decision" below.
 
 Two defects in the same family: an op that changes a run's point count or point
 order must carry `segment_types` (`CLAUDE.md` → Recurring bug classes → 1).
@@ -77,17 +77,38 @@ field that draws the two halves of the curve the operator drew. This is the
 same class of limitation as the signed-bulge note in `CLAUDE.md` (an `arc` flag
 cannot survive reversal).
 
+## The decision (made by the repo owner, 2026-09-01)
+
+**A cut inside an arc segment straightens ONLY that segment.** Both halves of
+the cut segment become `line`; every other arc on both resulting pieces keeps
+its type.
+
+Rejected, and why, so this is not relitigated:
+
+* *Flatten the cut segment into short lines* would preserve the drawn shape and
+  the glass length almost exactly, but it converts one curve into ~30 **live**
+  vertices permanently. `internal/designdoc/bends.go` walks `liveArcIndices` —
+  live vertices, not flattened points — so the bend list would read a cluster
+  of small kinks where the operator drew one smooth bend. Clustering softens
+  that but does not remove it, and the run becomes far harder to edit.
+* *Refuse the cut* never lies about shape, but neither caller can choose where
+  it cuts: the raceway splitter cuts where the raceway physically crosses, and
+  auto-split cuts where the length limit demands. Refusing means both features
+  simply fail on curved runs.
+
+Straightening one segment is a large, strict improvement on today — which
+straightens **every** arc on the run — it keeps the bend list truthful, and it
+does not foreclose flattening later if the shape loss turns out to matter.
+
 That splits the work cleanly:
 
 1. **A cut AT a vertex is pure bookkeeping and must preserve every arc.**
    Splitting a 4-arc run at vertex 2 should hand back two 2-arc runs whose
    `flatRunPoints` concatenate to the original. This is the common case for the
    raceway splitter and the node menu, and it is straightforwardly correct.
-2. **A cut INSIDE an arc segment cannot preserve the shape.** The honest
-   options are (a) straighten only the segment being cut and leave every other
-   arc alone, (b) flatten that segment into short line segments so the drawn
-   shape survives at the cost of vertices, or (c) refuse and tell the operator.
-   Today's behaviour — straighten *every* arc on the run — is none of these.
+2. **A cut INSIDE an arc segment straightens only that segment**, per the
+   decision above. Today's behaviour — straighten *every* arc on the run — is
+   the bug.
 3. **`insertVertex` must rebuild `segment_types`** whichever of those is
    chosen, or the doc is unsaveable.
 
@@ -104,3 +125,27 @@ That splits the work cleanly:
 - Tier 3 #111's `autoSplitOverlongTubes` test notes the straightening in a
   comment and deliberately does not assert total-length preservation. When this
   is fixed, that assertion is the one to add.
+
+
+## Two interactions to check before you claim this is done
+
+**1. `autoSplitOverlongTubes` may need more pieces once arcs survive.** Tier 3
+#111 left that op carrying two metrics on purpose: `runLengthMM` (arc-aware)
+decides *whether and how many* pieces, and `chordLengthMM` decides *where* the
+cuts land, because `splitRunAtArcLength` walks chords over raw vertices. Today
+every piece comes back straight, so those two agree after the cut. **This fix
+breaks that coincidence**: pieces will keep their arcs, so a set of
+chord-equal pieces can each still exceed the limit in arc length. The op
+already retries at `n+1` and `n+2` and re-checks the postcondition with
+`runLengthMM`, so it should converge — but **prove it does** on a run of
+several arcs, and say what the retry count actually reached. If it does not
+converge, that is a finding worth reporting, not something to paper over by
+widening the retry budget.
+
+**2. Tier 3 #111 left an assertion deliberately unwritten, and it is now
+yours.** `docOps.test.ts` notes in a comment that it does not assert
+total-length preservation across a split, because straightening made that
+false. **Add it**: for a cut at a vertex, the arc-aware lengths of the pieces
+must sum to the original's. For a cut inside an arc, they must sum to the
+original minus exactly the glass lost on the one straightened segment — which
+is a number you can compute, not a tolerance to hand-wave.
