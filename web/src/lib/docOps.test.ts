@@ -8,6 +8,7 @@ import {
   flattenSegment,
   isArcKind,
   segmentCount,
+  segmentIndexBetween,
   segmentLengthMM,
   segmentTypeAt,
   walkSegmentLengthMM,
@@ -5941,6 +5942,465 @@ describe('Tier 3 #119 — segment_types through the last three point-count ops',
       // …and old segment 1 (the 100mm straight) is gone from the takeoff.
       expect(ops.runLengthMM(opened.runs[0]) - ops.runLengthMM(moved))
         .toBeCloseTo(100, 9);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2 #135 — block-outs from the validator's crossing findings.
+//
+// The two tuning facts the op is built around were both learned by rendering
+// the wrong version first, and both are things a later change would "clean
+// up" back into the bug. They are pinned here, not just commented:
+//
+//   (a) the filter is the RULE ID `crossing_needs_blockout`, never severity —
+//       `min_spacing` fires on every near-parallel pair and painting those
+//       swallowed whole strokes;
+//   (b) the painted span is ~2 TUBE DIAMETERS, derived from the run's
+//       diameter (falling back to the project spec), never a hard-coded 30.
+//
+// The load-bearing geometric test is the CLOSED run with two electrodes.
+// On an open run the live walk is the whole polyline, so live and raw index
+// space coincide and a raw-index implementation passes everything else in
+// this block while painting the wrong part of a loop.
+// ---------------------------------------------------------------------------
+describe('Tier 2 #135 — placeBlockoutsFromCrossings', () => {
+  const CROSSING = 'crossing_needs_blockout';
+
+  // A 200mm straight run with a vertex every millimetre, so a live index IS
+  // a millimetre and the span assertions can be exact.
+  function straightRun(id = 'r1', diameterMM?: number): DesignRun {
+    const points: [number, number][] = [];
+    for (let i = 0; i <= 200; i++) points.push([i, 0]);
+    return {
+      id,
+      polyline: { points, closed: false },
+      ...(diameterMM === undefined ? {} : { tube_diameter_mm: diameterMM }),
+    };
+  }
+
+  const docOf = (runs: DesignRun[]): DesignDoc => ({
+    version: 1,
+    view_box_mm: [0, 0, 400, 400],
+    runs,
+  });
+
+  // paintedPolyline resolves a blockout back to the glass it paints: live
+  // indices -> raw vertices -> the FLATTENED curve between them. Every
+  // assertion below measures against this rather than against the indices, so
+  // "the paint covers the crossing" is a millimetre statement.
+  function paintedPolyline(
+    run: DesignRun,
+    b: { start_live_index: number; end_live_index: number },
+  ): [number, number][] {
+    const { live } = runArcs(run);
+    const pts = run.polyline.points;
+    const out: [number, number][] = [pts[live[b.start_live_index]]];
+    for (let k = b.start_live_index; k < b.end_live_index; k++) {
+      const a = live[k];
+      const c = live[k + 1];
+      const hit = segmentIndexBetween(a, c, pts.length, !!run.polyline.closed);
+      if (!hit) {
+        out.push(pts[c]);
+        continue;
+      }
+      const p0 = pts[hit.seg];
+      const p1 = pts[(hit.seg + 1) % pts.length];
+      const flat: [number, number][] = [p0, ...flattenSegment(p0, p1, segmentTypeAt(run, hit.seg))];
+      const seq = hit.reversed ? flat.slice().reverse() : flat;
+      out.push(...seq.slice(1));
+    }
+    return out;
+  }
+
+  function distToPolylineMM(pts: [number, number][], target: [number, number]): number {
+    let best = Infinity;
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [ax, ay] = pts[i];
+      const [bx, by] = pts[i + 1];
+      const abx = bx - ax;
+      const aby = by - ay;
+      const len2 = abx * abx + aby * aby;
+      let t = len2 > 0 ? ((target[0] - ax) * abx + (target[1] - ay) * aby) / len2 : 0;
+      t = Math.max(0, Math.min(1, t));
+      const d = Math.hypot(target[0] - (ax + t * abx), target[1] - (ay + t * aby));
+      if (d < best) best = d;
+    }
+    if (pts.length === 1) return Math.hypot(target[0] - pts[0][0], target[1] - pts[0][1]);
+    return best;
+  }
+
+  const onlyBlockout = (run: DesignRun) => {
+    expect(run.blockouts).toHaveLength(1);
+    return run.blockouts![0];
+  };
+
+  // -- (a) the rule-id filter --------------------------------------------
+  describe('filters on the rule id, not on severity', () => {
+    it('paints crossings and ignores min_spacing findings at the same spot', () => {
+      const doc = docOf([straightRun('r1', 12)]);
+      const findings = [
+        { rule: 'min_spacing', x_mm: 50, y_mm: 0 },
+        { rule: 'min_spacing', x_mm: 100, y_mm: 0 },
+        { rule: 'min_spacing', x_mm: 150, y_mm: 0 },
+        { rule: CROSSING, x_mm: 100, y_mm: 0 },
+      ];
+      // Vacuity guard: the fixture MUST contain min_spacing findings, or the
+      // assertion below passes for the wrong reason.
+      expect(findings.filter((f) => f.rule === 'min_spacing')).toHaveLength(3);
+
+      const res = ops.placeBlockoutsFromCrossings(doc, findings, { projectDiameterMM: 12 });
+      expect(res.crossings).toBe(1);
+      expect(res.placed).toBe(1);
+      const b = onlyBlockout(res.doc.runs[0]);
+      // 24mm of paint centred on x=100 — the two min_spacing spots are
+      // outside it, which is the whole point of the rule-id filter.
+      expect(b.start_live_index).toBe(88);
+      expect(b.end_live_index).toBe(112);
+      expect(distToPolylineMM(paintedPolyline(res.doc.runs[0], b), [50, 0])).toBeGreaterThan(30);
+      expect(distToPolylineMM(paintedPolyline(res.doc.runs[0], b), [150, 0])).toBeGreaterThan(30);
+    });
+
+    it('a report of only min_spacing errors paints nothing and returns the same doc', () => {
+      const doc = docOf([straightRun('r1', 12)]);
+      const res = ops.placeBlockoutsFromCrossings(doc, [
+        { rule: 'min_spacing', x_mm: 40, y_mm: 0 },
+        { rule: 'min_spacing', x_mm: 120, y_mm: 0 },
+      ]);
+      expect(res.crossings).toBe(0);
+      expect(res.placed).toBe(0);
+      expect(res.doc).toBe(doc);
+      expect(res.doc.runs[0].blockouts ?? []).toHaveLength(0);
+    });
+
+    it('CROSSING_BLOCKOUT_RULE is the validator rule id', () => {
+      // internal/validate/types.go:19. If the Go constant is ever renamed the
+      // op silently stops finding anything, so pin the string.
+      expect(ops.CROSSING_BLOCKOUT_RULE).toBe('crossing_needs_blockout');
+    });
+  });
+
+  // -- (b) the span --------------------------------------------------------
+  describe('painted span is ~2 tube diameters, derived not hard-coded', () => {
+    const paintedMM = (run: DesignRun) =>
+      ops.chordLengthMM(paintedPolyline(run, onlyBlockout(run)));
+
+    it('defaults to 2 x the run diameter', () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 12)]),
+        [{ rule: CROSSING, x_mm: 100, y_mm: 0 }],
+      );
+      expect(ops.crossingBlockoutSpanMM(res.doc.runs[0])).toBe(24);
+      expect(paintedMM(res.doc.runs[0])).toBeCloseTo(24, 6);
+    });
+
+    it('falls back to the project tube spec when the run has no override', () => {
+      const run = straightRun('r1');
+      expect(run.tube_diameter_mm).toBeUndefined();
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([run]),
+        [{ rule: CROSSING, x_mm: 100, y_mm: 0 }],
+        { projectDiameterMM: 8 },
+      );
+      expect(paintedMM(res.doc.runs[0])).toBeCloseTo(16, 6);
+    });
+
+    it("the run's own diameter wins over the project spec", () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 15)]),
+        [{ rule: CROSSING, x_mm: 100, y_mm: 0 }],
+        { projectDiameterMM: 8 },
+      );
+      expect(ops.crossingBlockoutSpanMM(res.doc.runs[0], 8)).toBe(30);
+      expect(paintedMM(res.doc.runs[0])).toBeCloseTo(30, 6);
+    });
+
+    it('nothing hard-codes 30: an 8mm tube paints 16mm, a 15mm tube 30mm', () => {
+      const eight = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 8)]),
+        [{ rule: CROSSING, x_mm: 100, y_mm: 0 }],
+      );
+      expect(paintedMM(eight.doc.runs[0])).toBeCloseTo(16, 6);
+      expect(ops.BLOCKOUT_SPAN_DIAMETERS).toBe(2);
+    });
+
+    it('an operator override beats the derived default', () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 12)]),
+        [{ rule: CROSSING, x_mm: 100, y_mm: 0 }],
+        { spanMM: 60 },
+      );
+      expect(paintedMM(res.doc.runs[0])).toBeCloseTo(60, 6);
+    });
+  });
+
+  // -- the index problem ---------------------------------------------------
+  describe('closed run with two electrodes — live indices, not raw ones', () => {
+    // 24-gon, r=50 about (100,100). Electrodes at raw 6 (top) and raw 18
+    // (bottom): forward walks 6..18, the LEFT half. The crossing sits on raw
+    // vertex 12 — live index 6. The two index spaces differ by exactly the
+    // electrode offset, which is what makes this fixture able to fail.
+    const N = 24;
+    function ring(direction: 'forward' | 'backward'): DesignRun {
+      const points: [number, number][] = [];
+      for (let i = 0; i < N; i++) {
+        const a = (i / N) * Math.PI * 2;
+        points.push([100 + 50 * Math.cos(a), 100 + 50 * Math.sin(a)]);
+      }
+      return {
+        id: 'loop',
+        polyline: { points, closed: true },
+        tube_diameter_mm: 12,
+        electrodes: [{ point_index: 6 }, { point_index: 18 }],
+        direction,
+      };
+    }
+    const CHORD_MM = 2 * 50 * Math.sin(Math.PI / N);
+
+    it('places the block-out so it covers the crossing point in millimetres', () => {
+      const run = ring('forward');
+      const crossing: [number, number] = run.polyline.points[12]; // (50, 100)
+      const { live } = runArcs(run);
+      // The fixture is only meaningful while the two index spaces disagree.
+      expect(live[6]).toBe(12);
+      expect(live.length).toBe(13);
+
+      const res = ops.placeBlockoutsFromCrossings(docOf([run]), [
+        { rule: CROSSING, x_mm: crossing[0], y_mm: crossing[1] },
+      ]);
+      expect(res.placed).toBe(1);
+      const b = onlyBlockout(res.doc.runs[0]);
+
+      // Brackets the crossing's LIVE index (6), not its RAW index (12).
+      expect(b.start_live_index).toBeLessThan(6);
+      expect(b.end_live_index).toBeGreaterThan(6);
+      expect(distToPolylineMM(paintedPolyline(res.doc.runs[0], b), crossing)).toBeLessThan(0.5);
+
+      // At least the requested 24mm of glass, and no more than one chord of
+      // slop at each end (indices round OUTWARD so the span is covered).
+      const mm = ops.chordLengthMM(paintedPolyline(res.doc.runs[0], b));
+      expect(mm).toBeGreaterThanOrEqual(24 - 1e-9);
+      expect(mm).toBeLessThanOrEqual(24 + 2 * CHORD_MM);
+
+      // NEGATIVE CONTROL — the same numbers read as RAW vertex indices, i.e.
+      // what a naive implementation writes. That glass is on the far side of
+      // the loop, ~60mm from the crossing: this is the failure the fixture
+      // exists to catch.
+      const rawRead = run.polyline.points.slice(b.start_live_index, b.end_live_index + 1);
+      expect(distToPolylineMM(rawRead, crossing)).toBeGreaterThan(20);
+    });
+
+    it('honours direction: a crossing on the dead arc is not painted', () => {
+      // (150,100) is raw vertex 0 — on the loop, but on the INACTIVE half
+      // when direction is forward. Painting the nearest live glass there
+      // would put paint 70mm from the crossing.
+      const dead = ops.placeBlockoutsFromCrossings(docOf([ring('forward')]), [
+        { rule: CROSSING, x_mm: 150, y_mm: 100 },
+      ]);
+      expect(dead.placed).toBe(0);
+      expect(dead.unresolved).toBe(1);
+      expect(dead.doc).toBe(dead.doc);
+
+      // Flip the direction and the same point is live glass, so it paints.
+      const live = ops.placeBlockoutsFromCrossings(docOf([ring('backward')]), [
+        { rule: CROSSING, x_mm: 150, y_mm: 100 },
+      ]);
+      expect(live.placed).toBe(1);
+      const b = onlyBlockout(live.doc.runs[0]);
+      expect(distToPolylineMM(paintedPolyline(live.doc.runs[0], b), [150, 100])).toBeLessThan(0.5);
+    });
+  });
+
+  // -- idempotence and merging --------------------------------------------
+  describe('idempotence and merging', () => {
+    it('a second pass adds nothing and hands back the same doc reference', () => {
+      const doc = docOf([straightRun('r1', 12)]);
+      const findings = [
+        { rule: CROSSING, x_mm: 60, y_mm: 0 },
+        { rule: CROSSING, x_mm: 160, y_mm: 0 },
+      ];
+      const first = ops.placeBlockoutsFromCrossings(doc, findings);
+      expect(first.placed).toBe(2);
+      expect(first.doc.runs[0].blockouts).toHaveLength(2);
+
+      const second = ops.placeBlockoutsFromCrossings(first.doc, findings);
+      expect(second.placed).toBe(0);
+      expect(second.skipped).toBe(2);
+      // Same reference: editDoc's identity guard then skips the undo push.
+      expect(second.doc).toBe(first.doc);
+    });
+
+    it('overlapping spans on one run merge instead of stacking', () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 12)]),
+        [
+          { rule: CROSSING, x_mm: 100, y_mm: 0 },
+          { rule: CROSSING, x_mm: 110, y_mm: 0 },
+        ],
+      );
+      // Two crossings acted on…
+      expect(res.placed).toBe(2);
+      // …one continuous painted span, 88..122, not two stacked ones.
+      const b = onlyBlockout(res.doc.runs[0]);
+      expect(b).toEqual({ start_live_index: 88, end_live_index: 122 });
+    });
+
+    it('a block-out the operator painted by hand counts as a skip', () => {
+      const run = straightRun('r1', 12);
+      run.blockouts = [{ start_live_index: 80, end_live_index: 120 }];
+      const doc = docOf([run]);
+      const res = ops.placeBlockoutsFromCrossings(doc, [{ rule: CROSSING, x_mm: 100, y_mm: 0 }]);
+      expect(res.placed).toBe(0);
+      expect(res.skipped).toBe(1);
+      expect(res.doc).toBe(doc);
+    });
+  });
+
+  // -- clamping ------------------------------------------------------------
+  describe('clamping at the ends of a run', () => {
+    it('a crossing at the first vertex paints a span inside the run', () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 12)]),
+        [{ rule: CROSSING, x_mm: 0, y_mm: 0 }],
+      );
+      const b = onlyBlockout(res.doc.runs[0]);
+      expect(b.start_live_index).toBe(0);
+      expect(b.end_live_index).toBe(12);
+      expect(distToPolylineMM(paintedPolyline(res.doc.runs[0], b), [0, 0])).toBeLessThan(1e-9);
+    });
+
+    it('a crossing at the last vertex stays in range', () => {
+      const res = ops.placeBlockoutsFromCrossings(
+        docOf([straightRun('r1', 12)]),
+        [{ rule: CROSSING, x_mm: 200, y_mm: 0 }],
+      );
+      const b = onlyBlockout(res.doc.runs[0]);
+      expect(b.start_live_index).toBe(188);
+      expect(b.end_live_index).toBe(200);
+      expect(b.end_live_index).toBeLessThan(res.doc.runs[0].polyline.points.length);
+    });
+
+    it('a run shorter than the span paints the whole run, not a negative index', () => {
+      const stub: DesignRun = {
+        id: 'stub',
+        polyline: { points: [[0, 0], [4, 0]], closed: false },
+        tube_diameter_mm: 12,
+      };
+      const res = ops.placeBlockoutsFromCrossings(docOf([stub]), [
+        { rule: CROSSING, x_mm: 2, y_mm: 0 },
+      ]);
+      const b = onlyBlockout(res.doc.runs[0]);
+      expect(b.start_live_index).toBe(0);
+      expect(b.end_live_index).toBe(1);
+    });
+  });
+
+  // -- run choice ----------------------------------------------------------
+  describe('which of the two crossing tubes gets painted', () => {
+    function crossPair(): DesignDoc {
+      const h: [number, number][] = [];
+      for (let i = 0; i <= 200; i++) h.push([i, 100]);
+      const v: [number, number][] = [];
+      for (let i = 0; i <= 200; i++) v.push([100, i]);
+      return docOf([
+        { id: 'horizontal', polyline: { points: h, closed: false }, tube_diameter_mm: 12 },
+        { id: 'vertical', polyline: { points: v, closed: false }, tube_diameter_mm: 12 },
+      ]);
+    }
+
+    it('paints ONE tube per crossing, not both', () => {
+      // Painting both doubles the dark glass at every crossing, which is the
+      // failure mode the 2-diameter span exists to avoid.
+      const res = ops.placeBlockoutsFromCrossings(crossPair(), [
+        { rule: CROSSING, x_mm: 100, y_mm: 100 },
+      ]);
+      expect(res.placed).toBe(1);
+      const painted = res.doc.runs.filter((r) => (r.blockouts?.length ?? 0) > 0);
+      expect(painted.map((r) => r.id)).toEqual(['horizontal']); // tie -> doc order
+    });
+
+    it('picks the run whose glass is nearest the finding', () => {
+      // Nudge the finding 3mm along the vertical tube: it is still exactly on
+      // the vertical run's centreline and 3mm off the horizontal one.
+      const res = ops.placeBlockoutsFromCrossings(crossPair(), [
+        { rule: CROSSING, x_mm: 100, y_mm: 103 },
+      ]);
+      const painted = res.doc.runs.filter((r) => (r.blockouts?.length ?? 0) > 0);
+      expect(painted.map((r) => r.id)).toEqual(['vertical']);
+    });
+
+    it('a finding nowhere near any run is reported, not painted onto the nearest thing', () => {
+      const doc = crossPair();
+      const res = ops.placeBlockoutsFromCrossings(doc, [
+        { rule: CROSSING, x_mm: 5000, y_mm: 5000 },
+      ]);
+      expect(res.unresolved).toBe(1);
+      expect(res.placed).toBe(0);
+      expect(res.doc).toBe(doc);
+    });
+
+    it('a finding with no coordinates is reported, not guessed at', () => {
+      const doc = crossPair();
+      const res = ops.placeBlockoutsFromCrossings(doc, [{ rule: CROSSING }]);
+      expect(res.crossings).toBe(1);
+      expect(res.unresolved).toBe(1);
+      expect(res.doc).toBe(doc);
+    });
+  });
+
+  // -- arcs ----------------------------------------------------------------
+  describe('arc runs are measured on the curve, not the chord', () => {
+    function arcRun(): DesignRun {
+      return {
+        id: 'bow',
+        polyline: {
+          points: [[0, 0], [100, 0]],
+          closed: false,
+          segment_types: ['arc'],
+        },
+        // 4mm tube => a 20mm snap tolerance (the 20mm floor), comfortably
+        // less than the 25mm the bow stands off its chord.
+        tube_diameter_mm: 4,
+      };
+    }
+
+    it('a crossing on the bow is found even though it is 25mm off the chord', () => {
+      const run = arcRun();
+      const flat = flatRunPoints(run);
+      let apex = flat[0];
+      for (const p of flat) if (Math.abs(p[1]) > Math.abs(apex[1])) apex = p;
+      // Vacuity guard: the fixture is only a test while the bow is far enough
+      // off the chord that a chord-based measurement would MISS it.
+      expect(distToPolylineMM([[0, 0], [100, 0]], apex)).toBeGreaterThan(20);
+
+      const res = ops.placeBlockoutsFromCrossings(docOf([run]), [
+        { rule: CROSSING, x_mm: apex[0], y_mm: apex[1] },
+      ]);
+      expect(res.placed).toBe(1);
+      const b = onlyBlockout(res.doc.runs[0]);
+      expect(distToPolylineMM(paintedPolyline(res.doc.runs[0], b), apex)).toBeLessThan(0.5);
+    });
+
+    it('leaves geometry and segment_types untouched on every run it paints', () => {
+      const run: DesignRun = {
+        id: 'mixed',
+        polyline: {
+          points: [[0, 0], [100, 0], [200, 0], [300, 0]],
+          closed: false,
+          segment_types: ['arc', 'line', 'arc_r'],
+        },
+        tube_diameter_mm: 12,
+      };
+      const doc = docOf([run]);
+      const res = ops.placeBlockoutsFromCrossings(doc, [
+        { rule: CROSSING, x_mm: 250, y_mm: 0 },
+      ]);
+      expect(res.placed).toBe(1);
+      const after = res.doc.runs[0];
+      // Not a point-count op: the vertex list and the arc list are identical.
+      expect(after.polyline.points).toEqual(run.polyline.points);
+      expect(after.polyline.segment_types).toEqual(['arc', 'line', 'arc_r']);
+      expectWellFormedDoc(res.doc);
     });
   });
 });
