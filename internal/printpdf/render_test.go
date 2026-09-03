@@ -34,6 +34,12 @@ func init() {
 	gofpdf.SetDefaultCreationDate(fixed)
 	gofpdf.SetDefaultModificationDate(fixed)
 	gofpdf.SetDefaultCatalogSort(true)
+	// The third source of nondeterminism, and the one that is ours rather
+	// than gofpdf's: the tile footer stamps the current UTC date. Left
+	// live, TestRenderFromDocGoldenBytes passes only on the calendar day
+	// its digest was recorded and goes red at midnight UTC on every branch
+	// simultaneously. Pinned to the same fixed date as the PDF metadata.
+	footerDate = func() string { return fixed.Format("2006-01-02") }
 }
 
 // TestMirrorOnDefault pins the trade-default behavior: an unset
