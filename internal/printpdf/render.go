@@ -137,6 +137,19 @@ const MaxCopies = 50
 // ValidRotate reports whether s is an accepted Options.Rotate value.
 // The empty string is valid (it means "no rotation"), which is what
 // makes an absent `rotate` query parameter a no-op instead of an error.
+// footerDate returns the date stamped into every tile footer.
+//
+// It is a variable so tests can pin it. TestRenderFromDocGoldenBytes hashes
+// the entire PDF, and a live clock made that digest valid only on the UTC day
+// it was recorded: the suite went red at midnight UTC and stayed red, on every
+// branch at once, with nothing in the diff to explain it. That is the third
+// source of PDF nondeterminism -- render_test.go's init() already pins gofpdf's
+// creation/modification dates and catalog map order; this one was missed
+// because it is our own output rather than the library's.
+//
+// The printed sheet still carries the real date. Only the test pins it.
+var footerDate = func() string { return time.Now().UTC().Format("2006-01-02") }
+
 func ValidRotate(s string) bool {
 	switch s {
 	case RotateNone, RotateFixed90, RotateFit:
@@ -1342,7 +1355,7 @@ func drawTileOverlay(pdf *gofpdf.Fpdf, opts Options, pageW, pageH, contentW, con
 	if copies > 1 {
 		footerText += fmt.Sprintf("  •  Copy %d of %d", copyNo, copies)
 	}
-	footerText += fmt.Sprintf("  •  Tile %d,%d of %d×%d  •  %s", col+1, row+1, cols, rows, time.Now().UTC().Format("2006-01-02"))
+	footerText += fmt.Sprintf("  •  Tile %d,%d of %d×%d  •  %s", col+1, row+1, cols, rows, footerDate())
 	pdf.SetFont("Helvetica", "", 7)
 	tw := pdf.GetStringWidth(footerText)
 	pdf.Text(pageW-mx-tw, footerY+1, footerText)

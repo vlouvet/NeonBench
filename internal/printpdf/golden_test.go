@@ -130,7 +130,15 @@ func goldenOptions() Options {
 //
 // If this fails after a deliberate rendering change, re-take the digest and say
 // so in the commit message — do not silence it.
-const goldenPDFSHA256 = "43d9a82bf4f95681ae3c35531733a79de3738be233db030f5d30c465569557de"
+//
+// RE-TAKEN 2026-09-03. Not a rendering change: the previous digest was recorded
+// against a LIVE CLOCK. The tile footer stamps time.Now().UTC(), so the digest
+// was only ever valid on the UTC day it was taken, and the suite went red at
+// midnight on every branch at once — two docs-only PRs failed with nothing in
+// their diffs to explain it. render_test.go's init() now pins footerDate
+// alongside gofpdf's dates, so this digest is stable rather than perishable.
+// The rendered bytes are unchanged at 40063; only the 10-character date differs.
+const goldenPDFSHA256 = "4df6b06f59856125324fe7f693d09ab34187e8707eb83f9612e8ecf6ef0b9e21"
 
 func TestRenderFromDocGoldenBytes(t *testing.T) {
 	out, err := RenderFromDoc(goldenDoc(), goldenOptions(), 12)
@@ -142,5 +150,42 @@ func TestRenderFromDocGoldenBytes(t *testing.T) {
 	if got != goldenPDFSHA256 {
 		t.Errorf("rendered PDF digest = %s (%d bytes), want %s — the renderer's output changed",
 			got, len(out), goldenPDFSHA256)
+	}
+}
+
+// TestGoldenDigestDoesNotDependOnTheWallClock is the regression test for the
+// failure that re-took the digest above.
+//
+// The golden test hashes the whole PDF, and the tile footer stamps the current
+// UTC date, so before this seam existed the digest silently expired at midnight
+// UTC. It failed on every open branch at once, including two docs-only PRs,
+// which is the worst shape a failure can have: nothing in the diff explains it,
+// so the natural reading is "my change broke the renderer" and the natural fix
+// is to re-take the digest — which buys exactly one more day.
+//
+// Rendering under two different dates must differ (the seam is real and wired
+// into the output), and rendering twice under the same date must not (the
+// digest is a function of the design, not of when the suite ran).
+func TestGoldenDigestDoesNotDependOnTheWallClock(t *testing.T) {
+	orig := footerDate
+	t.Cleanup(func() { footerDate = orig })
+
+	digestOn := func(date string) string {
+		footerDate = func() string { return date }
+		out, err := RenderFromDoc(goldenDoc(), goldenOptions(), 12)
+		if err != nil {
+			t.Fatalf("RenderFromDoc on %s: %v", date, err)
+		}
+		sum := sha256.Sum256(out)
+		return hex.EncodeToString(sum[:])
+	}
+
+	day1, day2 := digestOn("2026-09-02"), digestOn("2026-09-03")
+	if day1 == day2 {
+		t.Fatal("the footer date does not reach the PDF — this seam is not " +
+			"wired to the output, so pinning it protects nothing")
+	}
+	if again := digestOn("2026-09-02"); again != day1 {
+		t.Errorf("same date rendered two different PDFs: %s then %s", day1, again)
 	}
 }
