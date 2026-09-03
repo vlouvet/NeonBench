@@ -131,6 +131,45 @@ for n, st in sorted(seen.items(), key=lambda kv: int(kv[0])):
 EOF
 ```
 
+**A third check, added 2026-09-02 after the first two missed four shipped rows.**
+Neither one-liner above can catch a row that shipped and was **never marked at
+all**: it appears once, unmarked, so there is nothing for it to disagree with.
+Rows 127-130 sat that way for a day — every one of them merged that morning, and
+Appendix B still read as though the Artech demo issues were untouched. Cross-
+reference merged PR titles against the rows they name instead:
+
+```sh
+gh pr list --state merged --limit 200 --json number,title \
+  --jq '.[] | "\(.number)\t\(.title)"' |
+grep -oE '^[0-9]+\s.*Tier [0-9]+ #[0-9]+' |
+while IFS=$'\t' read -r num title; do
+  row=$(sed -E 's/.*Tier [0-9]+ #([0-9]+).*/\1/' <<<"$title")
+  grep -qE "^$row\. (✅|🟡)" todo.md || echo "UNMARKED: row $row shipped in PR #$num"
+done
+```
+
+**Multi-part rows are a legitimate false positive — do NOT silence them by
+marking the row.** Row 70 fires on this check because 70b shipped in PR #187,
+while 70c (the self-updater backend) and 70d (its UI) have never been written.
+Marking #70 ✅ would hide the fact that **NeonBench has no auto-updater at all**,
+which is the first thing a shop asks about. When the check names a row whose
+spec is divided into sub-PRs, the fix is to confirm the sub-PR headings in the
+spec carry their own status markers, and leave the row open.
+
+**🟡 counts as marked.** A partial row (row 50: backend shipped in PR #51, UI
+half open) is deliberately 🟡, not ✅. The check accepts either, or it reports a
+row whose status is already accurate and trains you to ignore it.
+
+**Keep the `--limit` high.** At 60 the check reached back only a few days and
+reported clean while Tier 2 rows 71, 72 and 73 had been shipped (PRs #109,
+#113, #110) and left unmarked for weeks — the whole "largest NW parity gaps"
+tier read as open when it was finished. 200 covers the project's history to
+date; raise it rather than trusting a clean result from a short window.
+
+Run it at the end of every round, not just parallel ones. A solo PR that closes
+a row is exactly as likely to forget the checkmark, and the cost is the same:
+the next round reads the row as open and may redo it.
+
 Do not use a bare `uniq -d` on the row numbers for this — it fires on every
 legitimately-duplicated row, so it reads as noise and gets ignored, which is
 worse than no check.
