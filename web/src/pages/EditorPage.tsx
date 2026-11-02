@@ -17,6 +17,14 @@ import {
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
 import ShortcutHelp from '../components/ShortcutHelp';
 import {
+  copySelection,
+  heldClipboard,
+  holdClipboard,
+  nudgeSelection,
+  pasteRuns,
+  type RunClipboard,
+} from '../lib/runClipboard';
+import {
   formatBinding,
   isTypingTarget,
   loadKeymap,
@@ -51,6 +59,7 @@ import {
   formatSizeMM,
   lengthFieldText,
   normalizeUnits,
+  nudgeStepMM,
   UNIT_NAME,
   type DisplayUnits,
 } from '../lib/units';
@@ -629,6 +638,19 @@ export default function EditorPage() {
     saveKeymap(next);
   }
 
+  function countRuns(n: number): string {
+    return `${n} run${n === 1 ? '' : 's'}`;
+  }
+
+  // `steps` is how many large nudges away from the original to land.
+  function pasteIntoDoc(clip: RunClipboard, steps: number) {
+    const offset = steps * nudgeStepMM(displayUnits, true);
+    const result = applyOp((d) => pasteRuns(d, clip, offset, offset));
+    if (!result) return;
+    setSelectedRunIds(result.newIds);
+    setStatusMessage(`Pasted ${countRuns(result.newIds.length)}.`);
+  }
+
   // Returns whether the key did anything: an unhandled key must keep its
   // default, or a stray Delete with nothing selected would be swallowed.
   function runHotkey(id: string, e: KeyboardEvent): boolean {
@@ -656,6 +678,54 @@ export default function EditorPage() {
           runs: prev.runs.filter((r) => !ids.has(r.id)),
         }));
         clearSelection();
+        return true;
+      }
+      case 'edit.copy':
+      case 'edit.cut': {
+        // No selection: leave the key alone so page text still copies.
+        const clip = doc ? copySelection(doc, selectedRunIds) : null;
+        if (!clip) return false;
+        holdClipboard(clip);
+        if (id === 'edit.cut') {
+          const cut = new Set(clip.runs.map((r) => r.id));
+          editDoc((prev) => ({ ...prev, runs: prev.runs.filter((r) => !cut.has(r.id)) }));
+          clearSelection();
+        }
+        setStatusMessage(`${id === 'edit.cut' ? 'Cut' : 'Copied'} ${countRuns(clip.runs.length)}.`);
+        return true;
+      }
+      case 'edit.paste':
+      case 'edit.pasteInPlace': {
+        const clip = heldClipboard();
+        if (!clip) return false;
+        // Each plain paste steps further out, so repeats do not stack up.
+        if (id === 'edit.paste') clip.pasteCount += 1;
+        pasteIntoDoc(clip, id === 'edit.paste' ? clip.pasteCount : 0);
+        return true;
+      }
+      case 'edit.duplicate': {
+        const clip = doc ? copySelection(doc, selectedRunIds) : null;
+        if (!clip) return false;
+        pasteIntoDoc(clip, 1);
+        return true;
+      }
+      case 'nudge.left':
+      case 'nudge.right':
+      case 'nudge.up':
+      case 'nudge.down':
+      case 'nudge.leftCoarse':
+      case 'nudge.rightCoarse':
+      case 'nudge.upCoarse':
+      case 'nudge.downCoarse': {
+        // Select tool only: in Node edit the arrows would move the whole run
+        // while the operator is looking at one vertex.
+        if (!doc || tool !== 'select' || selectedRunIds.length === 0) return false;
+        const step = nudgeStepMM(displayUnits, id.endsWith('Coarse'));
+        const dx = id.includes('left') ? -step : id.includes('right') ? step : 0;
+        const dy = id.includes('up') ? -step : id.includes('down') ? step : 0;
+        if (nudgeSelection(doc, selectedRunIds, dx, dy) === doc) return false;
+        editDoc((prev) => nudgeSelection(prev, selectedRunIds, dx, dy));
+        setStatusMessage(`Nudged ${formatLengthMM(step, displayUnits)}.`);
         return true;
       }
       case 'edit.cancel':

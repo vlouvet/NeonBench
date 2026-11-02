@@ -313,3 +313,13 @@ export function resolveLengthEdit(
   const mm = parseLengthToMM(text, units);
   return mm === null ? { kind: 'invalid' } : { kind: 'value', mm };
 }
+
+/**
+ * One arrow-key nudge. A sixteenth is the smallest mark on a tape, and the
+ * coarse step is a half inch rather than ten sixteenths because 5/8 is a
+ * number nobody is reaching for.
+ */
+export function nudgeStepMM(units: DisplayUnits, coarse: boolean): number {
+  if (units === 'in') return inchesToMM(coarse ? 0.5 : 1 / INCH_DENOMINATOR);
+  return coarse ? 10 : 1;
+}

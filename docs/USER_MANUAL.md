@@ -383,6 +383,11 @@ change. Changes are remembered in this browser. Hovering a toolbar button shows 
 | **Cmd/Ctrl + Shift + Z** / **Cmd/Ctrl + Y** | Redo |
 | **Cmd/Ctrl + A** | Select all runs |
 | **Delete / Backspace** | Delete selected runs |
+| **Cmd/Ctrl + C / X / V** | Copy / cut / paste the selected runs |
+| **Cmd/Ctrl + Shift + V** | Paste in place |
+| **Cmd/Ctrl + D** | Duplicate |
+| **Arrow keys** | Nudge the selection 1 mm, or 1/16″ in an inch project (Select tool) |
+| **Shift + arrow keys** | Nudge 10 mm, or 1/2″ |
 | **Esc** | Cancel the action in progress, then clear the selection, then return to Select |
 | **V** / **N** / **O** | Select / Node edit / Break/Move Opening |
 | **P** / **R** / **Shift+R** / **A** | Pen / Rectangle / Circle / Arc |
@@ -393,6 +398,9 @@ change. Changes are remembered in this browser. Hovering a toolbar button shows 
 | **?** | Show this list |
 | **Shift** (while resizing) | Uniform scale |
 | **Enter** | Commit a pen polyline |
+
+Copied runs can be pasted into another design in the same browser tab. A pasted run is a fresh
+copy: it keeps its marks and colour, but leaves its raceway and circuit behind.
 
 Pressing the key of the active tool returns to Select. Tool keys do nothing while you are typing
 in a field or on the canvas.

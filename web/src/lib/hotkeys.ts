@@ -20,9 +20,9 @@
  */
 import type { EditorTool } from '../components/EditorCanvas';
 
-export type HotkeyCategory = 'Edit' | 'Draw' | 'Neon marks' | 'Validation' | 'Help';
+export type HotkeyCategory = 'Edit' | 'Move' | 'Draw' | 'Neon marks' | 'Validation' | 'Help';
 
-export const HOTKEY_CATEGORIES: HotkeyCategory[] = ['Edit', 'Draw', 'Neon marks', 'Validation', 'Help'];
+export const HOTKEY_CATEGORIES: HotkeyCategory[] = ['Edit', 'Move', 'Draw', 'Neon marks', 'Validation', 'Help'];
 
 export type HotkeyDef = {
   id: string;
@@ -47,10 +47,24 @@ export const HOTKEYS: HotkeyDef[] = [
   { id: 'edit.redo', label: 'Redo', category: 'Edit', defaults: ['mod+shift+z', 'mod+y'], whileCaret: true },
   { id: 'edit.selectAll', label: 'Select all runs', category: 'Edit', defaults: ['mod+a'] },
   { id: 'edit.delete', label: 'Delete selected runs', category: 'Edit', defaults: ['delete', 'backspace'] },
+  { id: 'edit.copy', label: 'Copy', category: 'Edit', defaults: ['mod+c'] },
+  { id: 'edit.cut', label: 'Cut', category: 'Edit', defaults: ['mod+x'] },
+  { id: 'edit.paste', label: 'Paste', category: 'Edit', defaults: ['mod+v'] },
+  { id: 'edit.pasteInPlace', label: 'Paste in place', category: 'Edit', defaults: ['mod+shift+v'] },
+  { id: 'edit.duplicate', label: 'Duplicate', category: 'Edit', defaults: ['mod+d'] },
   { id: 'edit.cancel', label: 'Cancel, clear selection, then back to Select', category: 'Edit', defaults: ['escape'], fixed: true },
   tool('select', 'Select tool', 'Edit', 'v'),
   tool('node', 'Node edit', 'Edit', 'n'),
   tool('break-open', 'Break/Move Opening', 'Edit', 'o'),
+
+  { id: 'nudge.left', label: 'Nudge left', category: 'Move', defaults: ['arrowleft'] },
+  { id: 'nudge.right', label: 'Nudge right', category: 'Move', defaults: ['arrowright'] },
+  { id: 'nudge.up', label: 'Nudge up', category: 'Move', defaults: ['arrowup'] },
+  { id: 'nudge.down', label: 'Nudge down', category: 'Move', defaults: ['arrowdown'] },
+  { id: 'nudge.leftCoarse', label: 'Nudge left, large step', category: 'Move', defaults: ['shift+arrowleft'] },
+  { id: 'nudge.rightCoarse', label: 'Nudge right, large step', category: 'Move', defaults: ['shift+arrowright'] },
+  { id: 'nudge.upCoarse', label: 'Nudge up, large step', category: 'Move', defaults: ['shift+arrowup'] },
+  { id: 'nudge.downCoarse', label: 'Nudge down, large step', category: 'Move', defaults: ['shift+arrowdown'] },
 
   tool('pen', 'Pen', 'Draw', 'p'),
   tool('rect', 'Rectangle', 'Draw', 'r'),

@@ -138,7 +138,7 @@ function mapRuns(
   return changed ? { ...doc, runs } : doc;
 }
 
-function translateRun(run: DesignRun, dx: number, dy: number): DesignRun {
+export function translateRun(run: DesignRun, dx: number, dy: number): DesignRun {
   if (dx === 0 && dy === 0) return run;
   const points = run.polyline.points.map(
     ([x, y]): [number, number] => [x + dx, y + dy],
