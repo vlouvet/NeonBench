@@ -367,18 +367,29 @@ The **Color** dropdown on a run sets both the documentation color and the 3D emi
 
 ## Appendix B — Keyboard shortcuts
 
+Press **?** in the editor for the full list. It shows the keys currently in force, and it is
+where you change them: click a key, press the new one, and **Reset to defaults** undoes every
+change. Changes are remembered in this browser. Hovering a toolbar button shows its key too.
+
 | Key | Action |
 |---|---|
 | **Cmd/Ctrl + Z** | Undo |
 | **Cmd/Ctrl + Shift + Z** / **Cmd/Ctrl + Y** | Redo |
 | **Cmd/Ctrl + A** | Select all runs |
 | **Delete / Backspace** | Delete selected runs |
-| **O** | Break/Move Opening tool |
-| **C** | Connect tool |
-| **J** / **]** , **K** / **[** | Cycle selection to next / previous run |
+| **Esc** | Cancel the action in progress, then clear the selection, then return to Select |
+| **V** / **N** / **O** | Select / Node edit / Break/Move Opening |
+| **P** / **R** / **Shift+R** / **A** | Pen / Rectangle / Circle / Arc |
+| **T** / **L** / **M** | Text / Label / Dimension |
+| **E** / **B** / **U** / **Shift+U** | Place electrode / Mark blockout / Mark jump / Mark drop |
+| **S** / **D** / **I** / **C** / **G** | Mark support / Mark double-back / Insert double-back / Connect / Add bend |
+| **J** / **]** , **K** / **[** | Next / previous validation issue |
+| **?** | Show this list |
 | **Shift** (while resizing) | Uniform scale |
-| **Esc** | Cancel the current tool action / staged point |
 | **Enter** | Commit a pen polyline |
+
+Pressing the key of the active tool returns to Select. Tool keys do nothing while you are typing
+in a field or on the canvas.
 
 ---
 

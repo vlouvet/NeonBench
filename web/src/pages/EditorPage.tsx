@@ -15,6 +15,16 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import ShortcutHelp from '../components/ShortcutHelp';
+import {
+  formatBinding,
+  isTypingTarget,
+  loadKeymap,
+  matchHotkey,
+  saveKeymap,
+  toolForHotkey,
+  type Keymap,
+} from '../lib/hotkeys';
 import ArrangePanel from '../components/ArrangePanel';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
@@ -458,62 +468,6 @@ export default function EditorPage() {
       .catch((e: Error) => setError(e.message));
   }, [projectId, versionId]);
 
-  // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo. Skipped
-  // when the user is typing into an input — otherwise an editor undo would
-  // hijack input field text undo. Also handles the unmodified single-key
-  // tool hotkeys (Tier 3 #61: 'O' for Break/Move Opening).
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      const meta = e.metaKey || e.ctrlKey;
-      // Tier 2 #101 — a live text caret owns every unmodified key.
-      // Without this, typing "open channel" toggles Break/Move Opening
-      // on the 'o' and Connect Tubes on the 'c', mid-word. Cmd/Ctrl
-      // combinations are deliberately still live, so undo and redo keep
-      // working while typing.
-      if (textCaretActive && !meta) return;
-      if (!meta) {
-        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'o') {
-          // Tier 3 #61 — toggle Break/Move Opening tool. Pressing while
-          // already active reverts to select so the operator can dismiss
-          // the tool with the same key.
-          e.preventDefault();
-          setTool(tool === 'break-open' ? 'select' : 'break-open');
-        }
-        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'c') {
-          // Tier 3 #60 — toggle Connect Tubes tool. Same toggle-back-
-          // to-select-on-second-press convention 'O' uses for break/move.
-          e.preventDefault();
-          setTool(tool === 'connect' ? 'select' : 'connect');
-        }
-        return;
-      }
-      if (e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        if (e.shiftKey) {
-          redo();
-        } else {
-          undo();
-        }
-      } else if (e.key.toLowerCase() === 'y') {
-        e.preventDefault();
-        redo();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // `setTool` is deliberately not a dependency. It now closes over the
-    // text session (leaving the text tool commits it), so listing it
-    // would re-bind this window listener on every render — and the
-    // staleness it would guard against is unreachable: the only calls
-    // to `setTool` in here are the 'o' and 'c' hotkeys, which return
-    // above whenever a caret is live.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, textCaretActive]);
-
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
   // are aborted on the next tick so the user only ever sees the result of
@@ -548,75 +502,6 @@ export default function EditorPage() {
     // rules the doc is judged against without changing the doc itself; without
     // it this effect cannot re-fire to correct a stale report.
   }, [doc, dirty, projectId, project?.tube_spec_id]);
-
-  // Esc disarms a pending join (matches the cancel semantics of the
-  // other in-progress drawing tools). Tool-change disarm is handled in
-  // the tool-button click sites so we don't have to setState in an
-  // effect.
-  //
-  // Tier 3 #33a — Esc also clears multi-select; Cmd-A / Ctrl-A selects
-  // every run; Delete / Backspace deletes the selection. All of these
-  // skip when the user is typing into an input so the keys keep their
-  // text-editing meaning inside form fields.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const isFormField =
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable);
-      if (isFormField) return;
-      // Tier 2 #101 — see the tool-hotkey handler above. Escape must
-      // reach the caret (where it COMMITS the text) rather than clear
-      // the run selection, and Delete/Backspace must edit the string
-      // rather than delete the selected runs.
-      if (textCaretActive) return;
-      if (e.key === 'Escape') {
-        if (joinArm) {
-          e.preventDefault();
-          setJoinArm(null);
-        } else if (selectedRunIds.length > 0) {
-          // Esc with no in-progress join: drop the selection. Drawing
-          // tools own their own Esc handler in EditorCanvas (returns
-          // before this fires, since that handler doesn't preventDefault
-          // for empty in-progress shapes — but the no-op is harmless).
-          e.preventDefault();
-          clearSelection();
-        }
-        return;
-      }
-      const meta = e.metaKey || e.ctrlKey;
-      if (meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
-        // Cmd-A / Ctrl-A — select every run. Skipped while editing a
-        // form field so OS-level "Select All Text" still works.
-        e.preventDefault();
-        selectAllRuns();
-        return;
-      }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedRunIds.length > 0) {
-        // Delete / Backspace removes every selected run. Skipped if no
-        // selection so a stray keypress doesn't fire a no-op editDoc
-        // (would mark the doc dirty for nothing). Inlined here (rather
-        // than calling out to a hoisted helper) so the lint checker's
-        // "function used before declaration" rule stays happy without
-        // having to rearrange the whole component.
-        if (e.metaKey || e.ctrlKey || e.altKey) return;
-        e.preventDefault();
-        const ids = new Set(selectedRunIds);
-        editDoc((prev) => ({
-          ...prev,
-          runs: prev.runs.filter((r) => !ids.has(r.id)),
-        }));
-        clearSelection();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // selectAllRuns / deleteSelected close over `doc` and selection
-    // state; relisting the deps keeps the closures fresh as those change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinArm, selectedRunIds, doc, textCaretActive]);
 
   // Tier 3 #47 — list of GLOBAL indices (into `report.issues`) of the
   // issues that pass the severity filter. j/k keyboard nav cycles
@@ -730,46 +615,108 @@ export default function EditorPage() {
     if (id) setSelectedToOne(id);
   }
 
-  // Keyboard nav: j / ] = next, k / [ = prev. Cycles through the
-  // currently-visible filtered set; skipped while the user is typing
-  // in an input so the j key still works as a regular character.
+  // Tier 3 #102 — the single keyboard entry point for commands and tools.
+  // matchHotkey owns the "not while typing" guard; the bindings live in
+  // lib/hotkeys so the toolbar tooltips and the `?` list read the same data.
+  // Gesture keys (Enter, Shift, Esc mid-draw) stay in EditorCanvas.
+  const [keymap, setKeymap] = useState<Keymap>(loadKeymap);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  function changeKeymap(next: Keymap) {
+    setKeymap(next);
+    saveKeymap(next);
+  }
+
+  // Returns whether the key did anything: an unhandled key must keep its
+  // default, or a stray Delete with nothing selected would be swallowed.
+  function runHotkey(id: string, e: KeyboardEvent): boolean {
+    const armed = toolForHotkey(id);
+    if (armed) {
+      // Pressing the key of the active tool drops back to Select.
+      setTool(tool === armed ? 'select' : armed);
+      return true;
+    }
+    switch (id) {
+      case 'edit.undo':
+        undo();
+        return true;
+      case 'edit.redo':
+        redo();
+        return true;
+      case 'edit.selectAll':
+        selectAllRuns();
+        return true;
+      case 'edit.delete': {
+        if (selectedRunIds.length === 0) return false;
+        const ids = new Set(selectedRunIds);
+        editDoc((prev) => ({
+          ...prev,
+          runs: prev.runs.filter((r) => !ids.has(r.id)),
+        }));
+        clearSelection();
+        return true;
+      }
+      case 'edit.cancel':
+        if (joinArm) {
+          setJoinArm(null);
+          return true;
+        }
+        if (selectedRunIds.length > 0) {
+          clearSelection();
+          return true;
+        }
+        // Last in the chain, and only if EditorCanvas did not just spend this
+        // Esc cancelling a shape: one press should not also drop the tool.
+        if (!e.defaultPrevented && tool !== 'select') {
+          setTool('select');
+          return true;
+        }
+        return false;
+      case 'issue.next':
+      case 'issue.prev': {
+        if (visibleIssueIndices.length === 0) return false;
+        const dir = id === 'issue.next' ? 1 : -1;
+        // No issue selected yet: start at the first, or the last going back.
+        const curPos = selectedIssueIndex === null ? -1 : visibleIssueIndices.indexOf(selectedIssueIndex);
+        const count = visibleIssueIndices.length;
+        const nextPos = curPos < 0 ? (dir > 0 ? 0 : count - 1) : (curPos + dir + count) % count;
+        jumpToIssue(visibleIssueIndices[nextPos]);
+        return true;
+      }
+      case 'help.shortcuts':
+        setShortcutsOpen(true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // The latest runHotkey, so the window listener need not re-bind every render.
+  const runHotkeyRef = useRef(runHotkey);
+  useEffect(() => {
+    runHotkeyRef.current = runHotkey;
+  });
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      // Tier 2 #101 — 'j' and 'k' are letters first while a caret is
-      // live; jumping the viewport to the next validation issue in the
-      // middle of a word is the same class of ambush as switching tools.
-      if (textCaretActive) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (visibleIssueIndices.length === 0) return;
-      let dir: 1 | -1;
-      if (e.key === 'j' || e.key === ']') dir = 1;
-      else if (e.key === 'k' || e.key === '[') dir = -1;
-      else return;
-      e.preventDefault();
-      // Pressing the key while no issue is selected starts at the
-      // first (or last, when going backward) visible issue.
-      const cur = selectedIssueIndex;
-      const curPos = cur === null ? -1 : visibleIssueIndices.indexOf(cur);
-      let nextPos: number;
-      if (curPos < 0) {
-        nextPos = dir > 0 ? 0 : visibleIssueIndices.length - 1;
-      } else {
-        nextPos =
-          (curPos + dir + visibleIssueIndices.length) %
-          visibleIssueIndices.length;
-      }
-      jumpToIssue(visibleIssueIndices[nextPos]);
+      const id = matchHotkey(e, keymap, {
+        typing: isTypingTarget(e.target),
+        textCaret: textCaretActive,
+        // Menus and dialogs own the keyboard, but letters do not reach them
+        // on their own. Without this they would switch tools behind the menu.
+        overlayOpen: document.querySelector('.modal-backdrop, [role="menu"]') !== null,
+      });
+      if (id && runHotkeyRef.current(id, e)) e.preventDefault();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // jumpToIssue closes over `doc` and `report`; re-binding keeps
-    // the closure fresh as those change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleIssueIndices, selectedIssueIndex, doc, report, textCaretActive]);
+  }, [keymap, textCaretActive]);
+
+  // Tooltip text with the action's live binding, so a remap cannot leave a
+  // stale key in a hover.
+  function tip(id: string, text: string): string {
+    const binding = keymap[id]?.[0];
+    return binding ? `${text} [${formatBinding(binding)}]` : text;
+  }
+
 
   // Tier 1 #129 — flatten-aware size + glass length of the current selection,
   // shared with the on-canvas label so the panel and the canvas can never
@@ -2227,106 +2174,106 @@ export default function EditorPage() {
               className="tool-btn"
               onClick={undo}
               disabled={!canUndo}
-              title="Undo (Cmd/Ctrl+Z)"
+              title={tip('edit.undo', 'Undo')}
             >Undo</button>
             <button
               type="button"
               className="tool-btn"
               onClick={redo}
               disabled={!canRedo}
-              title="Redo (Cmd/Ctrl+Shift+Z)"
+              title={tip('edit.redo', 'Redo')}
             >Redo</button>
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
               className={tool === 'select' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('select')}
-              title="Select tool (click runs to highlight)"
+              title={tip('tool.select', 'Select tool (click runs to highlight)')}
             >Select</button>
             <button
               type="button"
               className={tool === 'electrode' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('electrode')}
-              title="Place electrode (click on a path)"
+              title={tip('tool.electrode', 'Place electrode (click on a path)')}
             >Place electrode</button>
             <button
               type="button"
               className={tool === 'blockout' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('blockout')}
-              title="Mark blockout (click two points on the same run)"
+              title={tip('tool.blockout', 'Mark blockout (click two points on the same run)')}
             >Mark blockout</button>
             <button
               type="button"
               className={tool === 'jump' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('jump')}
-              title="Mark a jump-over (tube lifts to clear another tube)"
+              title={tip('tool.jump', 'Mark a jump-over (tube lifts to clear another tube)')}
             >Mark jump</button>
             <button
               type="button"
               className={tool === 'support' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('support')}
-              title="Mark a support point (chassis-mount)"
+              title={tip('tool.support', 'Mark a support point (chassis-mount)')}
             >Mark support</button>
             <button
               type="button"
               className={tool === 'doubleback' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('doubleback')}
-              title="Mark a hairpin as an intentional double-back (suppresses bend-radius warning)"
+              title={tip('tool.doubleback', 'Mark a hairpin as an intentional double-back (suppresses bend-radius warning)')}
             >Mark double-back</button>
             <button
               type="button"
               className={tool === 'drop_bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('drop_bend')}
-              title="Mark a drop bend (tube briefly dips behind the substrate; emits a DROP entry in the bend list, a subtle dip in 3D preview)"
+              title={tip('tool.drop_bend', 'Mark a drop bend (tube briefly dips behind the substrate; emits a DROP entry in the bend list, a subtle dip in 3D preview)')}
             >Mark drop</button>
             <button
               type="button"
               className={tool === 'insert-doubleback' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('insert-doubleback')}
-              title="Splice a U-shaped hairpin into a polyline at the click point (default depth 1.5× tube ø, shift-click to flip side)"
+              title={tip('tool.insert-doubleback', 'Splice a U-shaped hairpin into a polyline at the click point (default depth 1.5× tube ø, shift-click to flip side)')}
             >Insert DB</button>
             <button
               type="button"
               className={tool === 'connect' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('connect')}
-              title="Connect tubes (C): click two electrode pins on different runs to commit a jumper run between them. Esc / right-click cancels a staged source."
+              title={tip('tool.connect', 'Connect tubes: click two electrode pins on different runs to commit a jumper run between them. Esc / right-click cancels a staged source.')}
             >Connect</button>
             <button
               type="button"
               className={tool === 'bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('bend')}
-              title="Add a manual bend point (overrides auto-detect for that run)"
+              title={tip('tool.bend', 'Add a manual bend point (overrides auto-detect for that run)')}
             >Add bend</button>
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
               className={tool === 'pen' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('pen')}
-              title="Draw a freeform polyline (click to drop vertices, double-click or Enter to commit, Esc to cancel)"
+              title={tip('tool.pen', 'Draw a freeform polyline (click to drop vertices, double-click or Enter to commit, Esc to cancel)')}
             >Pen</button>
             <button
               type="button"
               className={tool === 'rect' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('rect')}
-              title="Draw an axis-aligned rectangle (drag from corner to corner)"
+              title={tip('tool.rect', 'Draw an axis-aligned rectangle (drag from corner to corner)')}
             >Rect</button>
             <button
               type="button"
               className={tool === 'circle' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('circle')}
-              title="Draw a circle (drag from center to radius)"
+              title={tip('tool.circle', 'Draw a circle (drag from center to radius)')}
             >Circle</button>
             <button
               type="button"
               className={tool === 'arc' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('arc')}
-              title="Draw a three-point circular arc (click start, mid, end)"
+              title={tip('tool.arc', 'Draw a three-point circular arc (click start, mid, end)')}
             >Arc</button>
             <button
               type="button"
               className={tool === 'text' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('text')}
-              title="Type text directly on the canvas: click to place the caret, then type. Alt+←/→ kerns the pair at the caret. Esc or a click elsewhere commits."
+              title={tip('tool.text', 'Type text directly on the canvas: click to place the caret, then type. Alt+←/→ kerns the pair at the caret. Esc or a click elsewhere commits.')}
             >Text</button>
             {tool === 'text' && (
               // Size and face for the next (and current) caret. Shown
@@ -2390,25 +2337,25 @@ export default function EditorPage() {
               type="button"
               className={tool === 'label' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('label')}
-              title="Drop a text label anywhere on the canvas"
+              title={tip('tool.label', 'Drop a text label anywhere on the canvas')}
             >Label</button>
             <button
               type="button"
               className={tool === 'dimension' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('dimension')}
-              title="Measure a distance between two points (click two points)"
+              title={tip('tool.dimension', 'Measure a distance between two points (click two points)')}
             >Dimension</button>
             <button
               type="button"
               className={tool === 'node' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('node')}
-              title="Edit polyline vertices on the selected run (drag to move, shift-click to delete)"
+              title={tip('tool.node', 'Edit polyline vertices on the selected run (drag to move, shift-click to delete)')}
             >Node edit</button>
             <button
               type="button"
               className={tool === 'break-open' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('break-open')}
-              title="Break/Move Opening (O): click a vertex on a closed run to insert an opening, or on an open run to move the existing opening"
+              title={tip('tool.break-open', 'Break/Move Opening: click a vertex on a closed run to insert an opening, or on an open run to move the existing opening')}
             >Break/Move Opening</button>
             <span className="toolbar-divider" aria-hidden />
             <button
@@ -2528,6 +2475,15 @@ export default function EditorPage() {
                 />
               )}
             </div>
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => setShortcutsOpen(true)}
+              title={tip('help.shortcuts', 'Keyboard shortcuts')}
+              aria-label="Keyboard shortcuts"
+            >
+              ?
+            </button>
           </div>
         </div>
         <p className="meta">
@@ -3722,6 +3678,13 @@ export default function EditorPage() {
       })()}
       {printSrc && (
         <PrintHost src={printSrc} onClose={() => setPrintSrc(null)} />
+      )}
+      {shortcutsOpen && (
+        <ShortcutHelp
+          keymap={keymap}
+          onChange={changeKeymap}
+          onClose={() => setShortcutsOpen(false)}
+        />
       )}
     </section>
   );
