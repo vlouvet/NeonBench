@@ -422,3 +422,71 @@ describe('stepRepeat', () => {
     expectTranslated(copies[0], byId(doc, 'r1'), 50, 0);
   });
 });
+
+// Tier 3 #164. A circuit is capped at one electrode pair however many runs it
+// holds, so a copy left on the source's circuit vanishes from the transformer,
+// boot and gas-fill counts.
+describe('stepRepeat circuits', () => {
+  const wired = (id: string, x: number, circuit: string): DesignRun => ({
+    ...rect(id, x, 0),
+    circuit_id: circuit,
+  });
+
+  it('gives each cell its own circuit', () => {
+    const doc: DesignDoc = {
+      ...docOf(wired('a', 0, 'c1')),
+      circuits: [{ id: 'c1', name: 'Open sign' }],
+    };
+    const after = sr.stepRepeat(doc, ['a'], OPTS({ countX: 3 }));
+    const copies = added(doc, after);
+    expect(byId(after, 'a').circuit_id).toBe('c1');
+    expect(new Set(copies.map((r) => r.circuit_id)).size).toBe(2);
+    expect(copies.map((r) => r.circuit_id)).not.toContain('c1');
+    expect(after.circuits?.map((c) => c.name)).toEqual([
+      'Open sign',
+      'Open sign copy 1',
+      'Open sign copy 2',
+    ]);
+  });
+
+  it('keeps the runs of one circuit together inside a cell', () => {
+    const doc: DesignDoc = {
+      ...docOf(wired('a', 0, 'c1'), wired('b', 50, 'c1')),
+      circuits: [{ id: 'c1' }],
+    };
+    const copies = added(doc, sr.stepRepeat(doc, ['a', 'b'], OPTS({ countX: 2 })));
+    expect(copies).toHaveLength(2);
+    expect(copies[0].circuit_id).toBeDefined();
+    expect(copies[0].circuit_id).toBe(copies[1].circuit_id);
+  });
+
+  it('keeps two source circuits apart inside a cell', () => {
+    const doc: DesignDoc = {
+      ...docOf(wired('a', 0, 'c1'), wired('b', 50, 'c2')),
+      circuits: [{ id: 'c1' }, { id: 'c2' }],
+    };
+    const after = sr.stepRepeat(doc, ['a', 'b'], OPTS({ countX: 2 }));
+    const copies = added(doc, after);
+    expect(copies[0].circuit_id).not.toBe(copies[1].circuit_id);
+    expect(after.circuits).toHaveLength(4);
+  });
+
+  it('leaves every circuit_id naming a circuit that exists', () => {
+    const doc: DesignDoc = {
+      ...docOf(wired('a', 0, 'c1'), rect('b', 50, 0)),
+      circuits: [{ id: 'c1' }],
+    };
+    const after = sr.stepRepeat(doc, ['a', 'b'], OPTS({ countX: 4, countY: 2 }));
+    const known = new Set(after.circuits?.map((c) => c.id));
+    for (const run of after.runs) {
+      if (run.circuit_id) expect(known.has(run.circuit_id)).toBe(true);
+    }
+  });
+
+  it('adds no circuit key to an unwired doc', () => {
+    const doc = docOf(rect('a', 0, 0));
+    const after = sr.stepRepeat(doc, ['a'], OPTS({ countX: 2 }));
+    expect('circuits' in after).toBe(false);
+    expect('circuit_id' in added(doc, after)[0]).toBe(false);
+  });
+});

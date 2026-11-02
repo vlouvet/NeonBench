@@ -1807,7 +1807,7 @@ export default function EditorPage() {
       `Arrayed ${plan.runIds.length} run${plan.runIds.length === 1 ? '' : 's'} ` +
         `into a ${plan.countX} × ${plan.countY} grid — added ${plan.newRuns} run` +
         `${plan.newRuns === 1 ? '' : 's'}. Copies keep their channel-letter settings; ` +
-        `they do not inherit the raceway.`,
+        `they do not inherit the raceway. Wired copies get a new circuit per cell.`,
     );
   }
 
