@@ -22,6 +22,12 @@
 //      drawing for hardware it is not mounted to. Everything else on that
 //      table is carried; see `copyRun`.
 //
+//   2b. `circuit_id` is replaced per cell, as `group_id` is (Tier 3 #164). A
+//      circuit is capped at one electrode pair, so a copy left on the source's
+//      circuit drops out of the transformer, boot and gas-fill counts. Dropping
+//      the id instead would turn a traced sign's fragments into one transformer
+//      each. Each cell is a new instance of the wiring, so it gets a new circuit.
+//
 //   3. Every copy is a pure TRANSLATION. Points are not renumbered and not
 //      reordered, so `segment_types`, `electrodes[].point_index` and the
 //      live-arc indices behind `blockouts` / `annotations` / `bends` are all
@@ -34,9 +40,9 @@
 // the SAME doc object when there is nothing to do — EditorPage's `applyOp`
 // and the undo-coalescing window both key off reference identity.
 
-import type { Annotation, Bend, Blockout, DesignDoc, DesignRun, Group } from '../api';
+import type { Annotation, Bend, Blockout, Circuit, DesignDoc, DesignRun, Group } from '../api';
 import { arrangeableRunIds, selectionBBoxMM, type BBoxMM } from './arrange';
-import { nextGroupId, nextRunId } from './docOps';
+import { nextCircuitId, nextGroupId, nextRunId } from './docOps';
 
 // 'gap' measures edge-to-edge from the selection bbox; 'centre' measures
 // centre-to-centre. Operators think in both — "50 mm between the letters" and
@@ -241,7 +247,7 @@ export function stepRepeatPlan(
 //                          run's OWN live arc, which translation preserves
 //   direction              copied; no reversal happened
 //   is_channel_letter_face, channel_letter_depth_mm, kind   carried
-//   group_id               replaced with this cell's fresh group (see below)
+//   group_id, circuit_id   replaced with this cell's fresh ones (see below)
 //   raceway_id             DROPPED — see the header note
 //   id                     freshly allocated by the caller, never reused
 //
@@ -254,6 +260,7 @@ export function copyRun(
   dx: number,
   dy: number,
   groupId: string | undefined,
+  circuitId?: string,
 ): DesignRun {
   const polyline: DesignRun['polyline'] = {
     ...src.polyline,
@@ -272,6 +279,9 @@ export function copyRun(
 
   if (groupId) out.group_id = groupId;
   else delete out.group_id;
+
+  if (circuitId) out.circuit_id = circuitId;
+  else delete out.circuit_id;
 
   if (src.electrodes) out.electrodes = src.electrodes.map((e) => ({ ...e }));
   if (src.blockouts) out.blockouts = src.blockouts.map((b): Blockout => ({ ...b }));
@@ -321,6 +331,8 @@ export function stepRepeat(
   const runs = doc.runs.slice();
   const groups: Group[] = [...(doc.groups ?? [])];
   const byId = new Map(groups.map((g) => [g.id, g]));
+  const circuits: Circuit[] = [...(doc.circuits ?? [])];
+  const circuitById = new Map(circuits.map((c) => [c.id, c]));
 
   let copyNo = 0;
   for (let iy = 0; iy < plan.countY; iy++) {
@@ -332,6 +344,7 @@ export function stepRepeat(
       // One new group per SOURCE group per cell, so a selection spanning two
       // groups arrays into two groups per cell rather than merging them.
       const cellGroups = new Map<string, string>();
+      const cellCircuits = new Map<string, string>();
       for (const src of sources) {
         let groupId: string | undefined;
         if (src.group_id) {
@@ -348,12 +361,24 @@ export function stepRepeat(
             cellGroups.set(src.group_id, groupId);
           }
         }
+        let circuitId: string | undefined;
+        if (src.circuit_id) {
+          circuitId = cellCircuits.get(src.circuit_id);
+          if (!circuitId) {
+            circuitId = nextCircuitId({ ...doc, circuits });
+            const name = circuitById.get(src.circuit_id)?.name;
+            const c: Circuit = { id: circuitId };
+            if (name) c.name = `${name} copy ${copyNo}`;
+            circuits.push(c);
+            cellCircuits.set(src.circuit_id, circuitId);
+          }
+        }
         // Allocated one at a time against the growing runs array so two
         // copies can never claim the same slot. `nextRunId` hands back the
         // LOWEST unused id, so a doc with gaps fills them before extending:
         // the ids of a large array are not in cell order until Tier 3 #89's
         // high-water-mark allocator lands. Uniqueness holds either way.
-        runs.push(copyRun(src, nextRunId({ ...doc, runs }), dx, dy, groupId));
+        runs.push(copyRun(src, nextRunId({ ...doc, runs }), dx, dy, groupId, circuitId));
       }
     }
   }
@@ -362,6 +387,7 @@ export function stepRepeat(
   // Only touch `groups` when there is something to say, so a doc that never
   // had the key does not grow an empty array on its next save.
   if (groups.length > (doc.groups?.length ?? 0)) next.groups = groups;
+  if (circuits.length > (doc.circuits?.length ?? 0)) next.circuits = circuits;
   return next;
 }
 

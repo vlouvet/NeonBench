@@ -463,7 +463,8 @@ export default function ArrangePanel({
       <p className="meta hint-line" style={{ margin: 0 }}>
         Align, distribute and array use each run&rsquo;s true outline, so a
         curved tube lands by its bow rather than by its end points. Copies do
-        not inherit the original&rsquo;s raceway.
+        not inherit the original&rsquo;s raceway, and wired copies get a new
+        circuit per cell.
       </p>
     </div>
   );
