@@ -1,5 +1,11 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Navigate,
+  Route,
+  RouterProvider,
+} from 'react-router-dom';
 import Layout from './components/Layout';
 import ProjectList from './pages/ProjectList';
 import ProjectDetail from './pages/ProjectDetail';
@@ -30,34 +36,37 @@ function PreviewLoadingFallback() {
   );
 }
 
+// Tier 3 #149 — a data router rather than <BrowserRouter>, because useBlocker
+// only works under one and the editor needs it to stop an in-app link from
+// walking away from unsaved edits.
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <Route element={<Layout />}>
+      <Route index element={<ProjectList />} />
+      <Route path="projects/:id" element={<ProjectDetail />} />
+      <Route path="projects/:id/edit/:vid" element={<EditorPage />} />
+      {/* Tier 2 #81 — takeoff + estimate. Its own route rather than an
+        * editor panel: it keeps the feature out of EditorCanvas.tsx and
+        * EditorPage.tsx, and it matches how the work is done — a takeoff
+        * is read when quoting, not while bending. */}
+      <Route path="projects/:id/versions/:vid/estimate" element={<EstimatePage />} />
+      {/* Phase 3 #1 — read-only 3D preview route. Currently renders a
+        * spinning green wireframe cube placeholder; subsequent Phase 3
+        * specs replace the placeholder with extruded tube geometry,
+        * emissive shaders, and orbit-camera controls. */}
+      <Route
+        path="projects/:id/versions/:vid/preview"
+        element={
+          <Suspense fallback={<PreviewLoadingFallback />}>
+            <PreviewPage />
+          </Suspense>
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Route>,
+  ),
+);
+
 export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route index element={<ProjectList />} />
-          <Route path="projects/:id" element={<ProjectDetail />} />
-          <Route path="projects/:id/edit/:vid" element={<EditorPage />} />
-          {/* Tier 2 #81 — takeoff + estimate. Its own route rather than an
-            * editor panel: it keeps the feature out of EditorCanvas.tsx and
-            * EditorPage.tsx, and it matches how the work is done — a takeoff
-            * is read when quoting, not while bending. */}
-          <Route path="projects/:id/versions/:vid/estimate" element={<EstimatePage />} />
-          {/* Phase 3 #1 — read-only 3D preview route. Currently renders a
-            * spinning green wireframe cube placeholder; subsequent Phase 3
-            * specs replace the placeholder with extruded tube geometry,
-            * emissive shaders, and orbit-camera controls. */}
-          <Route
-            path="projects/:id/versions/:vid/preview"
-            element={
-              <Suspense fallback={<PreviewLoadingFallback />}>
-                <PreviewPage />
-              </Suspense>
-            }
-          />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
+  return <RouterProvider router={router} />;
 }

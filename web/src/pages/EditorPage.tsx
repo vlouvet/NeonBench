@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
   parseDoc,
@@ -15,6 +15,13 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import {
+  clearDraft,
+  draftDiffersFrom,
+  loadDraft,
+  saveDraft,
+  type Draft,
+} from '../lib/draftStore';
 import ArrangePanel from '../components/ArrangePanel';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
@@ -67,6 +74,9 @@ import {
 // 250.83 kB / 73.16 kB-gzip OutlineTextDialog chunk. Imported eagerly it
 // pushed the main chunk to 827.82 kB / 239.98 kB gzip instead.
 const OutlineTextDialog = lazy(() => import('../components/OutlineTextDialog'));
+
+// Tier 3 #149 — how long edits settle before the local draft is rewritten.
+const DRAFT_DEBOUNCE_MS = 1000;
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -283,6 +293,15 @@ export default function EditorPage() {
   // timer below. Lives at the editor's `<p className="meta">` strip
   // so it sits in operator's eyeline above the canvas.
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // Tier 3 #149 — a draft of unsaved work found on load, waiting for the
+  // operator to restore or discard it.
+  const [draftOffer, setDraftOffer] = useState<Draft | null>(null);
+  // The doc the next draft write will store. A ref so the pagehide and
+  // unmount flushes can reach the latest doc without re-binding.
+  const pendingDraftRef = useRef<DesignDoc | null>(null);
+  // Saving navigates to the new version while `dirty` is still true; this is
+  // what stops the unsaved-changes guard from objecting to its own save.
+  const leavingBySaveRef = useRef(false);
   useEffect(() => {
     if (!statusMessage) return;
     const t = setTimeout(() => setStatusMessage(null), 5000);
@@ -448,8 +467,17 @@ export default function EditorPage() {
       .then(([p, v, specs]) => {
         setProject(p);
         setVersion(v);
-        setDoc(parseDoc(v));
+        const savedDoc = parseDoc(v);
+        setDoc(savedDoc);
         setReport(parseReport(v));
+        leavingBySaveRef.current = false;
+        const draft = loadDraft(projectId, versionId);
+        if (draft && savedDoc && draftDiffersFrom(draft, savedDoc)) {
+          setDraftOffer(draft);
+        } else {
+          if (draft) clearDraft(projectId, versionId);
+          setDraftOffer(null);
+        }
         setAllSpecs(specs);
         setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
         setDirty(false);
@@ -513,6 +541,59 @@ export default function EditorPage() {
     // above whenever a caret is live.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tool, textCaretActive]);
+
+  // Tier 3 #149 — keep a local draft of unsaved work. Writes pause while a
+  // restore offer is open: the stored draft is the thing being offered, and
+  // overwriting it would quietly destroy the choice. Those edits still have
+  // the leave-page warning below.
+  useEffect(() => {
+    if (!doc || !dirty || draftOffer) return;
+    pendingDraftRef.current = doc;
+    const handle = window.setTimeout(() => {
+      pendingDraftRef.current = null;
+      if (!saveDraft(projectId, versionId, doc)) {
+        setStatusMessage('Could not keep a local draft. Save a new version to protect your work.');
+      }
+    }, DRAFT_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [doc, dirty, draftOffer, projectId, versionId]);
+
+  // The debounce leaves up to a second unwritten, so flush it on the way out.
+  useEffect(() => {
+    function flush() {
+      const pending = pendingDraftRef.current;
+      if (!pending) return;
+      pendingDraftRef.current = null;
+      saveDraft(projectId, versionId, pending);
+    }
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, [projectId, versionId]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    function warn(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
+  // beforeunload covers reloads and closed tabs; in-app links never unload
+  // the page, so they need the router's blocker.
+  const blocker = useBlocker(() => dirty && !leavingBySaveRef.current);
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    const leave = window.confirm(
+      'Leave without saving a new version? Your edits stay in a draft on this computer, and you can restore them when you reopen this version.',
+    );
+    if (leave) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
@@ -2166,6 +2247,22 @@ export default function EditorPage() {
     focusTimerRef.current = window.setTimeout(() => setFocusedElement(null), 2600);
   }
 
+  function restoreDraft() {
+    if (!draftOffer) return;
+    // Through editDoc so one undo returns to the saved version.
+    const restored = draftOffer.doc;
+    editDoc(() => restored);
+    clearSelection();
+    setDraftOffer(null);
+  }
+
+  function discardDraft() {
+    const ok = window.confirm('Discard this draft? Its unsaved edits cannot be recovered.');
+    if (!ok) return;
+    clearDraft(projectId, versionId);
+    setDraftOffer(null);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -2176,6 +2273,9 @@ export default function EditorPage() {
         label: label.trim() || undefined,
         design_doc: doc,
       });
+      pendingDraftRef.current = null;
+      clearDraft(projectId, versionId);
+      leavingBySaveRef.current = true;
       navigate(`/projects/${projectId}/edit/${newVersion.id}`, { replace: true });
       setDirty(false);
       setLabel('');
@@ -2564,6 +2664,20 @@ export default function EditorPage() {
           {' · '}
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
+        {draftOffer && (
+          <div className="draft-offer" role="alert">
+            <span>
+              Unsaved work from {new Date(draftOffer.savedAt).toLocaleString()} was kept on this
+              computer.
+            </span>
+            <button type="button" className="tool-btn" onClick={restoreDraft}>
+              Restore
+            </button>
+            <button type="button" className="tool-btn" onClick={discardDraft}>
+              Discard
+            </button>
+          </div>
+        )}
         {statusMessage && (
           // Tier 2 #72 — transient confirmation toast for the auto-batch
           // ops (doubleback-all / housing-all). Auto-clears after 5s.
