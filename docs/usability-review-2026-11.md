@@ -84,6 +84,8 @@ Effort: S is a day or less, M is a few days, L is a week or more.
 
 ### Round 1: stop losing work, fix the basics
 
+Shipped 2026-11-02 in PRs #206 to #209. See `todo.md` Appendix B for what each one did.
+
 | # | Change | Idea source | Effort |
 |---|---|---|---|
 | 1 (row 149) | **Warn before leaving** with unsaved edits, and **keep a local draft** with a restore prompt on reopen. Save the draft to `localStorage` on a debounce, never as a design version | Krita `libs/ui/KisAutoSaveRecoveryDialog.cpp`; Inkscape `src/auto-save.cpp` | S |
