@@ -46,7 +46,8 @@
   color: var(--error);
 }
 
-.draft-offer {
+.draft-offer,
+.editor-alert {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
