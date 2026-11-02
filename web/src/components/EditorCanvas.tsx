@@ -935,8 +935,12 @@ export default function EditorCanvas({
         }
       }
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // On `document`, not `window`, so this always runs before EditorPage's
+    // hotkey listener. Both on `window` would run in registration order, and
+    // this effect re-registers on every drawing change: the page would then
+    // answer Esc first and drop the tool the operator only meant to cancel.
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
   }, [
     drawing,
     onCommitShape,
