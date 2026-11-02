@@ -46,6 +46,17 @@
   color: var(--error);
 }
 
+.draft-offer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .project-list {
   list-style: none;
   padding: 0;
