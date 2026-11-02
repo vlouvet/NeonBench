@@ -48,7 +48,8 @@ confirmed by search, unless marked otherwise.
 | **Unsaved work is lost with no warning.** | Inserted 9 runs, reloaded: 0 runs, no prompt. No `beforeunload`, no `useBlocker`, no autosave anywhere in `web/src` |
 | **No arrow-key nudge.** | Arrow, Shift+arrow and Alt+arrow left the selected run unchanged |
 | **No copy, paste or duplicate.** | Ctrl and Cmd +C/+V/+D left the run count at 9; no clipboard code exists |
-| **The shop-format length parser is unused.** | `parseLengthToMM` in `web/src/lib/units.ts` accepts `4' 6"` and `48 1/2`, but nothing outside that file calls it, and `NumericField` is a number input |
+| **Inch projects still take millimetres.** | `parseLengthToMM` accepts `4' 6"` and `48 1/2`, but nothing calls it yet and `NumericField` is a number input. This was deliberate sequencing: row 130 shipped readouts first and left inputs for later |
+| **Undo can skip a state.** | `editDoc` merges any edits within 500 ms into one step, even unrelated ones. Commit text to reach 15 runs, delete within 500 ms, undo: it lands on 9, and the 15-run state is unreachable. Reproduced on `main`; found while testing row 102 |
 | **The side panel is wider than its column.** | At 1600 px the "Block out crossings" button and the span field are clipped; a scroll into view slid the whole panel sideways |
 
 Two ledger corrections follow from this:

@@ -609,7 +609,7 @@ Rows 142-148 are follow-ups surfaced by the 131-137 round (PRs #194-#200, 2026-0
 149. **Unsaved edits are lost with no warning** *(usability review, 2026-11)*. Reloading with 9 unsaved runs left 0 runs and no prompt: there is no `beforeunload`, no route guard and no autosave. Warn before leaving, and keep a local draft with a restore prompt on reopen. The draft stays in the browser and never writes a design version.
 150. **Arrow-key nudge** *(usability review, 2026-11; named as a follow-up in `feat-editor-move-handle`)*. Move the selection with the arrow keys, Shift for ×10, with the step shown in display units. Depends on row 102.
 151. **Copy, paste, duplicate, paste in place** *(usability review, 2026-11)*. Clone through `stepRepeat.ts`'s `copyRun` so ids, classification and the `raceway_id` rule stay in one place. Depends on row 102.
-152. **Accept shop-format lengths in length fields** *(usability review, 2026-11)*. `parseLengthToMM` accepts `4' 6"` and `48 1/2`, but nothing calls it and `NumericField` is a number input, so in inch mode an operator cannot type what the tool displays.
+152. **Accept shop-format lengths in length fields** *(usability review, 2026-11; the inputs half row 130 deferred)*. `parseLengthToMM` accepts `4' 6"` and `48 1/2`, but nothing calls it yet and `NumericField` is a number input, so in inch mode an operator cannot type what the tool displays. Dimensions only: glass stays in mm, per row 130.
 153. **Canvas-first editor layout** *(usability review, 2026-11)*. Left tool rail with flyouts, one context property bar, tabbed right panel, a key to hide panels. The canvas gets 39% of a 1280×800 window and starts 368 px down the page. Also fixes the side panel clipping its own controls. Solo PR: `EditorPage.tsx` is the highest-conflict file.
 154. **Tube menu anywhere on the tube** *(usability review, 2026-11)*. Right-click a tube at any point, in Select as well as Node edit, with one letter key per item. Today the menu exists only on a vertex in Node edit and has no keys.
 155. **Always-on neon readout** *(usability review, 2026-11)*. Total, current tube and object length plus the selected segment's radius and length, as NeonWizard's property bar shows.
@@ -619,6 +619,7 @@ Rows 142-148 are follow-ups surfaced by the 131-137 round (PRs #194-#200, 2026-0
 159. **Anchor-point numeric transform** (NW 6.5 Anchor Points). Nine-box reference with X, Y, W, H and rotation.
 160. **Named undo list and snap labels** *(usability review, 2026-11)*. Show undo steps by name, and say what a snap landed on.
 161. **Non-destructive Neonize / Auto Tube Layout** *(usability review, 2026-11)*. Keep the source outline and parameters so they can be edited with a live preview. Needs a schema decision, and may also answer row 113.
+162. **Undo merges unrelated actions** *(found by #102)*. `editDoc` coalesces any edits within 500 ms, not just repeats of one action. Commit text, delete within 500 ms, undo: both go together, and the state between them is unreachable. Keyboard use makes this easier to hit. Coalesce by action rather than by clock alone.
 
 ### Tier 4 — Deliberate "no for now"
 
