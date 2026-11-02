@@ -182,14 +182,14 @@ Legend: ✅ done · 🟡 partial · ❌ missing · 🚫 deliberately out of scop
 |---|---|---|---|---|
 | Neon Design Tools | 18 | 0 | 0 | 5 |
 | Fonts & Text | 6 | 1 | 11 | 0 |
-| Design Tools | 14 | 4 | 21 | 3 |
+| Design Tools | 14 | 4 | 22 | 2 |
 | Effects | 3 | 2 | 1 | 7 |
 | Vector Graphics | 2 | 2 | 6 | 0 |
 | Image Manipulation | 5 | 1 | 1 | 0 |
 | Cutting/Plotting/Printing | 7 | 2 | 0 | 9 |
-| Productivity | 4 | 1 | 5 | 0 |
+| Productivity | 3 | 2 | 5 | 0 |
 | Wide Format | 0 | 0 | 0 | 7 |
-| **Totals** | **59** | **13** | **45** | **31** |
+| **Totals** | **58** | **14** | **46** | **30** |
 
 Round F + G + sequential tail (#26 + #25) shipped 8 PRs (#37, #38, #39, #40, #41, #42, #43, #44). Most are polish that enriches already-✅ rows (DXF / bundle / job-tracking / channel-letter / Neonize / node-edit). The single tally movement was **#92 All Windows Printers** promoted 🟡 → ✅ — PR #38 wires the OS print dialog via a hidden iframe + `window.print()` against the existing `print.pdf`. **Phase 3 (3D glow rendering) shipped end-to-end across PRs #57–63** (foundation, tube extrusion, emissive material, bloom, orbit camera, electrodes/blockouts, scene chrome + screenshot), promoting **#139 Neon Preview (glow)** ❌ → ✅ and **#140 Neon Preview for Groups** ❌ → 🟡. The post-Phase 3 Neon Design Tools audit (Tier 3 #60–#63 spec drafts) reclassified four rows ❌ → 🚫 (Tier 4) — **#121 Mounting Holes**, **#134 Switch Drop / Flat Blend**, **#136 Tube Support Holes**, **#137 Auto Tube Count**, **#138 Auto Spacing** — as either out of NeonBench's scope or already covered by shipped functionality (Neonize / "support" annotations). May 2026 Tier 1 + Tier 3 rounds shipped four more Neon Design Tools rows ❌ → ✅: **#120 Add Common Housings** + **#126 Create Custom Housings** (combined in PR #77), **#125 Connect Tubes** (PR #79 — jumper runs), and **#130 Move Opening / Break Tube Open** (PR #78). Late May 2026 polish round closed the groups + per-group preview loop, promoting **#140 Neon Preview for Groups** 🟡 → ✅ (PR #101 shipped the `?groupId` filter + visibility-aware preview after Tier 3 #33b/c landed groups + layers). Cumulative ✅ has gone **30 → 31 → 32 → 36 → 37** since the Tier 2 close-out; 🟡 dropped to 12; ❌ holds at 80; 🚫 sits at 19.
 
@@ -306,7 +306,8 @@ correctness prerequisite for three ops.
 - ❌ remainder: anchor points, arrow tool, auto-square, border tool, break-into-outer-loops, move-to-layer, nested groups, rounded rect, polygon/star, styles, programmable hotkeys, soft-shadow opts
 - ✅ #20 Type1/OpenType font support — shipped in PR #158. `opentype.js` pinned at 2.0.0, lazy-loaded so the main chunk grows 0.6 kB rather than 250 kB. **No fonts are bundled** — they are licensed, and shipping one is redistribution; the operator supplies the file. Cap height is measured from the `H` ink rather than trusted from OS/2 `sCapHeight`, because the declaration is a number a foundry typed in (Arial declares 1467 against a real 1466; Apple Symbols is off 1.5%) — Bug #13's lesson applied one layer up
 - ❌ #59 Color Vectorizing
-- 🚫 #21, 34, 51 Drawing engine / refresh / streamlined UI (modern web stack) · #58 TWAIN (use OS-level scanning)
+- 🚫 #21, 34 Drawing engine / refresh (modern web stack) · #58 TWAIN (use OS-level scanning)
+- ❌ #51 Streamlined UI — NW's row means property bars replacing dialogs that cover the work, which a modern stack does not provide (row 153)
 
 ### Effects (13 features)
 
@@ -349,7 +350,8 @@ Tier 4 refusal.
 
 ### Productivity (10 features)
 
-- ✅ #109 Auto Save (every save → design_version row) · #112 Job Manager (customer / designer / due_date / job_number shipped in PR #14; sort + search + Overdue badge in PR #33) · #117 Zooming (pointer/wheel)
+- 🟡 #109 Auto Save — every **manual** save writes a design_version row, but nothing saves on its own (row 149)
+- ✅ #112 Job Manager (customer / designer / due_date / job_number shipped in PR #14; sort + search + Overdue badge in PR #33) · #117 Zooming (pointer/wheel)
 - 🟡 #115 Tool Tips
 - ✅ #116 Unlimited Undo (cross-session via version log + in-session undo/redo with 500ms coalescing in `EditorPage.tsx`)
 - ❌ #110 Customizable toolbar · #111 Email Layout · #113 Online Help · #114 Spell Checker · #118 Programmable Hotkeys
@@ -604,6 +606,19 @@ Rows 142-148 are follow-ups surfaced by the 131-137 round (PRs #194-#200, 2026-0
 146. **The curve fit rounds 90° corners by ~3.6 mm** *(found by #133)*. Inherent to an interpolating spline: centripetal Catmull-Rom passes through every sample but cannot hold a tangent discontinuity. The fix is **corner detection** — segment the polyline at high-turn vertices and fit each span separately — **not** an α change. Writing that down because α is the visible knob and the wrong fix is the tempting one; #133 already pins α = 0.5 against the uniform form, so a "fix" there fails a test rather than shipping.
 147. **CI does not exercise the headless bloom guard** *(found by #137)*. The runtime check is real and was verified against an injected #68 regression, but Playwright is deliberately not a repo dependency (a ~300 MB browser download in every `npm install` for a script most contributors never run), so nothing in `scripts/test.sh` runs it. The guard protects a human running the script, not the pipeline. Also note the delta proves post-processing **ran** — not that bloom looks right.
 148. **Tier 3 #126 should read `takeoff.circuits`** *(found by #136)*. #136 makes the takeoff report a per-circuit breakdown; the proof sheet currently keeps its own derivation of the same numbers. Two derivations of a figure that reaches a customer is exactly the drift #131 was about.
+149. **Unsaved edits are lost with no warning** *(usability review, 2026-11)*. Reloading with 9 unsaved runs left 0 runs and no prompt: there is no `beforeunload`, no route guard and no autosave. Warn before leaving, and keep a local draft with a restore prompt on reopen. The draft stays in the browser and never writes a design version.
+150. **Arrow-key nudge** *(usability review, 2026-11; named as a follow-up in `feat-editor-move-handle`)*. Move the selection with the arrow keys, Shift for ×10, with the step shown in display units. Depends on row 102.
+151. **Copy, paste, duplicate, paste in place** *(usability review, 2026-11)*. Clone through `stepRepeat.ts`'s `copyRun` so ids, classification and the `raceway_id` rule stay in one place. Depends on row 102.
+152. **Accept shop-format lengths in length fields** *(usability review, 2026-11)*. `parseLengthToMM` accepts `4' 6"` and `48 1/2`, but nothing calls it and `NumericField` is a number input, so in inch mode an operator cannot type what the tool displays.
+153. **Canvas-first editor layout** *(usability review, 2026-11)*. Left tool rail with flyouts, one context property bar, tabbed right panel, a key to hide panels. The canvas gets 39% of a 1280×800 window and starts 368 px down the page. Also fixes the side panel clipping its own controls. Solo PR: `EditorPage.tsx` is the highest-conflict file.
+154. **Tube menu anywhere on the tube** *(usability review, 2026-11)*. Right-click a tube at any point, in Select as well as Node edit, with one letter key per item. Today the menu exists only on a vertex in Node edit and has no keys.
+155. **Always-on neon readout** *(usability review, 2026-11)*. Total, current tube and object length plus the selected segment's radius and length, as NeonWizard's property bar shows.
+156. **True-width tube view** *(usability review, 2026-11)*. A toggle that draws glass at its real diameter, with the part past max length as a bare centreline. Tubes are hairlines today, so spacing cannot be judged by eye.
+157. **Command search** *(usability review, 2026-11)*. Type to find any action. Depends on row 102's registry.
+158. **Keymap presets** *(usability review, 2026-11)*. Named sets, including a NeonWizard-style one. Depends on row 102.
+159. **Anchor-point numeric transform** (NW 6.5 Anchor Points). Nine-box reference with X, Y, W, H and rotation.
+160. **Named undo list and snap labels** *(usability review, 2026-11)*. Show undo steps by name, and say what a snap landed on.
+161. **Non-destructive Neonize / Auto Tube Layout** *(usability review, 2026-11)*. Keep the source outline and parameters so they can be edited with a live preview. Needs a schema decision, and may also answer row 113.
 
 ### Tier 4 — Deliberate "no for now"
 
