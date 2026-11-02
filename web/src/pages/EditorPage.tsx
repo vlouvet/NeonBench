@@ -39,7 +39,9 @@ import {
   formatFootageMM,
   formatLengthMM,
   formatSizeMM,
+  lengthFieldText,
   normalizeUnits,
+  UNIT_NAME,
   type DisplayUnits,
 } from '../lib/units';
 import { selectionMetrics } from '../lib/selectionMetrics';
@@ -49,6 +51,7 @@ import {
   sessionRuns,
   type InlineTextSession,
 } from '../lib/inlineTextState';
+import { LengthField } from '../components/LengthField';
 import { NumericField } from '../components/NumericField';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
@@ -2336,25 +2339,15 @@ export default function EditorPage() {
               <>
                 <label className="meta" title="Cap height — the literal height of a capital, in mm">
                   {' '}size{' '}
-                  <NumericField
-                    // NOT a raw <input type="number">: a numeric `step`
-                    // makes `min` a lattice base and an off-lattice
-                    // value silently swallows form submits. This is a
-                    // millimetre measurement in an imperial trade —
-                    // 12.7, 19.05 and 25.4 all have to be typeable.
-                    // (Tier 3 #112 took this file off the lint rule's
-                    // legacy exempt list, so the rule now catches it
-                    // here rather than relying on discipline.)
-                    value={textCapHeightMM}
-                    min={1}
-                    onChange={(e) => {
-                      const v = Number(e.currentTarget.value);
-                      if (Number.isFinite(v) && v > 0) setTextCapHeightMM(v);
-                    }}
+                  <LengthField
+                    positive
+                    valueMM={textCapHeightMM}
+                    units={displayUnits}
+                    onChangeMM={setTextCapHeightMM}
                     style={{ width: '5rem' }}
-                    aria-label="Inline text cap height (mm)"
+                    aria-label={`Inline text cap height (${UNIT_NAME[displayUnits]})`}
                   />
-                  {' mm'}
+                  {` ${UNIT_NAME[displayUnits]}`}
                 </label>
                 <select
                   value={textFontKey}
@@ -2422,15 +2415,13 @@ export default function EditorPage() {
                 lattice. `min` is kept as a plain lower bound; the arrow
                 keys now step by the browser default of 1 instead of 0.5,
                 which is the documented cost of the rule. */}
-            <NumericField
-              min="0.1"
-              value={snapMM}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (v > 0) setSnapMM(v);
-              }}
+            <LengthField
+              positive
+              valueMM={snapMM}
+              units={displayUnits}
+              onChangeMM={setSnapMM}
               className="snap-input"
-              title="Snap grid spacing in mm"
+              title={`Snap grid spacing (${UNIT_NAME[displayUnits]})`}
             />
             {/* Tier 2 #91 — rulers & guides. Sits next to Snap because guide
                 snapping rides the same snap-enabled toggle. */}
@@ -2976,39 +2967,48 @@ export default function EditorPage() {
                     recurring bug class 3). Tier 3 #112 moved the guarantee
                     from discipline to the type system. */}
                 <label className="diameter-picker">
-                  Left x (mm)
-                  <NumericField
-                    value={selectedRaceway.x_mm}
-                    onChange={(e) => setRacewayGeometry('x_mm', Number(e.target.value))}
+                  Left x ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    valueMM={selectedRaceway.x_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('x_mm', mm)}
                   />
                 </label>
                 <label className="diameter-picker">
-                  Length (mm)
-                  <NumericField
-                    value={selectedRaceway.length_mm}
-                    onChange={(e) => setRacewayGeometry('length_mm', Number(e.target.value))}
+                  Length ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    valueMM={selectedRaceway.length_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('length_mm', mm)}
                   />
                 </label>
                 <label
                   className="diameter-picker"
                   title="Box height. Empty = the 203.2mm (8in) shop default."
                 >
-                  Height (mm)
-                  <NumericField
-                    placeholder={String(RACEWAY_DEFAULT_HEIGHT_MM)}
-                    value={selectedRaceway.height_mm ?? ''}
-                    onChange={(e) => setRacewayGeometry('height_mm', Number(e.target.value))}
+                  Height ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    placeholder={lengthFieldText(RACEWAY_DEFAULT_HEIGHT_MM, displayUnits)}
+                    valueMM={selectedRaceway.height_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('height_mm', mm)}
+                    onClear={() => setRacewayGeometry('height_mm', 0)}
                   />
                 </label>
                 <label
                   className="diameter-picker"
                   title="Box depth, front face to wall. Empty = the 203.2mm (8in) shop default — a 159mm neon transformer cannot sit across a 5in box, which is why the neon-era standard is bigger than the LED-era one."
                 >
-                  Depth (mm)
-                  <NumericField
-                    placeholder={String(RACEWAY_DEFAULT_DEPTH_MM)}
-                    value={selectedRaceway.depth_mm ?? ''}
-                    onChange={(e) => setRacewayGeometry('depth_mm', Number(e.target.value))}
+                  Depth ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    placeholder={lengthFieldText(RACEWAY_DEFAULT_DEPTH_MM, displayUnits)}
+                    valueMM={selectedRaceway.depth_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('depth_mm', mm)}
+                    onClear={() => setRacewayGeometry('depth_mm', 0)}
                   />
                 </label>
                 <button
@@ -3126,6 +3126,7 @@ export default function EditorPage() {
               </div>
               <ArrangePanel
                 doc={doc}
+                units={displayUnits}
                 selectedRunIds={selectedRunIds}
                 onAlign={alignSelected}
                 onDistribute={distributeSelected}
@@ -3639,6 +3640,7 @@ export default function EditorPage() {
       </div>
       {hersheyOpen && (
         <HersheyTextDialog
+          units={displayUnits}
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
         />
@@ -3646,6 +3648,7 @@ export default function EditorPage() {
       {outlineTextOpen && (
         <Suspense fallback={null}>
           <OutlineTextDialog
+            units={displayUnits}
             onCancel={() => setOutlineTextOpen(false)}
             onInsert={(runs) => insertOutlineText(runs)}
           />
@@ -3653,6 +3656,7 @@ export default function EditorPage() {
       )}
       {channelLetterOpen && (
         <ChannelLetterWizardDialog
+          units={displayUnits}
           onCancel={() => setChannelLetterOpen(false)}
           onInsert={(runs) => insertChannelLetterWizardOutput(runs)}
         />

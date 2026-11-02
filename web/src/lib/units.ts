@@ -40,6 +40,9 @@ export const MM_PER_INCH = 25.4;
  */
 export const INCH_DENOMINATOR = 16;
 
+/** The unit as a field label spells it: `Cap height (in)`. */
+export const UNIT_NAME: Record<DisplayUnits, string> = { mm: 'mm', in: 'in' };
+
 /** Unit suffixes, matching the notation `todo.md` and `docs/neon-rules` use. */
 export const UNIT_SUFFIX: Record<DisplayUnits, string> = { mm: 'mm', in: '″' };
 
@@ -254,4 +257,59 @@ export function parseLengthToMM(text: string, units: DisplayUnits): number | nul
   // A negative whole part owns the fraction: "-48 1/2" is -48.5, not -47.5.
   const inches = whole < 0 ? whole - frac : whole + frac;
   return inchesToMM(feet * 12 + inches);
+}
+
+// ---------------------------------------------------------------------------
+// Editable fields (Tier 3 #152)
+// ---------------------------------------------------------------------------
+
+// How close to a sixteenth an inch value must sit to be shown as one.
+const FRACTION_EPSILON_IN = 1e-6;
+
+/**
+ * The text a length field shows for a stored value.
+ *
+ * Unlike a readout, a field must not round: 0.5 mm in sixteenths prints "0",
+ * which looks like an empty setting. So a value only appears as a fraction
+ * when it really is one, and otherwise as an exact-enough decimal.
+ */
+export function lengthFieldText(mm: number | null | undefined, units: DisplayUnits): string {
+  if (mm === null || mm === undefined || !Number.isFinite(mm)) return '';
+  if (units === 'mm') return String(mm);
+  const inches = mmToInches(mm);
+  const sixteenths = inches * INCH_DENOMINATOR;
+  if (Math.abs(sixteenths - Math.round(sixteenths)) < FRACTION_EPSILON_IN * INCH_DENOMINATOR) {
+    return formatInchesFraction(inches);
+  }
+  return String(Number(inches.toFixed(4)));
+}
+
+export type LengthEdit =
+  | { kind: 'value'; mm: number }
+  | { kind: 'empty' }
+  | { kind: 'invalid' };
+
+/**
+ * What an edit to a length field means.
+ *
+ * Text matching what the field showed for `baselineMM` resolves to `baselineMM`
+ * itself, not to a re-parse of that text. Typing a character and deleting it
+ * therefore restores the stored value exactly, which is what stops a formatted
+ * value walking the geometry (see the module comment).
+ */
+export function resolveLengthEdit(
+  text: string,
+  units: DisplayUnits,
+  baselineMM: number | null | undefined,
+): LengthEdit {
+  if (text.trim() === '') return { kind: 'empty' };
+  if (
+    baselineMM !== null &&
+    baselineMM !== undefined &&
+    text.trim() === lengthFieldText(baselineMM, units)
+  ) {
+    return { kind: 'value', mm: baselineMM };
+  }
+  const mm = parseLengthToMM(text, units);
+  return mm === null ? { kind: 'invalid' } : { kind: 'value', mm };
 }
