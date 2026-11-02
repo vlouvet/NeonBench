@@ -8,7 +8,9 @@
 // Pasting can land in a DIFFERENT doc, which is the one way this differs from
 // step-and-repeat, and it makes every foreign key a hazard:
 //
-//   circuit_id   DROPPED. The Go decoder rejects a value naming no circuit, so
+//   circuit_id   DROPPED by copyRun, which is given no circuit here. Step-and-
+//                repeat makes a new one; paste can't yet, as the clipboard holds
+//                no circuit list. The Go decoder rejects a value naming no circuit, so
 //                carrying it into another design would 400 every later save.
 //                A pasted run is also not wired to anything yet.
 //   raceway_id   DROPPED by copyRun: a copy is not on that back-channel.
@@ -74,7 +76,6 @@ export function pasteRuns(doc: DesignDoc, clip: RunClipboard, dx: number, dy: nu
     }
     const id = nextRunId({ ...doc, runs });
     const copy = copyRun(src, id, dx, dy, groupId);
-    delete copy.circuit_id;
     runs.push(copy);
     newIds.push(id);
   }
