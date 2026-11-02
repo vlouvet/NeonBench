@@ -81,6 +81,7 @@ import { LengthField } from '../components/LengthField';
 import { NumericField } from '../components/NumericField';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
+import { startsNewStep, type EditStamp } from '../lib/undoCoalesce';
 import {
   HOP_CORRIDOR_DIAMETERS,
   HOP_CORRIDOR_MAX_DIAMETERS,
@@ -369,10 +370,10 @@ export default function EditorPage() {
     });
   }
 
-  // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
-  // edits that land within COALESCE_MS of the previous edit into a single
-  // undo step — typing into the diameter input or rapid-clicking a tool
-  // shouldn't bury a meaningful prior state under 30 trivial entries.
+  // Undo/redo: stacks of past/future doc snapshots. Coalescing folds the many
+  // edits of one gesture into a single undo step, so typing into the diameter
+  // input doesn't bury a meaningful prior state under 30 trivial entries. See
+  // lib/undoCoalesce.ts for the rule.
   //
   // The stacks live on refs (mutable, no re-render on push/pop), but the
   // sidebar's Undo/Redo buttons read canUndo / canRedo, which need to be
@@ -381,36 +382,54 @@ export default function EditorPage() {
   // useState slots and update them alongside every push/pop.
   const undoStackRef = useRef<DesignDoc[]>([]);
   const redoStackRef = useRef<DesignDoc[]>([]);
-  const lastPushAtRef = useRef<number>(0);
+  const lastEditRef = useRef<EditStamp | null>(null);
+  const actionRef = useRef({ id: 0, open: false });
   const [undoLen, setUndoLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
-  const COALESCE_MS = 500;
   const HISTORY_CAP = 50;
 
   function resetHistory() {
     undoStackRef.current = [];
     redoStackRef.current = [];
-    lastPushAtRef.current = 0;
+    lastEditRef.current = null;
     setUndoLen(0);
     setRedoLen(0);
   }
 
-  function editDoc(updater: (prev: DesignDoc) => DesignDoc) {
+  // All edits queued from one event share an action id; the microtask closes
+  // the action once that event's handler has returned.
+  function currentAction(): number {
+    const action = actionRef.current;
+    if (!action.open) {
+      action.open = true;
+      action.id += 1;
+      queueMicrotask(() => {
+        action.open = false;
+      });
+    }
+    return action.id;
+  }
+
+  // `group` names a gesture that fires many edits for one change: a drag, or
+  // typing in one field. Leave it out for anything else, so that each action
+  // gets its own undo step however quickly the next one follows.
+  function editDoc(updater: (prev: DesignDoc) => DesignDoc, group?: string) {
+    const stamp: EditStamp = { action: currentAction(), group, at: Date.now() };
     setDoc((prev) => {
       if (!prev) return prev;
       const next = updater(prev);
       if (next === prev) return prev;
-      const now = Date.now();
       const stack = undoStackRef.current;
-      // Coalesce rapid sequential edits into the most-recent undo entry so
-      // one Cmd+Z reverts a logical action, not a single keystroke.
-      if (stack.length > 0 && now - lastPushAtRef.current < COALESCE_MS) {
-        // Replace top: keep the OLDER snapshot already on the stack.
-      } else {
+      // The `prev` check matters under StrictMode, which runs this updater
+      // twice. A second run must not push the same snapshot again.
+      if (
+        stack[stack.length - 1] !== prev &&
+        (stack.length === 0 || startsNewStep(lastEditRef.current, stamp))
+      ) {
         stack.push(prev);
         if (stack.length > HISTORY_CAP) stack.shift();
       }
-      lastPushAtRef.current = now;
+      lastEditRef.current = stamp;
       // Any new edit invalidates the redo branch.
       redoStackRef.current = [];
       setUndoLen(stack.length);
@@ -454,7 +473,7 @@ export default function EditorPage() {
       if (!cur) return cur;
       const prev = stack.pop()!;
       redoStackRef.current.push(cur);
-      lastPushAtRef.current = 0; // next edit starts a fresh coalesce window
+      lastEditRef.current = null; // the next edit starts a new step
       setUndoLen(stack.length);
       setRedoLen(redoStackRef.current.length);
       return prev;
@@ -469,7 +488,7 @@ export default function EditorPage() {
       if (!cur) return cur;
       const next = stack.pop()!;
       undoStackRef.current.push(cur);
-      lastPushAtRef.current = 0;
+      lastEditRef.current = null;
       setUndoLen(undoStackRef.current.length);
       setRedoLen(stack.length);
       return next;
@@ -805,7 +824,7 @@ export default function EditorPage() {
         const dx = id.includes('left') ? -step : id.includes('right') ? step : 0;
         const dy = id.includes('up') ? -step : id.includes('down') ? step : 0;
         if (nudgeSelection(doc, selectedRunIds, dx, dy) === doc) return false;
-        editDoc((prev) => nudgeSelection(prev, selectedRunIds, dx, dy));
+        editDoc((prev) => nudgeSelection(prev, selectedRunIds, dx, dy), 'nudge');
         setStatusMessage(`Nudged ${formatLengthMM(step, displayUnits)}.`);
         return true;
       }
@@ -971,10 +990,10 @@ export default function EditorPage() {
           next = ops.setRunColor(next, id, color);
         }
         return next;
-      });
+      }, `color:${runId}`);
       return;
     }
-    editDoc((prev) => ops.setRunColor(prev, runId, color));
+    editDoc((prev) => ops.setRunColor(prev, runId, color), `color:${runId}`);
   }
 
   function placeAnnotation(
@@ -1040,7 +1059,7 @@ export default function EditorPage() {
   }
 
   function moveVertex(runId: string, pointIndex: number, x: number, y: number) {
-    editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y));
+    editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y), 'drag');
   }
 
   // Tier 3 #48 — multi-vertex drag committer. The canvas already
@@ -1050,7 +1069,7 @@ export default function EditorPage() {
     runId: string,
     writes: { pointIndex: number; x: number; y: number }[],
   ) {
-    editDoc((prev) => ops.moveVertices(prev, runId, writes));
+    editDoc((prev) => ops.moveVertices(prev, runId, writes), 'drag');
   }
 
   // Drag-to-resize handles (feat-editor-scale-handles). The canvas scales
@@ -1058,7 +1077,7 @@ export default function EditorPage() {
   // back the absolute new points for each run; we replace them in one editDoc
   // so the live drag coalesces to a single undo step.
   function scaleRuns(updates: { runId: string; points: [number, number][] }[]) {
-    editDoc((prev) => ops.setRunsPoints(prev, updates));
+    editDoc((prev) => ops.setRunsPoints(prev, updates), 'drag');
   }
 
   // Tier 3 #48 — vertex-merge on drop committer. The canvas only fires
@@ -1066,7 +1085,7 @@ export default function EditorPage() {
   // radius of `keepIndex` — kicking the dropped vertex's references
   // onto the kept one (see docOps.mergeVertices).
   function mergeVerticesOnRun(runId: string, keepIndex: number, dropIndex: number) {
-    editDoc((prev) => ops.mergeVertices(prev, runId, keepIndex, dropIndex));
+    editDoc((prev) => ops.mergeVertices(prev, runId, keepIndex, dropIndex), 'drag');
   }
 
   function deleteVertex(runId: string, pointIndex: number) {
@@ -1182,7 +1201,7 @@ export default function EditorPage() {
   }
 
   function setRunNotes(runId: string, notes: string) {
-    editDoc((prev) => ops.setRunNotes(prev, runId, notes));
+    editDoc((prev) => ops.setRunNotes(prev, runId, notes), `notes:${runId}`);
   }
 
   function setRunDiameter(runId: string, diameterMM: number | null) {
@@ -1196,10 +1215,10 @@ export default function EditorPage() {
           next = ops.setRunDiameter(next, id, diameterMM);
         }
         return next;
-      });
+      }, `diameter:${runId}`);
       return;
     }
-    editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
+    editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM), `diameter:${runId}`);
   }
 
   function setRunChannelLetterFace(runId: string, isFace: boolean) {
@@ -1207,7 +1226,7 @@ export default function EditorPage() {
   }
 
   function setRunChannelLetterDepth(runId: string, depthMM: number | null) {
-    editDoc((prev) => ops.setRunChannelLetterDepth(prev, runId, depthMM));
+    editDoc((prev) => ops.setRunChannelLetterDepth(prev, runId, depthMM), `depth:${runId}`);
   }
 
   function setRunRacewayID(runId: string, racewayID: string) {
@@ -1393,7 +1412,7 @@ export default function EditorPage() {
   // axis off the guide itself, so `posMM` is y for a horizontal guide and x
   // for a vertical one and no caller has to know which.
   function moveGuideline(id: string, posMM: number) {
-    editDoc((prev) => guides.moveGuide(prev, id, posMM));
+    editDoc((prev) => guides.moveGuide(prev, id, posMM), `guide:${id}`);
   }
 
   // Tier 2 #91 — a construction guide dragged off a canvas ruler. Selected
@@ -1494,11 +1513,14 @@ export default function EditorPage() {
     value: number,
   ) {
     if (!doc || !selectedGuidelineId) return;
-    editDoc((prev) => ops.setRacewayGeometry(prev, selectedGuidelineId, { [field]: value }));
+    editDoc(
+      (prev) => ops.setRacewayGeometry(prev, selectedGuidelineId, { [field]: value }),
+      `raceway:${selectedGuidelineId}:${field}`,
+    );
   }
 
   function dragRacewayEnd(id: string, end: 'left' | 'right', xMM: number) {
-    editDoc((prev) => ops.dragRacewayEnd(prev, id, end, xMM));
+    editDoc((prev) => ops.dragRacewayEnd(prev, id, end, xMM), `raceway-end:${id}:${end}`);
   }
 
   function removeRacewayBox() {
