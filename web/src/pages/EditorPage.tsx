@@ -219,7 +219,12 @@ export default function EditorPage() {
     }
     setSelectedToOne(id);
   }
+  // Tier 3 #163 — only loadError replaces the page, because without a design
+  // there is nothing to show. `error` is a failed action on a design that is
+  // still fine, so it stays a banner: the canvas and Save must survive it.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [validateError, setValidateError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [label, setLabel] = useState('');
@@ -504,8 +509,11 @@ export default function EditorPage() {
         setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
         setDirty(false);
         resetHistory();
+        setLoadError(null);
+        setError(null);
+        setValidateError(null);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setLoadError(e.message));
   }, [projectId, versionId]);
 
   // Tier 3 #149 — keep a local draft of unsaved work. Writes pause while a
@@ -576,13 +584,14 @@ export default function EditorPage() {
       api
         .validateDoc(projectId, doc, ctrl.signal)
         .then((rep) => {
-          if (!ctrl.signal.aborted) setReport(rep);
+          if (ctrl.signal.aborted) return;
+          setReport(rep);
+          setValidateError(null);
         })
         .catch((e: Error) => {
-          if (!ctrl.signal.aborted) {
-            // Surface but don't crash the editor — validation is advisory.
-            setError(`live validate: ${e.message}`);
-          }
+          // Separate from `error`: this clears itself on the next good
+          // validate, and must not wipe out a message from an action.
+          if (!ctrl.signal.aborted) setValidateError(e.message);
         })
         .finally(() => {
           if (!ctrl.signal.aborted) setValidating(false);
@@ -886,7 +895,7 @@ export default function EditorPage() {
     [doc, selectedRunIds],
   );
 
-  if (error) return <p className="error">{error}</p>;
+  if (loadError) return <p className="error">{loadError}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
   if (!doc) {
     return (
@@ -2693,6 +2702,19 @@ export default function EditorPage() {
             <button type="button" className="tool-btn" onClick={discardDraft}>
               Discard
             </button>
+          </div>
+        )}
+        {error && (
+          <div className="editor-alert" role="alert">
+            <span className="error">{error}</span>
+            <button type="button" className="tool-btn" onClick={() => setError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {dirty && validateError && (
+          <div className="editor-alert" role="alert">
+            <span className="error">Live validation failed: {validateError}</span>
           </div>
         )}
         {statusMessage && (
