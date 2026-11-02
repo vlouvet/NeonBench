@@ -24,9 +24,12 @@ import {
 } from '../lib/channelLetter';
 import { FONTS, type FontKey } from '../lib/hershey/fonts';
 import type { DesignRun } from '../api';
+import { LengthField } from './LengthField';
 import { NumericField } from './NumericField';
+import { UNIT_NAME, type DisplayUnits } from '../lib/units';
 
 type Props = {
+  units: DisplayUnits;
   onCancel: () => void;
   /** Receives the wizard's output runs and the cap-height (mm) for
    *  recentering. The caller is responsible for translating into doc
@@ -46,7 +49,7 @@ const DEFAULT_CLEARANCE_MM = DEFAULT_TUBE_DIAMETER_MM * 1.5;
 // channel-letter glass.
 const DEFAULT_TUBE_COLOR = '#fff8d2';
 
-export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props) {
+export default function ChannelLetterWizardDialog({ units, onCancel, onInsert }: Props) {
   const [text, setText] = useState('');
   const [capHeightMM, setCapHeightMM] = useState(DEFAULT_CAP_MM);
   const [fontKey, setFontKey] = useState<FontKey>('rowmand'); // duplex = thicker channel-letter look
@@ -179,14 +182,12 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
             </select>
           </label>
           <label>
-            Cap height (mm)
-            <NumericField
-              min={1}
-              value={capHeightMM}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) setCapHeightMM(v);
-              }}
+            Cap height ({UNIT_NAME[units]})
+            <LengthField
+              positive
+              valueMM={capHeightMM}
+              units={units}
+              onChangeMM={setCapHeightMM}
             />
           </label>
           <label>
@@ -232,14 +233,8 @@ export default function ChannelLetterWizardDialog({ onCancel, onInsert }: Props)
           {racewayEnabled && (
             <>
               <label>
-                Raceway Y (mm from baseline)
-                <NumericField
-                  value={racewayYMM}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    if (Number.isFinite(v)) setRacewayYMM(v);
-                  }}
-                />
+                Raceway Y ({UNIT_NAME[units]} from baseline)
+                <LengthField valueMM={racewayYMM} units={units} onChangeMM={setRacewayYMM} />
               </label>
               <label>
                 Raceway group name

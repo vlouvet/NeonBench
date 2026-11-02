@@ -211,6 +211,12 @@ version has its own 3D preview and export. Versions can be renamed later from th
 
 #### 4.8 Printing & export
 
+**Typing sizes.** In a project shown in inches, size fields accept what you would write on the
+job: `48`, `48 1/2`, `4'`, `4' 6"` or `4 ft 6 in`. This covers letter height, raceway size and
+position, step-and-repeat pitch and the snap grid. A size that does not land on a sixteenth is
+shown as a decimal, so the field always shows what is stored. Glass stays in millimetres
+everywhere: tube diameter, end gap and bend radius are never converted.
+
 **Print** generates the shop PDF. The **Print options** popover sets:
 
 ![Print options](manual/11-print-options.png)

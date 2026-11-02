@@ -41,9 +41,12 @@ import {
   type OutlineRun,
 } from '../lib/fonts/text';
 import type { DesignRun } from '../api';
+import { LengthField } from './LengthField';
 import { NumericField } from './NumericField';
+import { UNIT_NAME, type DisplayUnits } from '../lib/units';
 
 type Props = {
+  units: DisplayUnits;
   onCancel: () => void;
   /** Receives closed outline runs plus the cap height (mm) the operator
    *  asked for. The parent recentres into doc coordinates and appends —
@@ -62,7 +65,7 @@ const MAX_TEXT_LEN = 128;
 const DEFAULT_CAP_MM = 100;
 const ACCEPT = '.ttf,.otf,.woff,font/ttf,font/otf,font/woff';
 
-export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
+export default function OutlineTextDialog({ units, onCancel, onInsert }: Props) {
   const [face, setFace] = useState<LoadedFace | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -217,14 +220,12 @@ export default function OutlineTextDialog({ onCancel, onInsert }: Props) {
             />
           </label>
           <label>
-            Cap height (mm) — the measured height of a capital H
-            <NumericField
-              min={1}
-              value={capHeightMM}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) setCapHeightMM(v);
-              }}
+            Cap height ({UNIT_NAME[units]}) — the measured height of a capital H
+            <LengthField
+              positive
+              valueMM={capHeightMM}
+              units={units}
+              onChangeMM={setCapHeightMM}
             />
           </label>
           <label>

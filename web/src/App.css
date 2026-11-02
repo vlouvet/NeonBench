@@ -1761,3 +1761,7 @@
   margin: 0.25rem 0.35rem;
   background: var(--border);
 }
+
+input[aria-invalid='true'] {
+  border-color: var(--error);
+}
