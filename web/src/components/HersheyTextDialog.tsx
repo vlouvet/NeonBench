@@ -55,9 +55,12 @@ import {
   type StackAlign,
   type TextLayoutMode,
 } from '../lib/hershey/layout';
+import { LengthField } from './LengthField';
 import { NumericField } from './NumericField';
+import { UNIT_NAME, type DisplayUnits } from '../lib/units';
 
 type Props = {
+  units: DisplayUnits;
   onCancel: () => void;
   onInsert: (runs: HersheyRun[], capHeightMM: number) => void;
 };
@@ -71,7 +74,7 @@ const MAX_TEXT_LEN = 256;
 const HANDLE_FILL = '#3a86ff';
 const HANDLE_FILL_ACTIVE = '#ff5722';
 
-export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
+export default function HersheyTextDialog({ units, onCancel, onInsert }: Props) {
   const [text, setText] = useState('');
   const [capHeightMM, setCapHeightMM] = useState(100);
   const [lineHeight, setLineHeight] = useState(1.2);
@@ -435,17 +438,15 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
             />
           </label>
           <label>
-            Cap height (mm)
-            <NumericField
-              min={1}
-              value={capHeightMM}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (Number.isFinite(v) && v > 0) {
-                  setCapHeightMM(v);
-                  // Re-seed preset values: they scale with cap height.
-                  applySeed(text, fontKey, v);
-                }
+            Cap height ({UNIT_NAME[units]})
+            <LengthField
+              positive
+              valueMM={capHeightMM}
+              units={units}
+              onChangeMM={(v) => {
+                setCapHeightMM(v);
+                // Re-seed preset values: they scale with cap height.
+                applySeed(text, fontKey, v);
               }}
             />
           </label>
@@ -595,14 +596,12 @@ export default function HersheyTextDialog({ onCancel, onInsert }: Props) {
               {layoutMode === 'arc' && (
                 <>
                   <label className="meta" style={transformInlineLabelStyle}>
-                    Radius (mm){' '}
-                    <NumericField
-                      min={1}
-                      value={arcRadiusMM}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (Number.isFinite(v) && v > 0) setArcRadiusMM(v);
-                      }}
+                    Radius ({UNIT_NAME[units]}){' '}
+                    <LengthField
+                      positive
+                      valueMM={arcRadiusMM}
+                      units={units}
+                      onChangeMM={setArcRadiusMM}
                       style={{ width: 88 }}
                     />
                   </label>

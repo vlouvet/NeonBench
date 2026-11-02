@@ -135,6 +135,37 @@
   padding: 1.5rem;
   width: min(420px, 90vw);
 }
+.modal.shortcut-help {
+  width: min(960px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.shortcut-columns {
+  columns: 2 300px;
+  column-gap: 2rem;
+}
+.shortcut-columns section {
+  break-inside: avoid;
+  margin-bottom: 1rem;
+}
+.shortcut-columns h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.95rem;
+}
+.shortcut-columns dl {
+  margin: 0;
+}
+.shortcut-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.1rem 0;
+}
+.shortcut-row dd {
+  margin: 0;
+  white-space: nowrap;
+}
 .modal h2 {
   margin-bottom: 1rem;
 }
@@ -1740,4 +1771,8 @@
   height: 1px;
   margin: 0.25rem 0.35rem;
   background: var(--border);
+}
+
+input[aria-invalid='true'] {
+  border-color: var(--error);
 }
