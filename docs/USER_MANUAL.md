@@ -209,6 +209,11 @@ warnings** to filter both the list and the on-canvas markers; click a group to j
 Type a label in **New version label** and click **Save as new version** to snapshot the design. Each
 version has its own 3D preview and export. Versions can be renamed later from the project page.
 
+**Unsaved work.** Edits you have not saved as a version are kept in a draft on this computer as
+you work. Leaving the editor or closing the tab warns you first. If you come back to a version
+with a draft, a banner offers **Restore** or **Discard**. A draft is not a version: it does not
+appear in the version list, and it cannot print or export until you save it.
+
 #### 4.8 Printing & export
 
 **Typing sizes.** In a project shown in inches, size fields accept what you would write on the
