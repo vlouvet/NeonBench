@@ -101,10 +101,17 @@ describe('every binding that shipped before the registry', () => {
     expect(matchHotkey(key(k, mods), defaultKeymap(), idle)).toBe(id);
   });
 
+  it('gives bare and Shift arrows their own hotkeys', () => {
+    expect(matchHotkey(key('ArrowLeft'), defaultKeymap(), idle)).toBe('nudge.left');
+    expect(matchHotkey(key('ArrowUp', { shiftKey: true }), defaultKeymap(), idle)).toBe('nudge.upCoarse');
+    expect(matchHotkey(key('c', { ctrlKey: true }), defaultKeymap(), idle)).toBe('edit.copy');
+    expect(matchHotkey(key('V', { metaKey: true, shiftKey: true }), defaultKeymap(), idle)).toBe('edit.pasteInPlace');
+  });
+
   it('kept the old guards on O and C', () => {
     expect(matchHotkey(key('O', { shiftKey: true }), defaultKeymap(), idle)).toBeNull();
     expect(matchHotkey(key('o', { altKey: true }), defaultKeymap(), idle)).toBeNull();
-    expect(matchHotkey(key('c', { metaKey: true }), defaultKeymap(), idle)).toBeNull();
+    expect(matchHotkey(key('c', { metaKey: true }), defaultKeymap(), idle)).not.toBe('tool.connect');
   });
 });
 

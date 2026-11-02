@@ -248,7 +248,7 @@ export function stepRepeatPlan(
 // Children are cloned rather than shared: nothing here mutates in place
 // today, but an aliased blockout object between an original and its copy is
 // exactly the kind of thing a later in-place edit turns into a bug report.
-function copyRun(
+export function copyRun(
   src: DesignRun,
   id: string,
   dx: number,

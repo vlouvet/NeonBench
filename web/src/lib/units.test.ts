@@ -11,6 +11,7 @@ import {
   lengthFieldText,
   mmToInches,
   normalizeUnits,
+  nudgeStepMM,
   parseLengthToMM,
   resolveLengthEdit,
 } from './units';
@@ -308,5 +309,14 @@ describe('resolveLengthEdit', () => {
 
   it('survives having no baseline', () => {
     expect(resolveLengthEdit('8', 'in', null)).toEqual({ kind: 'value', mm: inchesToMM(8) });
+  });
+});
+
+describe('nudgeStepMM', () => {
+  it('steps in what the project reads', () => {
+    expect(nudgeStepMM('mm', false)).toBe(1);
+    expect(nudgeStepMM('mm', true)).toBe(10);
+    expect(nudgeStepMM('in', false)).toBeCloseTo(1.5875, 9);
+    expect(nudgeStepMM('in', true)).toBeCloseTo(12.7, 9);
   });
 });
