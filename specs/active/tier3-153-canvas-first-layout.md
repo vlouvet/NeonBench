@@ -41,8 +41,7 @@ panel and two 42 px bars leave 65%, before the app header.
 **Top bar.** Back link, version label, Save, Undo, Redo, an Insert menu, an
 Output menu, tube spec, units, the validation badge and the `?` button. Insert
 holds the actions that are not tools: Hershey text, OpenType text and the
-channel-letter wizard. Output holds the print, plot and preview buttons that end
-the toolbar today.
+channel-letter wizard. Output holds Print, the print options and Quick plot.
 
 **Tool rail.** Ten slots, so it fits 800 px with no scrolling:
 
