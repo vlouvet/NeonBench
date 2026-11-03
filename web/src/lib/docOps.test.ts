@@ -1597,6 +1597,99 @@ describe('neonize', () => {
     // warning should remain.
     expect(result.warning ?? '').not.toMatch(/Inner offset self-intersects/);
   });
+
+  // A closed square whose two opposite gaps are arcs. `segment_types`
+  // indexes the segment LEAVING each vertex; index i = gap i (0-based).
+  function arcSquareDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'arcsq',
+          polyline: {
+            points: [
+              [0, 0],
+              [100, 0],
+              [100, 100],
+              [0, 100],
+            ],
+            closed: true,
+            segment_types: ['arc', 'line', 'arc', 'line'],
+          },
+          tube_diameter_mm: 12,
+        },
+      ],
+    };
+  }
+
+  it('reports flattenedArcs for a closed run with arcs', () => {
+    const result = ops.neonize(arcSquareDoc(), 'arcsq', 20);
+    expect(result.flattenedArcs).toBe(2);
+    // The arc offsets (two bowed, two straight) do not self-intersect at
+    // this spacing, so the run surfaces no warning — flattenedArcs is a
+    // separate fact about the same result.
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("an 'arc_r' segment counts toward flattenedArcs too", () => {
+    const doc: DesignDoc = {
+      ...arcSquareDoc(),
+      runs: [
+        {
+          ...arcSquareDoc().runs[0],
+          polyline: {
+            ...arcSquareDoc().runs[0].polyline,
+            segment_types: ['line', 'arc_r', 'arc', 'line'],
+          },
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'arcsq', 20);
+    expect(result.flattenedArcs).toBe(2);
+  });
+
+  it('stitch=true still reports flattenedArcs', () => {
+    const result = ops.neonize(arcSquareDoc(), 'arcsq', 20, { stitch: true });
+    expect(result.flattenedArcs).toBe(2);
+  });
+
+  it('a run with no segment_types omits the flattenedArcs key', () => {
+    const result = ops.neonize(squareDoc(), 'sq', 20);
+    expect('flattenedArcs' in result).toBe(false);
+  });
+
+  it('an early return (non-positive spacing) omits the flattenedArcs key', () => {
+    const result = ops.neonize(squareDoc(), 'sq', 0);
+    expect(result.warning).toBe('Neonize spacing must be a positive number.');
+    expect('flattenedArcs' in result).toBe(false);
+  });
+
+  it('counts only the n-1 segments of an open run', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'open-arc',
+          polyline: {
+            points: [
+              [0, 0],
+              [50, 0],
+              [100, 0],
+              [50, 50],
+            ],
+            closed: false,
+            // Four vertices, three segments: two arcs and one straight.
+            segment_types: ['arc', 'line', 'arc'],
+          },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'open-arc', 10);
+    expect(result.flattenedArcs).toBe(2);
+  });
 });
 
 describe('channel-letter polish ops (Tier 3 #26)', () => {
