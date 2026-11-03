@@ -170,8 +170,9 @@ Selecting a single run opens its property panel:
   return-strip page (perimeter × depth) with bend marks at every vertex. Optional **per-run depth**
   and **raceway** label (runs sharing a raceway value print as one combined unfolded strip).
 - **Path ops** — **Simplify** (RDP at ε mm), **Reverse** (flip polyline + electrode anchors),
-  **Neonize** (offset the outline into a parallel tube pair), and **stitch ends** (join outer+inner
-  offsets into one run via hairpins).
+  **Neonize** (offset the outline into a parallel tube pair; arc segments come out as point-by-point
+  curves that follow the glass but can no longer be flipped or re-radiused), and **stitch ends** (join
+  outer+inner offsets into one run via hairpins).
 - **Join from: Head / Tail** — arm an endpoint, then click another open run's endpoint (node tool) to
   merge two runs.
 - **Bends** — the per-run bend list (position, angle, radius), each removable.
