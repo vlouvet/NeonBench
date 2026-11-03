@@ -1310,6 +1310,13 @@
   color: var(--muted);
   font-style: italic;
 }
+.vp-width-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
+}
 /* Tier 3 #39 — sticky auto-rotate confidence badge. Persists past the
    transient hint timeout so the user can re-summon the cached suggestion
    long after the toast fades. Click to re-apply. */

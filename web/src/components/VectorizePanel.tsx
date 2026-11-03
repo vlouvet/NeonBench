@@ -1046,13 +1046,22 @@ export default function VectorizePanel({
       <h3>{isSVG ? 'Import SVG' : 'Vectorize'}</h3>
       <div className="vp-grid">
         <label>
-          Target width (mm)
+          {isSVG ? 'Target width (mm)' : 'Image width (mm)'}
           <NumericField
             min={1}
             max={5000}
             value={targetWidthMM}
             onChange={(e) => setTargetWidthMM(Number(e.target.value))}
           />
+          {isSVG ? (
+            <span className="vp-width-hint">
+              Your SVG imports at its own width; this number is not used to resize it.
+            </span>
+          ) : (
+            <span className="vp-width-hint">
+              Width of the whole image, edge to edge, blank margin included — not the artwork inside it.
+            </span>
+          )}
         </label>
         {!isSVG && (
           <label>
