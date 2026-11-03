@@ -120,6 +120,8 @@ export default function EditorPage() {
   // flashing inches at someone whose project is metric.
   const displayUnits: DisplayUnits = normalizeUnits(project?.units);
   const [version, setVersion] = useState<DesignVersion | null>(null);
+  // Names the loaded design for the canvas fit, which survives edits.
+  const [fitKey, setFitKey] = useState<number | null>(null);
   const [doc, setDoc] = useState<DesignDoc | null>(null);
   const [tool, setToolRaw] = useState<EditorTool>('select');
   // Tier 2 #101 — inline canvas text. Size and face are toolbar state
@@ -516,6 +518,7 @@ export default function EditorPage() {
         const savedDoc = parseDoc(v);
         setDoc(savedDoc);
         setReport(parseReport(v));
+        if (!leavingBySaveRef.current) setFitKey(v.id);
         leavingBySaveRef.current = false;
         const draft = loadDraft(projectId, versionId);
         if (draft && savedDoc && draftDiffersFrom(draft, savedDoc)) {
@@ -2753,6 +2756,7 @@ export default function EditorPage() {
       <div className="editor-layout">
         <EditorCanvas
           doc={doc}
+          fitKey={fitKey ?? versionId}
           tool={tool}
           selectedRunIds={selectedRunIds}
           projectDiameterMM={tubeSpec?.diameter_mm ?? 10}
