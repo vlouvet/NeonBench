@@ -98,6 +98,7 @@ const MIN_RESIZE_MM = 2;
 
 export default function EditorCanvas({
   doc,
+  fitKey,
   tool,
   selectedRunIds,
   projectDiameterMM,
@@ -152,6 +153,9 @@ export default function EditorCanvas({
   focusedElement,
 }: {
   doc: DesignDoc;
+  // Fit runs once per distinct value; edits that keep the key keep the
+  // operator's view.
+  fitKey: number;
   tool: EditorTool;
   // Tier 3 #33a — multi-select. `selectedRunIds` is the canonical
   // source of truth for which runs render with a selection ring. Empty
@@ -990,17 +994,15 @@ export default function EditorCanvas({
     return () => ro.disconnect();
   }, []);
 
-  // Fit on first measurement of the design doc. Implemented with the
-  // "store previous prop in state" pattern so the fit happens during
-  // render — that bypasses the cascading-render hit a useEffect-based
-  // fit would take, and avoids the react-hooks/refs warning we'd get
-  // from gating on a ref. Once we've fit a particular doc we leave the
-  // user's pan/zoom alone until a new doc arrives.
-  const [fittedDoc, setFittedDoc] = useState<DesignDoc | null>(null);
-  if (size.w > 0 && size.h > 0 && fittedDoc !== doc) {
+  // Fit once per fitKey (which names the loaded design), during render:
+  // that bypasses the cascading-render hit a useEffect-based fit would
+  // take, and avoids the react-hooks/refs warning a ref gate would.
+  // Edits keep the key, so they keep the operator's pan/zoom.
+  const [fittedKey, setFittedKey] = useState<number | null>(null);
+  if (size.w > 0 && size.h > 0 && fittedKey !== fitKey) {
     const [x, y, w, h] = doc.view_box_mm;
     if (w > 0 && h > 0) {
-      setFittedDoc(doc);
+      setFittedKey(fitKey);
       const padding = 0.9;
       const scale = Math.min(size.w / w, size.h / h) * padding;
       const next: Transform = {
