@@ -3413,8 +3413,9 @@ export function autoHousingAllElectrodes(
 //
 // ARCS (Bug #16): the source is offset through `flatRunPoints`, so the
 // generated paths follow the drawn curve rather than its chords. Two
-// consequences the operator is owed, and which are not yet surfaced as a
-// warning (see the note by `warnings` below):
+// consequences the operator is owed. The first is now reported through the
+// `flattenedArcs` return field (the page shows it as a status message, not
+// the banner — it is a fact, not a fault):
 //
 //   - THE EMITTED RUNS CARRY NO `segment_types`. The offset of a circular arc
 //     is a circular arc of a different radius, but `segment_types` can only
@@ -3475,7 +3476,7 @@ export function neonize(
   runId: string,
   spacingMM: number,
   options: NeonizeOptions = {},
-): { doc: DesignDoc; warning?: string } {
+): { doc: DesignDoc; warning?: string; flattenedArcs?: number } {
   const idx = doc.runs.findIndex((r) => r.id === runId);
   if (idx < 0) return { doc };
   const src = doc.runs[idx];
@@ -3582,10 +3583,10 @@ export function neonize(
 
   // Stitch any non-empty warnings into a single user-facing string.
   //
-  // NOTE — still NOT warning that arcs were flattened, though the operator is
-  // owed that fact. It stayed out because this channel used to unmount the
-  // editor. Since Tier 3 #163 it is a dismissible banner, so the warning can
-  // be added; the fact is stated in the doc-comment above until then.
+  // Arc flattening is NOT a warning here. It fires on every neonize of a
+  // curved run and is a fact about the result, not a fault, so the page
+  // reports it through `flattenedArcs` as a 5-second status message rather
+  // than the banner. `warning` stays for real problems.
   const warnings: string[] = [];
   if (outer.selfIntersected) {
     warnings.push('Outer offset self-intersects — clean up with the node editor.');
@@ -3598,9 +3599,17 @@ export function neonize(
     warnings.push(`${totalClamps} acute corners were beveled — visually verify.`);
   }
 
+  // Source arc segments that now ship as plain points (Bug #16). Omitted
+  // when zero, so a curve-free run carries no key.
+  let flattenedArcs = 0;
+  for (let i = 0; i < segmentCount(src); i++) {
+    if (isArcKind(segmentTypeAt(src, i))) flattenedArcs++;
+  }
+
   return {
     doc: { ...doc, runs: nextRuns },
     warning: warnings.length > 0 ? warnings.join(' ') : undefined,
+    ...(flattenedArcs > 0 ? { flattenedArcs } : {}),
   };
 }
 

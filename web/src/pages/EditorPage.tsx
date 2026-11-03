@@ -2003,6 +2003,7 @@ export default function EditorPage() {
     }
     let next = doc;
     const warnings: string[] = [];
+    let flatArcCount = 0;
     for (const id of selectedRunIds) {
       // Skip ids that vanished mid-loop (defensive — should never
       // happen since neonize replaces by id, but a previous iteration's
@@ -2011,12 +2012,19 @@ export default function EditorPage() {
       if (!next.runs.some((r) => r.id === id)) continue;
       const result = ops.neonize(next, id, spacing, { stitch: opts.stitch });
       if (result.warning) warnings.push(`${id}: ${result.warning}`);
+      if (result.flattenedArcs) flatArcCount += result.flattenedArcs;
       next = result.doc;
     }
     if (warnings.length > 0) setError(warnings.join(' · '));
     else setError(null);
     if (next !== doc) {
       editDoc(() => next);
+      if (flatArcCount > 0) {
+        // A fact about the result, not a fault: the status line, not the banner.
+        setStatusMessage(
+          `${flatArcCount} arc segment${flatArcCount === 1 ? '' : 's'} became point-by-point curves — they follow the glass but can no longer be flipped or re-radiused.`,
+        );
+      }
       // The selected runs were destroyed and replaced. Pick the new
       // ids so the user keeps a sensible selection. Outer-or-stitched
       // depending on the toggle.
