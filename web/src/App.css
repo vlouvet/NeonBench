@@ -1303,13 +1303,7 @@
   font-size: 0.75rem;
   padding: 0.2rem 0.5rem;
 }
-.vp-auto-rotate-hint {
-  display: block;
-  margin-top: 0.25rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-  font-style: italic;
-}
+.vp-auto-rotate-hint,
 .vp-width-hint {
   display: block;
   margin-top: 0.25rem;

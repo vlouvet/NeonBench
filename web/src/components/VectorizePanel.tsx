@@ -1053,15 +1053,11 @@ export default function VectorizePanel({
             value={targetWidthMM}
             onChange={(e) => setTargetWidthMM(Number(e.target.value))}
           />
-          {isSVG ? (
-            <span className="vp-width-hint">
-              Your SVG imports at its own width; this number is not used to resize it.
-            </span>
-          ) : (
-            <span className="vp-width-hint">
-              Width of the whole image, edge to edge, blank margin included — not the artwork inside it.
-            </span>
-          )}
+          <span className="vp-width-hint">
+            {isSVG
+              ? 'Your SVG imports at its own width; this number is not used to resize it.'
+              : 'Width of the whole image, edge to edge, blank margin included — not the artwork inside it.'}
+          </span>
         </label>
         {!isSVG && (
           <label>

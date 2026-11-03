@@ -5,7 +5,7 @@ import VectorizePanel from './VectorizePanel';
 const noop = vi.fn();
 
 describe('VectorizePanel width hint', () => {
-  it('labelled target width in SVG mode, unset in raster (Tier 3 #144)', () => {
+  it('says which width the field means in each mode (Tier 3 #144)', () => {
     const svg = renderToStaticMarkup(
       <VectorizePanel projectId={1} assetId={2} isSVG onCreated={noop} />,
     );
