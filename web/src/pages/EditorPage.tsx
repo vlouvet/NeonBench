@@ -2020,10 +2020,7 @@ export default function EditorPage() {
     if (next !== doc) {
       editDoc(() => next);
       if (flatArcCount > 0) {
-        // Curved source segments ship as plain point-by-point polylines
-        // (Bug #16): they follow the glass but lose the arc so they can no
-        // longer be flipped or re-radiused. An FYI that fires on every
-        // curved-run neonize, so a status message, not the banner.
+        // A fact about the result, not a fault: the status line, not the banner.
         setStatusMessage(
           `${flatArcCount} arc segment${flatArcCount === 1 ? '' : 's'} became point-by-point curves — they follow the glass but can no longer be flipped or re-radiused.`,
         );

@@ -3575,21 +3575,17 @@ export function neonize(
     warnings.push(`${totalClamps} acute corners were beveled — visually verify.`);
   }
 
-  // How many source arc segments were flattened into plain polyline points
-  // (Bug #16). Set only when > 0 so a curve-free run omits the key — the page
-  // reports it as a status message rather than the banner because it is a fact
-  // about the result, not a fault.
-  let flattenedArcs: number | undefined;
-  let arcCount = 0;
+  // Source arc segments that now ship as plain points (Bug #16). Omitted
+  // when zero, so a curve-free run carries no key.
+  let flattenedArcs = 0;
   for (let i = 0; i < segmentCount(src); i++) {
-    if (isArcKind(segmentTypeAt(src, i))) arcCount++;
+    if (isArcKind(segmentTypeAt(src, i))) flattenedArcs++;
   }
-  if (arcCount > 0) flattenedArcs = arcCount;
 
   return {
     doc: { ...doc, runs: nextRuns },
     warning: warnings.length > 0 ? warnings.join(' ') : undefined,
-    ...(flattenedArcs !== undefined ? { flattenedArcs } : {}),
+    ...(flattenedArcs > 0 ? { flattenedArcs } : {}),
   };
 }
 
