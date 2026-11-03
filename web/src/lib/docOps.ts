@@ -36,13 +36,17 @@ import {
 import { groupByBaseline, type GroupOptions } from './raceway';
 import { defaultDirection, runArcs } from './runArcs';
 import {
+  arcFor,
+  arcKindFlipped,
   flatRunPoints,
   flattenSegment,
   flipArcKind,
   isArcKind,
+  pointOnSegment,
   runHasArcs,
   segmentCount,
   segmentIndexBetween,
+  segmentLengthMM,
   segmentTypeAt,
 } from './arcGeom';
 import {
@@ -1855,38 +1859,22 @@ export function connectTubes(
   return { ...doc, runs: [...doc.runs, newRun] };
 }
 
-// insertVertex splices ONE new vertex into a polyline at the parametric
-// position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
-// index segmentIndex + 1; everything after shifts up by 1.
-//
-// The vertex is placed on the CHORD, so the segment it lands in is
-// straightened (both halves come back 'line') while every other arc on the run
-// keeps its type — see the segment_types block below for why a fixed-bulge
-// schema leaves no other honest answer.
-//
-// Index-shifting follows the same pattern as insertDoubleback's bigger
-// 4-vertex splice — anchors strictly before the insertion stay put,
-// anchors at or after the insertion bump by 1. live_index handling for
-// blockouts/annotations/bends uses the same simplification: in the
-// common open-run no-electrode case live_index === polyline index, so
-// the bump is correct. Closed runs with two electrodes are an edge case
-// the user is unlikely to hit while shaping a polyline (you'd shape
-// before placing electrodes), but we still apply the live-index bump
-// conservatively.
-export function insertVertex(
+// insertVertexAt splices an EXISTING point into the run at segment
+// `segmentIndex + 1` and reflows the segment_types / live-index bookkeeping.
+// Shared by the chord-based `insertVertex` below and the arc-aware callers
+// (splitRunAtSegmentT, the raceway seam prepass) that need the vertex placed
+// on the glass rather than on a chord.
+function insertVertexAt(
   doc: DesignDoc,
   runId: string,
   segmentIndex: number,
-  t: number,
+  point: [number, number],
 ): DesignDoc {
   return mapRun(doc, runId, (run) => {
     const pts = run.polyline.points;
     if (segmentIndex < 0 || segmentIndex >= pts.length - 1) return run;
-    const tt = Math.max(0, Math.min(1, t));
-    const p1 = pts[segmentIndex];
-    const p2 = pts[segmentIndex + 1];
-    const nx = p1[0] + tt * (p2[0] - p1[0]);
-    const ny = p1[1] + tt * (p2[1] - p1[1]);
+    const nx = point[0];
+    const ny = point[1];
     const k = segmentIndex;
     const newPts: [number, number][] = [
       ...pts.slice(0, k + 1),
@@ -1943,6 +1931,43 @@ export function insertVertex(
         : run.bends,
     };
   });
+}
+
+// insertVertex splices ONE new vertex into a polyline at the parametric
+// position `t ∈ [0, 1]` along the chosen segment. The new vertex lands at
+// index segmentIndex + 1; everything after shifts up by 1.
+//
+// The vertex is placed on the CHORD (the node editor feeds it a chord
+// parameter, so this contract is fixed), which straightens the segment it
+// lands in while every other arc keeps its type. It then delegates the
+// splice/reflow to insertVertexAt, whose body is the shared bookkeeping walk.
+//
+// Index-shifting follows the same pattern as insertDoubleback's bigger
+// 4-vertex splice — anchors strictly before the insertion stay put,
+// anchors at or after the insertion bump by 1. live_index handling for
+// blockouts/annotations/bends uses the same simplification: in the
+// common open-run no-electrode case live_index === polyline index, so
+// the bump is correct. Closed runs with two electrodes are an edge case
+// the user is unlikely to hit while shaping a polyline (you'd shape
+// before placing electrodes), but we still apply the live-index bump
+// conservatively.
+export function insertVertex(
+  doc: DesignDoc,
+  runId: string,
+  segmentIndex: number,
+  t: number,
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run || segmentIndex < 0 || segmentIndex >= run.polyline.points.length - 1) {
+    return mapRun(doc, runId, (r) => r);
+  }
+  const tt = Math.max(0, Math.min(1, t));
+  const p1 = run.polyline.points[segmentIndex];
+  const p2 = run.polyline.points[segmentIndex + 1];
+  return insertVertexAt(doc, runId, segmentIndex, [
+    p1[0] + tt * (p2[0] - p1[0]),
+    p1[1] + tt * (p2[1] - p1[1]),
+  ]);
 }
 
 // nextRunId returns the lowest unused id of the form `${prefix}${n}` (n
@@ -4116,23 +4141,11 @@ export function runLengthMM(run: DesignRun): number {
   return chordLengthMM(flatRunPoints(run), !!run.polyline.closed);
 }
 
-// splitRunAtArcLength cuts one OPEN run at `targetMM` measured along its
-// polyline from the first vertex, and returns the two new run ids (head
-// = the piece containing vertex 0). Returns null when the target isn't
-// strictly interior to the run, which is the caller's cue to stop.
-//
-// `targetMM` is a CHORD distance: the walk below sums `segLenMM` over raw
-// vertices, and the vertex it inserts is placed by linear interpolation along
-// a chord. It cannot honour an arc segment — a mid-arc cut has no
-// representation in a fixed-bulge schema anyway (halving a bulge-0.5 arc needs
-// bulge ~0.236 on each half), which is why `splitRun` straightens what it
-// cuts. Callers measuring glass must convert before calling.
-//
-// The cut lands mid-segment in the general case, so we insertVertex
-// first and then splitRun at the vertex we just created. When the target
-// falls on an existing vertex (within EPS) we split there directly
-// rather than inserting a coincident duplicate — a zero-length segment
-// would survive into the bend list as a phantom 0mm run.
+// splitRunAtArcLength cuts one OPEN run at `targetMM` measured in GLASS
+// along its polyline from the first vertex, returning the two new run ids.
+// A target inside an arc lands ON the arc and straightens that one segment —
+// the only representable way to cut a fixed-bulge arc. Returns null when the
+// target isn't strictly interior, the caller's cue to stop.
 function splitRunAtArcLength(
   doc: DesignDoc,
   runId: string,
@@ -4154,7 +4167,7 @@ function splitRunAtArcLength(
   let k = -1;
   let t = 0;
   for (let i = 0; i < n - 1; i++) {
-    const segLen = segLenMM(pts[i + 1], pts[i]);
+    const segLen = segmentLengthMM(pts[i], pts[i + 1], segmentTypeAt(run, i));
     if (acc + segLen >= targetMM - EPS) {
       k = i;
       t = segLen === 0 ? 0 : (targetMM - acc) / segLen;
@@ -4185,7 +4198,8 @@ function splitRunAtSegmentT(
 ): { doc: DesignDoc; headId: string; tailId: string } | null {
   const run = doc.runs.find((r) => r.id === runId);
   if (!run) return null;
-  const n = run.polyline.points.length;
+  const pts = run.polyline.points;
+  const n = pts.length;
   if (k < 0 || k >= n - 1) return null;
   const EPS = 1e-9;
 
@@ -4204,7 +4218,13 @@ function splitRunAtSegmentT(
     // The cut is on an endpoint, where there is nothing to split off.
     return null;
   } else {
-    nextDoc = insertVertex(doc, runId, k, t);
+    // An interior cut through an arc lands ON the glass at sweep fraction `t`;
+    // a chord placement would straighten the segment with the vertex off the
+    // tube the operator drew.
+    const type = segmentTypeAt(run, k);
+    nextDoc = isArcKind(type)
+      ? insertVertexAt(doc, runId, k, pointOnSegment(pts[k], pts[k + 1], type, t))
+      : insertVertex(doc, runId, k, t);
     splitIndex = k + 1; // the vertex insertVertex just placed
   }
 
@@ -4258,24 +4278,11 @@ export type AutoSplitResult = {
 // The postcondition is therefore real rather than nominal: no run on the
 // returned doc exceeds `maxLengthMM`.
 //
-// SINCE BUG #17 THE RETRY DOES REAL WORK, and it can also run out. `pieces`
-// comes from the arc-aware length while the cuts are placed in the chord
-// metric; those two used to agree after the cut only because `splitRun`
-// straightened everything it touched. Now a piece that contains a whole
-// INTACT arc measures up to 15.9% more glass than its chord, so a set of
-// chord-equal pieces can each still be over the limit — a real retry, not
-// float slop, measured at one retry on ordinary curved runs.
-//
-// When the lattice of cuts keeps missing a short arc across all three
-// attempts, no attempt satisfies the postcondition and the run is left
-// UNCUT and uncounted (see the bail-out below). Reproduced at a 2000mm line
-// followed by a 100mm arc against a 125mm limit — it needs a run ~15x the
-// limit carrying a short arc, so it is out of reach at the stock 2500mm and
-// 3000mm tube specs without a 37-metre polyline. Declining is the honest
-// failure: the operator sees the run still flagged, where the pre-#17 code
-// "succeeded" by straightening the arc and dropping that glass from the
-// takeoff. The fix is an arc-aware cut walk (`splitRunAtArcLength` sums
-// chords), not a wider retry budget — widening it just moves the case.
+// Cuts are placed in GLASS, so a piece holding an intact arc measures exactly
+// its target, and a cut that lands inside an arc puts the vertex ON the arc
+// and straightens only that segment. The retry now covers float slop at exact
+// multiples (the n+1 case) rather than a real chord/glass mismatch that could
+// previously leave a curved run uncut.
 //
 // Closed runs: an electrodeless decorative loop is opened at vertex 0
 // (duplicating it as the last vertex, which preserves every live index)
@@ -4316,26 +4323,11 @@ export function autoSplitOverlongTubes(
     const run = out.runs.find((r) => r.id === sourceId);
     if (!run) continue;
     const closed = !!run.polyline.closed;
-    // Two metrics, deliberately (Tier 3 #111):
-    //
-    //   `length` is the glass — arcs measured as arcs — so this asks the same
-    //   question the validator will ask. A run whose chord sum sits under the
-    //   limit and whose curve does not used to walk out of here untouched and
-    //   come back flagged.
-    //
-    //   `chordMM` is the metric `cutIntoEqualPieces` walks: it places its cuts
-    //   with `splitRunAtArcLength`, which sums straight chords over the raw
-    //   vertices. Handing that walk an arc length would push every cut ~16%
-    //   too far along, and on a run needing several cuts the last one would
-    //   land past the end of the tube — no split at all, silently, on exactly
-    //   the runs this pass exists to fix. Cuts stay evenly spaced in the
-    //   metric the pieces will be measured in.
-    //
-    // For a closed run the chord walk of the loop we open below is exactly
-    // this closed chord sum, so it is measured here, before the seam vertex
-    // is appended.
+    // `length` is the glass — arcs measured as arcs — so this asks the same
+    // question the validator will ask. A run whose chord sum sits under the
+    // limit and whose curve does not used to walk out of here untouched and
+    // come back flagged.
     const length = runLengthMM(run);
-    const chordMM = chordLengthMM(run.polyline.points, closed);
     if (length <= maxLengthMM) continue;
 
     // Opening a closed loop below is a visible edit in its own right and it
@@ -4363,30 +4355,23 @@ export function autoSplitOverlongTubes(
       }));
     }
 
-    // `pieces` is the nominal cut count; the retry loop below bumps it
-    // when the produced geometry doesn't actually clear the limit. It comes
-    // from the arc-aware length — the count the drawn glass needs — not from
-    // the chord sum the cuts are placed with. On a curved run that means one
-    // or two more pieces than the chord strictly requires, which is the safe
-    // direction: too few pieces is a run that comes back flagged.
+    // `pieces` is the nominal cut count; the retry loop below bumps it when
+    // the produced geometry doesn't actually clear the limit. The arc-aware
+    // length is a little larger than the chord sum on a curved run, which is
+    // the safe direction: too few pieces is a run that comes back flagged.
     const pieces = Math.max(2, Math.ceil(length / maxLengthMM));
     let applied: DesignDoc | null = null;
     let appliedPieces = 0;
-    // At most two retries: n, n+1, n+2. One extra cut clears both the
-    // float-slop case and the surviving-arc case on ordinary geometry; the
-    // bound keeps a pathological doc from spinning, at the cost of the
-    // uncuttable case described in the header — which leaves the run alone
-    // rather than shortening it.
+    // At most two retries: n, n+1, n+2. One extra cut clears the float slop
+    // at exact multiples; the bound keeps a pathological doc from spinning.
     for (let attempt = 0; attempt < 3 && applied === null; attempt++) {
       const n = pieces + attempt;
-      const candidate = cutIntoEqualPieces(out, sourceId, chordMM, n);
+      const candidate = cutIntoEqualPieces(out, sourceId, n);
       if (!candidate) break;
       const overlong = candidate.pieceIds.some((id) => {
         const r = candidate.doc.runs.find((x) => x.id === id);
-        // Arc-aware, so the postcondition is stated in the validator's terms.
-        // Since Bug #17 the pieces keep their arcs, so this genuinely differs
-        // from a chord sum — it is what catches a chord-equal piece that is
-        // still over the limit as glass, and what drives the retry above.
+        // Arc-aware, so the postcondition is stated in the validator's terms:
+        // the pieces keep their arcs, so this is glass, not a chord sum.
         return r ? runLengthMM(r) > maxLengthMM : false;
       });
       if (!overlong) {
@@ -4410,28 +4395,22 @@ export function autoSplitOverlongTubes(
 // cutIntoEqualPieces makes `n - 1` cuts at L/n, 2L/n, … along an open run.
 // Each cut is measured from the start of the *remaining tail*, not from the
 // original vertex 0 — walking the tail avoids having to track how earlier
-// insertions shifted the vertex indices, and the distances are the same either
-// way because every piece is L/n long.
-//
-// `chordMM` is the CHORD sum of the run, not its arc-aware length: the
-// walk that places each cut (`splitRunAtArcLength`) sums straight chords over
-// the raw vertices, so the total it divides has to be in that same metric or
-// the cuts creep forward and the last one falls off the end of the tube. The
-// caller decides HOW MANY pieces from the arc-aware length; this decides WHERE
-// they fall.
+// insertions shifted the vertex indices.
 function cutIntoEqualPieces(
   doc: DesignDoc,
   runId: string,
-  chordMM: number,
   n: number,
 ): { doc: DesignDoc; pieceIds: string[] } | null {
   if (n < 2) return null;
-  const step = chordMM / n;
   let out = doc;
   let tailId = runId;
   const pieceIds: string[] = [];
   for (let i = 0; i < n - 1; i++) {
-    const cut = splitRunAtArcLength(out, tailId, step);
+    // A cut inside an arc shortens the tail by the bow it straightened, so
+    // dividing what's left keeps every later piece at or under the target.
+    const tail = out.runs.find((r) => r.id === tailId);
+    if (!tail) return null;
+    const cut = splitRunAtArcLength(out, tailId, runLengthMM(tail) / (n - i));
     if (!cut) return null;
     out = cut.doc;
     pieceIds.push(cut.headId);
@@ -4457,8 +4436,9 @@ export type RacewayCrossing = {
   // Index of the segment the crossing sits on. For a closed polyline the
   // last segment (n-1 -> 0) is included.
   segmentIndex: number;
-  // Parameter along that segment, in [0, 1). Exactly 0 means the crossing
-  // IS the segment's first vertex.
+  // Parameter along that segment, in [0, 1). Exactly 0 means the crossing IS
+  // the segment's first vertex. On an arc, `t` is the fraction of the sweep
+  // (equally of the glass length), not of the chord.
   t: number;
 };
 
@@ -4475,11 +4455,15 @@ export type RacewayCrossing = {
 // case bolted on — it is what makes the whole operation idempotent. Splitting
 // leaves every new piece with an endpoint exactly on the line, so a second
 // pass finds nothing left to do.
+//
+// An arc is probed as the circle its bow describes: the bow can cross the line
+// where the chord does not, so raw-vertex sign changes are not enough.
 export function racewayCrossings(
   points: [number, number][],
   closed: boolean,
   yMM: number,
   tolMM: number = RACEWAY_ON_LINE_TOL_MM,
+  segmentTypes?: SegmentKind[],
 ): RacewayCrossing[] {
   const n = points.length;
   if (n < 2) return [];
@@ -4490,17 +4474,63 @@ export function racewayCrossings(
     const p2 = points[(i + 1) % n];
     const a = p1[1] - yMM;
     const b = p2[1] - yMM;
+    const type = segmentTypes?.[i] ?? 'line';
     if (Math.abs(a) <= tolMM) {
       // Vertex i is on the line. Skip vertex 0 of an open run — it is an
       // endpoint, and there is nothing on the far side of it to split off.
       if (closed || i > 0) out.push({ segmentIndex: i, t: 0 });
-      continue;
+      // An arc leaving a vertex on the line can still cut back across it
+      // mid-bow, so it must NOT skip the arc probe below.
+      if (!isArcKind(type)) continue;
     }
     // Vertex i+1 on the line is emitted by the NEXT iteration as its own
     // `a`. For the final segment of an open run that iteration never comes,
     // which is exactly right: that vertex is the other endpoint.
     if (Math.abs(b) <= tolMM) continue;
-    if ((a < 0 && b > 0) || (a > 0 && b < 0)) {
+
+    if (isArcKind(type)) {
+      // Crossing the circle in the line's plane; keep only points inside the
+      // arc's sweep, more than tolMM from both endpoints (which belong to the
+      // vertex rule above).
+      const arc = arcFor(p1, p2, arcKindFlipped(type));
+      if (!arc) {
+        if ((a < 0 && b > 0) || (a > 0 && b < 0)) {
+          out.push({ segmentIndex: i, t: a / (a - b) });
+        }
+        continue;
+      }
+      let sweep = arc.endAngle - arc.startAngle;
+      while (sweep <= -Math.PI) sweep += 2 * Math.PI;
+      while (sweep > Math.PI) sweep -= 2 * Math.PI;
+      const dy = yMM - arc.cy;
+      const disc = arc.radiusMM * arc.radiusMM - dy * dy;
+      if (disc >= 0) {
+        const sd = Math.sqrt(disc);
+        const xs = sd === 0 ? [arc.cx] : [arc.cx - sd, arc.cx + sd];
+        const found: { t: number; x: number }[] = [];
+        for (const x of xs) {
+          const phi = Math.atan2(yMM - arc.cy, x - arc.cx);
+          let d = phi - arc.startAngle;
+          if (sweep > 0) {
+            while (d < 0) d += 2 * Math.PI;
+            while (d >= 2 * Math.PI) d -= 2 * Math.PI;
+          } else {
+            while (d > 0) d -= 2 * Math.PI;
+            while (d <= -2 * Math.PI) d += 2 * Math.PI;
+          }
+          const t = d / sweep;
+          if (
+            t > 0 && t < 1 &&
+            Math.hypot(x - p1[0], yMM - p1[1]) > tolMM &&
+            Math.hypot(x - p2[0], yMM - p2[1]) > tolMM
+          ) {
+            found.push({ t, x });
+          }
+        }
+        found.sort((u, v) => u.t - v.t);
+        for (const f of found) out.push({ segmentIndex: i, t: f.t });
+      }
+    } else if ((a < 0 && b > 0) || (a > 0 && b < 0)) {
       out.push({ segmentIndex: i, t: a / (a - b) });
     }
   }
@@ -4801,7 +4831,7 @@ export function splitTubesAtRaceway(
     const run = out.runs.find((r) => r.id === sourceId);
     if (!run) continue;
     const closed = !!run.polyline.closed;
-    const crossings = racewayCrossings(run.polyline.points, closed, yMM);
+    const crossings = racewayCrossings(run.polyline.points, closed, yMM, undefined, run.polyline.segment_types);
     if (crossings.length === 0) continue;
 
     // Opening a closed loop is a visible edit that happens before we know the
@@ -4818,6 +4848,10 @@ export function splitTubesAtRaceway(
       out = opened;
     }
 
+    // Straighten every arc crossing before the cut loop: an arc can cross the
+    // line twice, and cutting at the first would lose the second.
+    out = vertexAtEachArcCrossing(out, sourceId, yMM);
+
     // Re-derive crossings against whatever shape we are now holding, and cut
     // the head off one at a time. Walking the remaining tail means never
     // having to track how earlier inserts shifted the vertex indices.
@@ -4827,7 +4861,7 @@ export function splitTubesAtRaceway(
     for (;;) {
       const tail = out.runs.find((r) => r.id === tailId);
       if (!tail) break;
-      const rest = racewayCrossings(tail.polyline.points, false, yMM);
+      const rest = racewayCrossings(tail.polyline.points, false, yMM, undefined, tail.polyline.segment_types);
       if (rest.length === 0) break;
       const cut = splitRunAtSegmentT(out, tailId, rest[0].segmentIndex, rest[0].t);
       if (!cut) break;
@@ -4861,6 +4895,40 @@ export function splitTubesAtRaceway(
 
   if (runsSplit === 0 && skippedClosedWithElectrodes === 0) return none;
   return { doc: out, runsSplit, piecesCreated, skippedClosedWithElectrodes };
+}
+
+// vertexAtEachArcCrossing puts a vertex on the line at every interior ARC
+// crossing ahead of splitTubesAtRaceway's cut loop. An arc can cross the line
+// twice; cutting at the first crossing straightens the segment and would lose
+// the second, so all of them are instead turned into vertices first. It runs
+// on an OPEN run (the closed half has already been opened by the caller).
+function vertexAtEachArcCrossing(
+  doc: DesignDoc,
+  runId: string,
+  yMM: number,
+): DesignDoc {
+  const run = doc.runs.find((r) => r.id === runId);
+  if (!run) return doc;
+  const pts = run.polyline.points;
+  const types = run.polyline.segment_types;
+  const crossings = racewayCrossings(pts, false, yMM, RACEWAY_ON_LINE_TOL_MM, types);
+  if (!crossings.some((c) => c.t > 0 && isArcKind(segmentTypeAt(run, c.segmentIndex)))) {
+    return doc;
+  }
+  // Resolve every on-glass point against the ORIGINAL geometry before mutating
+  // (the points don't change), then apply in DESCENDING (segmentIndex, t) order
+  // so an earlier index is never invalidated by a later insert.
+  const arcOnes = crossings
+    .filter((c) => c.t > 0 && isArcKind(segmentTypeAt(run, c.segmentIndex)))
+    .map((c) => ({
+      seg: c.segmentIndex,
+      t: c.t,
+      point: pointOnSegment(pts[c.segmentIndex], pts[c.segmentIndex + 1], segmentTypeAt(run, c.segmentIndex), c.t),
+    }))
+    .sort((u, v) => v.seg - u.seg || v.t - u.t);
+  let out = doc;
+  for (const x of arcOnes) out = insertVertexAt(out, runId, x.seg, x.point);
+  return out;
 }
 
 // openClosedRunAtCrossing rewrites a closed run as an open polyline that
@@ -4905,20 +4973,22 @@ function openClosedRunAtCrossing(
   } else {
     const p1 = pts[k];
     const p2 = pts[(k + 1) % n];
-    const cut: [number, number] = [
-      p1[0] + at.t * (p2[0] - p1[0]),
-      p1[1] + at.t * (p2[1] - p1[1]),
-    ];
+    // On an arc the cut point sits ON the glass at sweep fraction at.t; a
+    // chord interpolation would put it below the bow the operator drew.
+    const type = segmentTypeAt(run, k);
+    const cut: [number, number] = isArcKind(type)
+      ? pointOnSegment(p1, p2, type, at.t)
+      : [p1[0] + at.t * (p2[0] - p1[0]), p1[1] + at.t * (p2[1] - p1[1])];
     // The cut sits between vertex k and k+1, so the opened walk runs
     // cut -> k+1 -> … -> k -> cut.
     const after = pts.slice(k + 1);
     const before = pts.slice(0, k + 1);
     rotated = [cut, ...after, ...before, cut];
     // n+2 vertices, so n+1 segments. The two ends are the halves of old
-    // segment k, which the cut point straightens (it is placed on the chord);
-    // the n-1 segments between them are untouched arcs, walked in order from
-    // k+1. Straightening only the segment the cut lands in is the Bug #17
-    // decision, applied here for the same reason it applies to insertVertex.
+    // segment k, which the cut point straightens; the n-1 segments between
+    // them are untouched arcs, walked in order from k+1. Straightening only
+    // the segment the cut lands in is the Bug #17 decision, applied here for
+    // the same reason it applies to insertVertex.
     if (hasTypes) {
       rotTypes = ['line'];
       for (let j = 1; j < n; j++) rotTypes.push(segmentTypeAt(run, (k + j) % n));

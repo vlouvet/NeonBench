@@ -320,3 +320,39 @@ describe('arcGeom run helpers', () => {
     });
   });
 });
+
+// Tier 3 #120 — a point ON the glass at a fraction of a segment, the piece
+// cutter and the raceway splitter both need it. For an arc `t` is the fraction
+// of the sweep, which is also the fraction of the glass.
+describe('pointOnSegment', () => {
+  const p0: [number, number] = [0, 0];
+  const p1: [number, number] = [100, 0];
+
+  it('hits both endpoints at t = 0 and t = 1 for either arc side', () => {
+    for (const kind of ['arc', 'arc_r'] as g.SegmentKind[]) {
+      expect(g.pointOnSegment(p0, p1, kind, 0)[0]).toBeCloseTo(p0[0], 9);
+      expect(g.pointOnSegment(p0, p1, kind, 0)[1]).toBeCloseTo(p0[1], 9);
+      expect(g.pointOnSegment(p0, p1, kind, 1)[0]).toBeCloseTo(p1[0], 9);
+      expect(g.pointOnSegment(p0, p1, kind, 1)[1]).toBeCloseTo(p1[1], 9);
+    }
+  });
+
+  it('puts the t = 0.5 point a quarter chord off the midpoint, mirrored for the flip', () => {
+    const apex = g.pointOnSegment(p0, p1, 'arc', 0.5);
+    expect(apex[0]).toBeCloseTo(50, 9);
+    expect(apex[1]).toBeCloseTo(25, 9); // chord/4 sagitta, on the bow side
+    const right = g.pointOnSegment(p0, p1, 'arc_r', 0.5);
+    expect(right[0]).toBeCloseTo(apex[0], 9);
+    expect(right[1]).toBeCloseTo(-apex[1], 9);
+  });
+
+  it('keeps every interior sample on the circle the arc describes', () => {
+    for (const kind of ['arc', 'arc_r'] as g.SegmentKind[]) {
+      const a = g.arcFor(p0, p1, g.arcKindFlipped(kind))!;
+      for (const t of [0.25, 0.5, 0.75]) {
+        const pt = g.pointOnSegment(p0, p1, kind, t);
+        expect(Math.hypot(pt[0] - a.cx, pt[1] - a.cy)).toBeCloseTo(a.radiusMM, 9);
+      }
+    }
+  });
+});
