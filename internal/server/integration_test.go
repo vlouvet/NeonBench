@@ -1946,12 +1946,29 @@ func TestExportImportRoundtrip(t *testing.T) {
 	}
 	tubeSpecID := int64(specs[0]["id"].(float64))
 
-	var project map[string]any
-	postJSON(t, client, base+"/api/projects", map[string]any{
-		"name":         "roundtrip source",
-		"tube_spec_id": tubeSpecID,
-	}, &project)
-	projectID := int64(project["id"].(float64))
+	// Create the source with every optional project field set to a
+	// distinct non-default value so the export→import round-trip is
+	// exercised for each of them, not just the defaults.
+	tubeEndGap := 9.5
+	channelDepth := 120.0
+	stripOverlap := 15.0
+	src, err := storage.CreateProject(t.Context(), db, storage.CreateProjectParams{
+		Name:                    "roundtrip source",
+		TubeSpecID:              tubeSpecID,
+		Units:                   "mm",
+		Customer:                "Acme Co",
+		Designer:                "Ada",
+		DueDate:                 "2026-12-01",
+		JobNumber:               "J-0123",
+		TubeEndGapMM:            &tubeEndGap,
+		ChannelLetterDepthMM:    &channelDepth,
+		StripOverlapMM:          &stripOverlap,
+		FacePerimeterStrictMode: true,
+	})
+	if err != nil {
+		t.Fatalf("create source project: %v", err)
+	}
+	projectID := src.ID
 
 	// Two versions with distinguishable SVG bodies + a label so the
 	// label round-trip is exercised too.
@@ -1995,6 +2012,35 @@ func TestExportImportRoundtrip(t *testing.T) {
 	}
 	if tsID := int64(imported["tube_spec_id"].(float64)); tsID != tubeSpecID {
 		t.Errorf("imported tube_spec_id: want %d (matched seed), got %d", tubeSpecID, tsID)
+	}
+
+	// Every optional project field must survive the round trip. Read the
+	// imported row back from the API the way a client would.
+	var gotProject map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID), &gotProject)
+	if v := gotProject["customer"].(string); v != "Acme Co" {
+		t.Errorf("imported customer: want %q, got %q", "Acme Co", v)
+	}
+	if v := gotProject["designer"].(string); v != "Ada" {
+		t.Errorf("imported designer: want %q, got %q", "Ada", v)
+	}
+	if v := gotProject["due_date"].(string); v != "2026-12-01" {
+		t.Errorf("imported due_date: want %q, got %q", "2026-12-01", v)
+	}
+	if v := gotProject["job_number"].(string); v != "J-0123" {
+		t.Errorf("imported job_number: want %q, got %q", "J-0123", v)
+	}
+	if v := gotProject["tube_end_gap_mm"].(float64); v != 9.5 {
+		t.Errorf("imported tube_end_gap_mm: want 9.5, got %v", v)
+	}
+	if v := gotProject["channel_letter_depth_mm"].(float64); v != 120 {
+		t.Errorf("imported channel_letter_depth_mm: want 120, got %v", v)
+	}
+	if v := gotProject["strip_overlap_mm"].(float64); v != 15 {
+		t.Errorf("imported strip_overlap_mm: want 15, got %v", v)
+	}
+	if v := gotProject["face_perimeter_strict_mode"].(bool); !v {
+		t.Errorf("imported face_perimeter_strict_mode: want true, got %v", v)
 	}
 
 	// 3) Walk both projects' version lists; SVG bytes must match
@@ -2076,13 +2122,22 @@ func TestImportBundleCreatesNewTubeSpec(t *testing.T) {
 	}
 
 	// Hand-roll a bundle whose tube_spec dimensions don't match any
-	// seeded spec (24mm diameter — none of the seeds use it).
+	// seeded spec (24mm diameter — none of the seeds use it), and give
+	// it explicit per-spec rules so those also survive the import.
+	wall := 1.8
+	technique := "ribbon"
+	minLeadIn := 50.0
+	sharpBend := 62.0
 	bundle := buildSyntheticBundle(t, "exotic project", storage.TubeSpec{
 		Name:               "24mm exotic",
 		DiameterMM:         24,
 		MinBendRadiusMM:    55,
 		MaxSegmentLengthMM: 4000,
 		MinSpacingMM:       28,
+		WallThicknessMM:    &wall,
+		BendTechnique:      &technique,
+		MinLeadInMM:        &minLeadIn,
+		SharpBendAngleDeg:  &sharpBend,
 	}, []syntheticVersion{
 		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg" data-marker="exotic-v1"/>`, Label: "only"},
 	})
@@ -2107,6 +2162,18 @@ func TestImportBundleCreatesNewTubeSpec(t *testing.T) {
 		created.MaxSegmentLengthMM != 4000 || created.MinSpacingMM != 28 {
 		t.Errorf("new spec dimensions did not match snapshot: %+v", created)
 	}
+	if created.WallThicknessMM == nil || *created.WallThicknessMM != 1.8 {
+		t.Errorf("new spec wall thickness did not survive import: %+v", created.WallThicknessMM)
+	}
+	if created.BendTechnique == nil || *created.BendTechnique != "ribbon" {
+		t.Errorf("new spec bend technique did not survive import: %+v", created.BendTechnique)
+	}
+	if created.MinLeadInMM == nil || *created.MinLeadInMM != 50 {
+		t.Errorf("new spec min lead-in did not survive import: %+v", created.MinLeadInMM)
+	}
+	if created.SharpBendAngleDeg == nil || *created.SharpBendAngleDeg != 62 {
+		t.Errorf("new spec sharp-bend angle did not survive import: %+v", created.SharpBendAngleDeg)
+	}
 	if created.IsDefault {
 		t.Error("imported spec should not be marked is_default — would override seeded default")
 	}
@@ -2126,7 +2193,7 @@ func TestImportBundleCreatesNewTubeSpec(t *testing.T) {
 
 	// Re-importing the same exotic bundle MUST reuse the now-present
 	// tube spec rather than creating yet another row — confirms the
-	// dimension-based dedup actually kicks in across imports.
+	// rule-set-based dedup actually kicks in across imports.
 	postBundle(t, client, base+"/api/projects/import", "exotic2.neonbench", bundle)
 	specsAgain, err := storage.ListTubeSpecs(t.Context(), db)
 	if err != nil {
@@ -2135,6 +2202,158 @@ func TestImportBundleCreatesNewTubeSpec(t *testing.T) {
 	if len(specsAgain) != len(specsAfter) {
 		t.Errorf("second import created an additional tube_spec — dedup failed (had %d, now %d)",
 			len(specsAfter), len(specsAgain))
+	}
+}
+
+// TestImportBundleMintsSpecWhenRulesDiffer guards the per-spec rule match:
+// a bundle that matches a seeded spec's dimensions but overrides an
+// optional rule is a *different* rule set and must mint a new row, never
+// silently retarget the project at the seed.
+func TestImportBundleMintsSpecWhenRulesDiffer(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+	seedID := int64(specs[0]["id"].(float64))
+
+	// Snapshot that matches the seed in the four dimensional fields but
+	// overrides the lead-in rule — enough to disqualify it from reuse.
+	minLeadIn := 40.0
+	snap := storage.TubeSpec{
+		Name:               "custom lead-in",
+		DiameterMM:         specs[0]["diameter_mm"].(float64),
+		MinBendRadiusMM:    specs[0]["min_bend_radius_mm"].(float64),
+		MaxSegmentLengthMM: specs[0]["max_segment_length_mm"].(float64),
+		MinSpacingMM:       specs[0]["min_spacing_mm"].(float64),
+		MinLeadInMM:        &minLeadIn,
+	}
+	bundle := buildSyntheticBundle(t, "lead-in override", snap, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg"/>`, Label: "only"},
+	})
+
+	specsBefore, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs before: %v", err)
+	}
+
+	imported := postBundle(t, client, base+"/api/projects/import", "lead.neonbench", bundle)
+	importedID := int64(imported["id"].(float64))
+	tsID := int64(imported["tube_spec_id"].(float64))
+	if tsID == seedID {
+		t.Errorf("import reused the seed spec despite a differing lead-in rule: seed=%d used=%d", seedID, tsID)
+	}
+
+	specsAfter, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs after: %v", err)
+	}
+	if len(specsAfter) != len(specsBefore)+1 {
+		t.Fatalf("expected exactly one new tube_spec row; before=%d after=%d", len(specsBefore), len(specsAfter))
+	}
+	created, err := storage.GetTubeSpec(t.Context(), db, tsID)
+	if err != nil {
+		t.Fatalf("get new spec: %v", err)
+	}
+	if created.MinLeadInMM == nil || *created.MinLeadInMM != 40 {
+		t.Errorf("new spec lead-in override lost: %+v", created.MinLeadInMM)
+	}
+
+	// Importing the same bundle again must NOT create a second spec — the
+	// just-minted row now matches the snapshot exactly.
+	postBundle(t, client, base+"/api/projects/import", "lead2.neonbench", bundle)
+	specsFinal, err := storage.ListTubeSpecs(t.Context(), db)
+	if err != nil {
+		t.Fatalf("list specs final: %v", err)
+	}
+	if len(specsFinal) != len(specsBefore)+1 {
+		t.Errorf("second import created another spec — dedup failed (had %d, now %d)",
+			len(specsBefore)+1, len(specsFinal))
+	}
+
+	// No project may point at the seed.
+	var proj map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID), &proj)
+	if id := int64(proj["tube_spec_id"].(float64)); id == seedID {
+		t.Errorf("imported project retargeted at seed spec")
+	}
+}
+
+// TestImportBundleLegacyProjectFields proves a bundle written before the
+// optional project-field keys existed still imports: the omitted fields
+// come back as the storage defaults (empty string / absent).
+func TestImportBundleLegacyProjectFields(t *testing.T) {
+	dir := t.TempDir()
+	db, err := storage.Open(dir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	registerAPI(mux, db, dir)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	client := srv.Client()
+	base := srv.URL
+
+	// Reuse the seed spec so the import focuses solely on project fields.
+	var specs []map[string]any
+	getJSON(t, client, base+"/api/tube_specs", &specs)
+	if len(specs) == 0 {
+		t.Fatal("expected seeded tube specs, got none")
+	}
+
+	// buildSyntheticBundle with no optional keys → exactly the legacy
+	// manifest shape.
+	bundle := buildSyntheticBundle(t, "legacy project", storage.TubeSpec{
+		Name:               specs[0]["name"].(string),
+		DiameterMM:         specs[0]["diameter_mm"].(float64),
+		MinBendRadiusMM:    specs[0]["min_bend_radius_mm"].(float64),
+		MaxSegmentLengthMM: specs[0]["max_segment_length_mm"].(float64),
+		MinSpacingMM:       specs[0]["min_spacing_mm"].(float64),
+	}, []syntheticVersion{
+		{VersionNo: 1, SVG: `<svg xmlns="http://www.w3.org/2000/svg"/>`, Label: "only"},
+	})
+
+	imported := postBundle(t, client, base+"/api/projects/import", "legacy.neonbench", bundle)
+	importedID := int64(imported["id"].(float64))
+
+	var proj map[string]any
+	getJSON(t, client, base+"/api/projects/"+itoa(importedID), &proj)
+	if v, ok := proj["customer"]; !ok || v != "" {
+		t.Errorf("legacy import customer: want absent/empty, got %#v", v)
+	}
+	if _, ok := proj["tube_end_gap_mm"]; ok {
+		t.Errorf("legacy import tube_end_gap_mm: want key absent, got %#v", proj["tube_end_gap_mm"])
+	}
+	if v, ok := proj["face_perimeter_strict_mode"].(bool); !ok || v {
+		t.Errorf("legacy import face_perimeter_strict_mode: want false, got %#v", proj["face_perimeter_strict_mode"])
+	}
+	if v := proj["name"].(string); v != "legacy project" {
+		t.Errorf("legacy import name: want %q, got %q", "legacy project", v)
 	}
 }
 
