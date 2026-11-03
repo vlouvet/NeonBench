@@ -46,7 +46,6 @@ import {
   runHasArcs,
   segmentCount,
   segmentIndexBetween,
-  segmentLengthMM,
   segmentTypeAt,
 } from './arcGeom';
 import {
@@ -4141,11 +4140,26 @@ export function runLengthMM(run: DesignRun): number {
   return chordLengthMM(flatRunPoints(run), !!run.polyline.closed);
 }
 
+// segmentWalkMM measures one segment the way runLengthMM does — an arc by its
+// flattened samples, not by r*theta — so a target computed from runLengthMM
+// lands exactly where the walk says it will. The exact arc length is ~0.03%
+// longer, which is enough to leave a cut meant for a vertex one sample short
+// of it and straighten an arc that should have survived.
+function segmentWalkMM(
+  p0: [number, number],
+  p1: [number, number],
+  type: SegmentKind,
+): number {
+  if (!isArcKind(type)) return segLenMM(p1, p0);
+  return chordLengthMM([p0, ...flattenSegment(p0, p1, type)], false);
+}
+
 // splitRunAtArcLength cuts one OPEN run at `targetMM` measured in GLASS
-// along its polyline from the first vertex, returning the two new run ids.
-// A target inside an arc lands ON the arc and straightens that one segment —
-// the only representable way to cut a fixed-bulge arc. Returns null when the
-// target isn't strictly interior, the caller's cue to stop.
+// (as runLengthMM measures it) along its polyline from the first vertex,
+// returning the two new run ids. A target inside an arc lands ON the arc and
+// straightens that one segment — the only representable way to cut a
+// fixed-bulge arc. Returns null when the target isn't strictly interior, the
+// caller's cue to stop.
 function splitRunAtArcLength(
   doc: DesignDoc,
   runId: string,
@@ -4167,7 +4181,7 @@ function splitRunAtArcLength(
   let k = -1;
   let t = 0;
   for (let i = 0; i < n - 1; i++) {
-    const segLen = segmentLengthMM(pts[i], pts[i + 1], segmentTypeAt(run, i));
+    const segLen = segmentWalkMM(pts[i], pts[i + 1], segmentTypeAt(run, i));
     if (acc + segLen >= targetMM - EPS) {
       k = i;
       t = segLen === 0 ? 0 : (targetMM - acc) / segLen;
@@ -4485,8 +4499,9 @@ export function racewayCrossings(
     }
     // Vertex i+1 on the line is emitted by the NEXT iteration as its own
     // `a`. For the final segment of an open run that iteration never comes,
-    // which is exactly right: that vertex is the other endpoint.
-    if (Math.abs(b) <= tolMM) continue;
+    // which is exactly right: that vertex is the other endpoint. An arc is
+    // still probed: its bow can cross the line on the way to that vertex.
+    if (!isArcKind(type) && Math.abs(b) <= tolMM) continue;
 
     if (isArcKind(type)) {
       // Crossing the circle in the line's plane; keep only points inside the

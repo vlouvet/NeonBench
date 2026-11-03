@@ -2978,10 +2978,16 @@ describe('autoSplitOverlongTubes', () => {
       expect(pieceLength).toBeLessThanOrEqual(650);
     }
     // The first cut lands inside the arc at t = (L/2)/arcLen: the vertex is
-    // the point ON the glass at that sweep fraction.
+    // the point ON the glass at that sweep fraction. The arc is measured as
+    // runLengthMM measures it, because that is the metric the walk places
+    // cuts in; r*theta is ~0.03% longer and would miss at 6 places.
     const head = res.doc.runs[0];
     expect(head.polyline.segment_types).toEqual(['line']);
-    const t = (L / 2) / segmentLengthMM([0, 0], [600, 0], 'arc');
+    const arcOnly: DesignRun = {
+      id: 'a',
+      polyline: { points: [[0, 0], [600, 0]], closed: false, segment_types: ['arc'] },
+    };
+    const t = (L / 2) / ops.runLengthMM(arcOnly);
     const X = pointOnSegment([0, 0], [600, 0], 'arc', t);
     expect(head.polyline.points[1][0]).toBeCloseTo(X[0], 6);
     expect(head.polyline.points[1][1]).toBeCloseTo(X[1], 6);
@@ -3393,13 +3399,11 @@ describe('raceway guideline ops', () => {
       expect(r.polyline.segment_types?.length).toBe(r.polyline.points.length - 1);
       expect(r.polyline.segment_types?.every((t) => t === 'line')).toBe(true);
     }
-    // The two interior seams sit on the guideline (endpoints are the corners).
-    const seamYs = res.doc.runs
-      .flatMap((r) => r.polyline.points)
-      .filter((p) => p[0] > 0 && p[0] < 100)
-      .map((p) => p[1]);
-    expect(seamYs).toHaveLength(2);
-    for (const y of seamYs) expect(y).toBeCloseTo(50, 9);
+    // The two interior seams sit on the guideline. Each seam is the last
+    // vertex of one piece and the first of the next, so count it once.
+    const seams = res.doc.runs.slice(0, -1).map((r) => r.polyline.points.at(-1)!);
+    expect(seams).toHaveLength(2);
+    for (const p of seams) expect(p[1]).toBeCloseTo(50, 9);
     // Straightening the arc keeps the glass above the chord but below the arc.
     const total = res.doc.runs.reduce((s, r) => s + ops.runLengthMM(r), 0);
     const arcLen = segmentLengthMM([0, 40], [100, 40], 'arc');
@@ -5403,7 +5407,35 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
       expect(kinds.filter((k) => k === 'arc_r').length).toBe(1);
     });
 
+    // Both bows are on the far side of the line from the vertex, so the only
+    // crossing IS the vertex. The opposite arrangement is the next case.
     it('an open run cut at a vertex by the raceway keeps its arcs', () => {
+      const doc: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 100 }],
+        runs: [{
+          id: 'o',
+          polyline: {
+            points: [[0, 0], [100, 100], [200, 200]],
+            closed: false,
+            segment_types: ['arc_r', 'arc'],
+          },
+        }],
+      };
+      const res = ops.splitTubesAtRaceway(doc, 'rw1');
+      expect(res.runsSplit).toBe(1);
+      expectWellFormedDoc(res.doc);
+      expect(res.doc.runs.map((r) => r.polyline.segment_types))
+        .toEqual([['arc_r'], ['arc']]);
+      expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+    });
+
+    // Tier 3 #120. Same vertices, bows toward the line: each arc overshoots
+    // y=100 by 0.9mm beside the vertex, so the raceway crosses the glass at
+    // x=75 and x=125 as well as at the vertex. The chord walk saw only the
+    // vertex and this test used to pin that blindness as "keeps its arcs".
+    it('an open run whose bows cross the line beside the vertex is cut at every crossing', () => {
       const doc: DesignDoc = {
         version: 1,
         view_box_mm: [0, 0, 400, 400],
@@ -5419,10 +5451,20 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
       };
       const res = ops.splitTubesAtRaceway(doc, 'rw1');
       expect(res.runsSplit).toBe(1);
+      expect(res.piecesCreated).toBe(4);
       expectWellFormedDoc(res.doc);
       expect(res.doc.runs.map((r) => r.polyline.segment_types))
-        .toEqual([['arc'], ['arc_r']]);
+        .toEqual([['line'], ['line'], ['line'], ['line']]);
+      const seams = res.doc.runs.slice(0, -1).map((r) => r.polyline.points.at(-1)!);
+      expect(seams.map((p) => p[0])).toEqual([
+        expect.closeTo(75, 9),
+        100,
+        expect.closeTo(125, 9),
+      ]);
+      for (const p of seams) expect(p[1]).toBeCloseTo(100, 9);
       expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+      // Every seam is on the line, so a second pass finds nothing to do.
+      expect(ops.splitTubesAtRaceway(res.doc, 'rw1').doc).toBe(res.doc);
     });
   });
 });
