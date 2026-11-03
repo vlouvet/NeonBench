@@ -100,6 +100,29 @@ export function segmentLengthMM(
   return a ? a.lengthMM : 0;
 }
 
+// pointOnSegment returns the point at parameter `t` along a segment. For a
+// line that is plain interpolation; for an arc `t` is the fraction of the
+// sweep (equally the fraction of the glass), so the point sits ON the curve
+// rather than on the invisible chord, exactly as the flattening walk lays its
+// samples. A degenerate arc falls back to the line behaviour, mirroring
+// arcFor's null.
+export function pointOnSegment(
+  p0: [number, number],
+  p1: [number, number],
+  segType: SegmentKind,
+  t: number,
+): [number, number] {
+  const lerp: [number, number] = [p0[0] + t * (p1[0] - p0[0]), p0[1] + t * (p1[1] - p0[1])];
+  if (!isArcKind(segType)) return lerp;
+  const a = arcFor(p0, p1, arcKindFlipped(segType));
+  if (!a) return lerp;
+  let sweep = a.endAngle - a.startAngle;
+  while (sweep <= -Math.PI) sweep += 2 * Math.PI;
+  while (sweep > Math.PI) sweep -= 2 * Math.PI;
+  const angle = a.startAngle + sweep * t;
+  return [a.cx + a.radiusMM * Math.cos(angle), a.cy + a.radiusMM * Math.sin(angle)];
+}
+
 // segmentTypeAt is the type of the segment LEAVING vertex i. Out-of-range and
 // a missing array both answer 'line', which is what makes the field omittable.
 export function segmentTypeAt(run: DesignRun, i: number): SegmentKind {

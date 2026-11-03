@@ -85,13 +85,80 @@ describe('copy and paste', () => {
     expect(copy.electrodes).not.toBe(src.electrodes);
   });
 
-  it('drops raceway and circuit, so a paste can land in another design', () => {
-    const doc = docOf(line('a', { raceway_id: 'rw-1', circuit_id: 'c-1' }));
-    const clip = copySelection(doc, ['a'])!;
+  it('gives runs from one source circuit one shared, new circuit in another doc', () => {
+    const doc = {
+      ...docOf(line('a', { circuit_id: 'c-1' }), line('b', { circuit_id: 'c-1' })),
+      circuits: [{ id: 'c-1' }],
+    } as DesignDoc;
+    const clip = copySelection(doc, ['a', 'b'])!;
     const elsewhere = docOf(line('z'));
-    const copy = pasteRuns(elsewhere, clip, 0, 0).doc.runs[1];
-    expect('circuit_id' in copy).toBe(false);
-    expect('raceway_id' in copy).toBe(false);
+    const { doc: next } = pasteRuns(elsewhere, clip, 0, 0);
+    const [ca, cb] = next.runs.slice(1);
+    expect(ca.circuit_id).toBeTruthy();
+    expect(ca.circuit_id).toBe(cb.circuit_id);
+    expect(ca.circuit_id).not.toBe('c-1');
+    expect(next.circuits?.some((c) => c.id === ca.circuit_id)).toBe(true);
+    expect('raceway_id' in ca).toBe(false);
+  });
+
+  it('makes a different new circuit on each paste into the same doc', () => {
+    const doc = {
+      ...docOf(line('a', { circuit_id: 'c-1' })),
+      circuits: [{ id: 'c-1' }],
+    } as DesignDoc;
+    const clip = copySelection(doc, ['a'])!;
+    const { doc: first } = pasteRuns(docOf(line('z')), clip, 0, 0);
+    const { doc: second } = pasteRuns(first, clip, 0, 0);
+    expect(second.runs[2].circuit_id).toBeTruthy();
+    expect(second.runs[2].circuit_id).not.toBe(first.runs[1].circuit_id);
+  });
+
+  it('gives runs from different source circuits different new circuits', () => {
+    const doc = {
+      ...docOf(line('a', { circuit_id: 'c-1' }), line('b', { circuit_id: 'c-2' })),
+      circuits: [{ id: 'c-1' }, { id: 'c-2' }],
+    } as DesignDoc;
+    const { doc: next } = pasteRuns(docOf(), copySelection(doc, ['a', 'b'])!, 0, 0);
+    const [ca, cb] = next.runs.slice(0, 2);
+    expect(ca.circuit_id).toBeTruthy();
+    expect(cb.circuit_id).toBeTruthy();
+    expect(ca.circuit_id).not.toBe(cb.circuit_id);
+  });
+
+  it('names a new circuit `<name> copy`, or leaves it unnamed otherwise', () => {
+    const named = {
+      ...docOf(line('a', { circuit_id: 'c-1' })),
+      circuits: [{ id: 'c-1', name: 'Zone A' }],
+    } as DesignDoc;
+    const { doc: fromNamed } = pasteRuns(docOf(), copySelection(named, ['a'])!, 0, 0);
+    expect(fromNamed.circuits?.[0].name).toBe('Zone A copy');
+    expect(fromNamed.runs[0].circuit_id).toBe(fromNamed.circuits?.[0].id);
+
+    const unnamed = {
+      ...docOf(line('b', { circuit_id: 'c-2' })),
+      circuits: [{ id: 'c-2' }],
+    } as DesignDoc;
+    const { doc: fromUnnamed } = pasteRuns(docOf(), copySelection(unnamed, ['b'])!, 0, 0);
+    expect('name' in (fromUnnamed.circuits?.[0] ?? {})).toBe(false);
+  });
+
+  it('does not grow a circuits key when running had no circuit', () => {
+    const doc = docOf(line('a'));
+    expect('circuits' in pasteRuns(docOf(), copySelection(doc, ['a'])!, 0, 0).doc).toBe(false);
+  });
+
+  it('does not reuse a circuit that already exists in the target', () => {
+    const src = {
+      ...docOf(line('a', { circuit_id: 's1' })),
+      circuits: [{ id: 's1', name: 'Zone' }],
+    } as DesignDoc;
+    const target = {
+      ...docOf(line('z')),
+      circuits: [{ id: 'c1' }],
+    } as DesignDoc;
+    const { doc: next } = pasteRuns(target, copySelection(src, ['a'])!, 0, 0);
+    expect(next.runs[1].circuit_id).toBeTruthy();
+    expect(next.runs[1].circuit_id).not.toBe('c1');
   });
 
   it('copies a group as a new group, keeping the unit together', () => {
