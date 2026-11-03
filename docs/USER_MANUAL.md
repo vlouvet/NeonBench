@@ -170,8 +170,9 @@ Selecting a single run opens its property panel:
   return-strip page (perimeter × depth) with bend marks at every vertex. Optional **per-run depth**
   and **raceway** label (runs sharing a raceway value print as one combined unfolded strip).
 - **Path ops** — **Simplify** (RDP at ε mm), **Reverse** (flip polyline + electrode anchors),
-  **Neonize** (offset the outline into a parallel tube pair), and **stitch ends** (join outer+inner
-  offsets into one run via hairpins).
+  **Neonize** (offset the outline into a parallel tube pair; arc segments come out as point-by-point
+  curves that follow the glass but can no longer be flipped or re-radiused), and **stitch ends** (join
+  outer+inner offsets into one run via hairpins).
 - **Join from: Head / Tail** — arm an endpoint, then click another open run's endpoint (node tool) to
   merge two runs.
 - **Bends** — the per-run bend list (position, angle, radius), each removable.
@@ -405,7 +406,8 @@ change. Changes are remembered in this browser. Hovering a toolbar button shows 
 | **Enter** | Commit a pen polyline |
 
 Copied runs can be pasted into another design in the same browser tab. A pasted run is a fresh
-copy: it keeps its marks and colour, but leaves its raceway and circuit behind.
+copy: it keeps its marks and colour, and brings its wiring as a new circuit, so the copy is
+counted as its own transformer rather than sharing the original's. It leaves its raceway behind.
 
 Pressing the key of the active tool returns to Select. Tool keys do nothing while you are typing
 in a field or on the canvas.

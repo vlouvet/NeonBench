@@ -7,6 +7,7 @@ import {
   flatRunPoints,
   flattenSegment,
   isArcKind,
+  pointOnSegment,
   segmentCount,
   segmentIndexBetween,
   segmentLengthMM,
@@ -1597,6 +1598,99 @@ describe('neonize', () => {
     // warning should remain.
     expect(result.warning ?? '').not.toMatch(/Inner offset self-intersects/);
   });
+
+  // A closed square whose two opposite gaps are arcs. `segment_types`
+  // indexes the segment LEAVING each vertex; index i = gap i (0-based).
+  function arcSquareDoc(): DesignDoc {
+    return {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'arcsq',
+          polyline: {
+            points: [
+              [0, 0],
+              [100, 0],
+              [100, 100],
+              [0, 100],
+            ],
+            closed: true,
+            segment_types: ['arc', 'line', 'arc', 'line'],
+          },
+          tube_diameter_mm: 12,
+        },
+      ],
+    };
+  }
+
+  it('reports flattenedArcs for a closed run with arcs', () => {
+    const result = ops.neonize(arcSquareDoc(), 'arcsq', 20);
+    expect(result.flattenedArcs).toBe(2);
+    // The arc offsets (two bowed, two straight) do not self-intersect at
+    // this spacing, so the run surfaces no warning — flattenedArcs is a
+    // separate fact about the same result.
+    expect(result.warning).toBeUndefined();
+  });
+
+  it("an 'arc_r' segment counts toward flattenedArcs too", () => {
+    const doc: DesignDoc = {
+      ...arcSquareDoc(),
+      runs: [
+        {
+          ...arcSquareDoc().runs[0],
+          polyline: {
+            ...arcSquareDoc().runs[0].polyline,
+            segment_types: ['line', 'arc_r', 'arc', 'line'],
+          },
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'arcsq', 20);
+    expect(result.flattenedArcs).toBe(2);
+  });
+
+  it('stitch=true still reports flattenedArcs', () => {
+    const result = ops.neonize(arcSquareDoc(), 'arcsq', 20, { stitch: true });
+    expect(result.flattenedArcs).toBe(2);
+  });
+
+  it('a run with no segment_types omits the flattenedArcs key', () => {
+    const result = ops.neonize(squareDoc(), 'sq', 20);
+    expect('flattenedArcs' in result).toBe(false);
+  });
+
+  it('an early return (non-positive spacing) omits the flattenedArcs key', () => {
+    const result = ops.neonize(squareDoc(), 'sq', 0);
+    expect(result.warning).toBe('Neonize spacing must be a positive number.');
+    expect('flattenedArcs' in result).toBe(false);
+  });
+
+  it('counts only the n-1 segments of an open run', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        {
+          id: 'open-arc',
+          polyline: {
+            points: [
+              [0, 0],
+              [50, 0],
+              [100, 0],
+              [50, 50],
+            ],
+            closed: false,
+            // Four vertices, three segments: two arcs and one straight.
+            segment_types: ['arc', 'line', 'arc'],
+          },
+          tube_diameter_mm: 10,
+        },
+      ],
+    };
+    const result = ops.neonize(doc, 'open-arc', 10);
+    expect(result.flattenedArcs).toBe(2);
+  });
 });
 
 describe('channel-letter polish ops (Tier 3 #26)', () => {
@@ -2909,32 +3003,20 @@ describe('autoSplitOverlongTubes', () => {
     for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(1000);
   });
 
-  // The piece count comes from the arc length (11 pieces for 1043mm at a
-  // 100mm limit) but the cuts are placed in the chord metric the walk
-  // actually measures. Handing the walk the arc length instead pushes every
-  // cut ~16% too far and the 10th falls off the end of the tube, at which
-  // point the whole split is abandoned and the run stays overlong — a
-  // regression the earlier "is it over the limit" test cannot see.
-  //
-  // The whole run is ONE arc segment, so the first cut lands inside it and
-  // straightens it (Bug #17's decision: a cut inside an arc straightens that
-  // segment and only that segment). Every piece is therefore straight and the
-  // doc keeps exactly the chord — which is the original glass minus the bow of
-  // the one segment that was cut, a number rather than a tolerance.
+  // The first cut lands inside the single arc at t = 1/11, so the vertex sits
+  // on the glass: head plus tail is the two straight chords to that point,
+  // which exceed the 900mm chord a chord placement would have kept.
   it('still cuts a long arc run into enough pieces to clear the limit', () => {
-    const before = ops.runLengthMM(arcDoc(900).runs[0]);
     const res = ops.autoSplitOverlongTubes(arcDoc(900), 100);
     expect(res.runsSplit).toBe(1);
     expect(res.piecesCreated).toBe(11);
     expect(res.doc.runs).toHaveLength(11);
     for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(100);
 
-    // Tier 3 #111 left this assertion unwritten because straightening every
-    // arc made it false. Post-Bug #17 the loss is bounded and computable: the
-    // one arc the cuts went through, and nothing else.
+    const X = pointOnSegment([0, 0], [900, 0], 'arc', 1 / 11);
     const after = lengthsOf(res.doc).reduce((a, b) => a + b, 0);
-    expect(after).toBeCloseTo(900, 6);
-    expect(before - after).toBeCloseTo(before - 900, 9);
+    expect(after).toBeCloseTo(Math.hypot(X[0], X[1]) + Math.hypot(900 - X[0], X[1]), 6);
+    expect(after).toBeGreaterThan(900);
   });
 
   // The other half of the same decision, and the case the fix exists for: when
@@ -2966,14 +3048,10 @@ describe('autoSplitOverlongTubes', () => {
     for (const L of lengthsOf(res.doc)) expect(L).toBeLessThanOrEqual(348);
   });
 
-  // The coincidence Bug #17 breaks, and the reason the retry loop is not
-  // decoration. `pieces` comes from the ARC-AWARE length while the cuts are
-  // placed in the CHORD metric; until arcs survived a split those two agreed
-  // after the cut, because every piece came back straight. Now they don't:
-  // two chord-equal pieces of this run are 600mm of chord each, but the first
-  // is an intact arc measuring 695mm of glass, still over the limit. The
-  // postcondition catches it and n+1 clears it.
-  it('retries with more pieces when chord-equal pieces still exceed the limit', () => {
+  // The two honest outcomes of a glass-placed cut: it lands inside the arc
+  // (that one segment is straightened, piece fits) or before it (the arc stays
+  // intact past the seam). Neither needs a retry — the nominal count fits.
+  it('places cuts by glass, so an intact arc needs no retry', () => {
     const mixed: DesignRun = {
       id: 'r1',
       polyline: {
@@ -2988,37 +3066,47 @@ describe('autoSplitOverlongTubes', () => {
 
     const res = ops.autoSplitOverlongTubes(docOf([mixed]), 650);
     expect(res.runsSplit).toBe(1);
-    // One retry: n=2 leaves a 695mm arc piece, n=3 does not. Asserted as a
-    // COUNT rather than "it converged", because the budget is n+2 and knowing
-    // how much of it a real case eats is the point.
-    expect(res.piecesCreated).toBe(nominal + 1);
+    expect(res.piecesCreated).toBe(2);
     for (const pieceLength of lengthsOf(res.doc)) {
       expect(pieceLength).toBeLessThanOrEqual(650);
     }
+    // The first cut lands inside the arc at t = (L/2)/arcLen: the vertex is
+    // the point ON the glass at that sweep fraction. The arc is measured as
+    // runLengthMM measures it, because that is the metric the walk places
+    // cuts in; r*theta is ~0.03% longer and would miss at 6 places.
+    const head = res.doc.runs[0];
+    expect(head.polyline.segment_types).toEqual(['line']);
+    const arcOnly: DesignRun = {
+      id: 'a',
+      polyline: { points: [[0, 0], [600, 0]], closed: false, segment_types: ['arc'] },
+    };
+    const t = (L / 2) / ops.runLengthMM(arcOnly);
+    const X = pointOnSegment([0, 0], [600, 0], 'arc', t);
+    expect(head.polyline.points[1][0]).toBeCloseTo(X[0], 6);
+    expect(head.polyline.points[1][1]).toBeCloseTo(X[1], 6);
 
-    // At a limit one arc-bow higher the first attempt succeeds and the arc
-    // survives whole — the retry is a response to the geometry, not a tax on
-    // every curved run.
-    const easier = ops.autoSplitOverlongTubes(docOf([mixed]), 700);
-    expect(easier.piecesCreated).toBe(2);
-    expect(easier.doc.runs[0].polyline.segment_types).toEqual(['arc']);
+    // A cut that lands before the arc leaves it intact past the seam: the
+    // piece off the cut still holds the whole arc, measured as glass.
+    const curvy: DesignRun = {
+      id: 'r2',
+      polyline: {
+        points: [[0, 0], [700, 0], [1300, 0]],
+        closed: false,
+        segment_types: ['line', 'arc'],
+      },
+    };
+    const L2 = ops.runLengthMM(curvy);
+    const res2 = ops.autoSplitOverlongTubes(docOf([curvy]), 700);
+    expect(res2.runsSplit).toBe(1);
+    expect(res2.piecesCreated).toBe(2);
+    expect(res2.doc.runs[1].polyline.segment_types).toEqual(['line', 'arc']);
+    const total = lengthsOf(res2.doc).reduce((a, b) => a + b, 0);
+    expect(total).toBeCloseTo(L2, 6);
   });
 
-  // KNOWN LIMIT, pinned deliberately (Bug #17). The retry is bounded at n+2
-  // and the cuts are placed in the chord metric, so a piece can contain a
-  // whole intact arc plus a length of line: its glass exceeds its chord by the
-  // arc's bow no matter how the lattice shifts, and if the lattice keeps
-  // missing the arc across all three attempts the op gives up and leaves the
-  // run ALONE. That needs the run to be ~15x the limit with a short arc on it
-  // — 2100mm against a 125mm limit here — so it is out of reach at the stock
-  // 2500mm/3000mm tube-spec limits without a 37-metre polyline.
-  //
-  // Declining is the honest failure: the operator sees the run still flagged.
-  // The pre-fix code "succeeded" here by straightening the arc and silently
-  // dropping 16mm of glass from the takeoff. The fix for the underlying
-  // mismatch is an arc-aware cut walk (splitRunAtArcLength sums chords), not
-  // a wider retry budget, and it is filed rather than guessed at here.
-  it('declines rather than lying when the retry budget cannot clear an arc', () => {
+  // The nominal count suffices when the long line carries all the cuts: the
+  // trailing arc survives intact past the last seam, measured as glass.
+  it('cuts a long line that ends in a short arc at the nominal count', () => {
     const stubborn: DesignRun = {
       id: 'r1',
       polyline: {
@@ -3031,11 +3119,14 @@ describe('autoSplitOverlongTubes', () => {
     const L = ops.runLengthMM(stubborn);
     expect(L).toBeGreaterThan(125);
     const res = ops.autoSplitOverlongTubes(doc, 125);
-    expect(res.runsSplit).toBe(0);
-    expect(res.piecesCreated).toBe(0);
-    // Left exactly as found — no half-cut doc, no straightened arc.
-    expect(res.doc).toBe(doc);
-    expect(res.doc.runs[0].polyline.segment_types).toEqual(['line', 'arc']);
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(17);
+    for (const pieceLength of lengthsOf(res.doc)) {
+      expect(pieceLength).toBeLessThanOrEqual(125);
+    }
+    expect(res.doc.runs.at(-1)!.polyline.segment_types).toEqual(['line', 'arc']);
+    const total = lengthsOf(res.doc).reduce((a, b) => a + b, 0);
+    expect(total).toBeCloseTo(L, 6);
   });
 
   // Every piece the pass emits has to be saveable, whatever route it took.
@@ -3273,6 +3364,35 @@ describe('racewayCrossings', () => {
     expect(ops.racewayCrossings([], false, 0)).toEqual([]);
     expect(ops.racewayCrossings([[0, 0]], false, 0)).toEqual([]);
   });
+
+  it('sees an arc whose bow crosses the line but whose chord does not', () => {
+    const pts: [number, number][] = [[0, 40], [100, 40]];
+    const c = ops.racewayCrossings(pts, false, 50, undefined, ['arc']);
+    expect(c).toHaveLength(2);
+    expect(c[0].segmentIndex).toBe(0);
+    expect(c[1].segmentIndex).toBe(0);
+    expect(c[0].t).toBeLessThan(c[1].t);
+    expect(c[0].t + c[1].t).toBeCloseTo(1, 9);
+    for (const x of c) {
+      expect(pointOnSegment(pts[0], pts[1], 'arc', x.t)[1]).toBeCloseTo(50, 9);
+    }
+    // The eyebrow chord misses the line, and the flipped bow bows away from it.
+    expect(ops.racewayCrossings(pts, false, 50)).toEqual([]);
+    expect(ops.racewayCrossings(pts, false, 50, undefined, ['arc_r'])).toEqual([]);
+  });
+
+  it('does not let a vertex on the line swallow the arc interior crossing', () => {
+    const pts: [number, number][] = [[-100, 50], [0, 50], [100, 80]];
+    const c = ops.racewayCrossings(pts, false, 50, undefined, ['line', 'arc_r']);
+    expect(c).toHaveLength(2);
+    expect(c[0]).toEqual({ segmentIndex: 1, t: 0 });
+    expect(c[1].segmentIndex).toBe(1);
+    expect(c[1].t).toBeGreaterThan(0);
+    expect(c[1].t).toBeLessThan(1);
+    const mid = pointOnSegment(pts[1], pts[2], 'arc_r', c[1].t);
+    expect(mid[1]).toBeCloseTo(50, 9);
+    expect(mid[0]).toBeGreaterThan(50);
+  });
 });
 
 describe('raceway guideline ops', () => {
@@ -3355,6 +3475,36 @@ describe('raceway guideline ops', () => {
     const second = ops.splitTubesAtRaceway(first.doc, 'rw1');
     expect(second.runsSplit).toBe(0);
     expect(second.doc).toBe(first.doc);
+  });
+
+  it('cuts an arc at both bow crossings and leaves every seam on the line', () => {
+    const run: DesignRun = {
+      id: 'a',
+      polyline: { points: [[0, 40], [100, 40]], closed: false, segment_types: ['arc'] },
+    };
+    const res = ops.splitTubesAtRaceway(withLine([run], 50), 'rw1');
+    expect(res.runsSplit).toBe(1);
+    expect(res.piecesCreated).toBe(3);
+    expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+    // Both bow crossings are turned into seams, straightening the arc: every
+    // piece is a single straight run.
+    for (const r of res.doc.runs) {
+      expect(r.polyline.segment_types?.length).toBe(r.polyline.points.length - 1);
+      expect(r.polyline.segment_types?.every((t) => t === 'line')).toBe(true);
+    }
+    // The two interior seams sit on the guideline. Each seam is the last
+    // vertex of one piece and the first of the next, so count it once.
+    const seams = res.doc.runs.slice(0, -1).map((r) => r.polyline.points.at(-1)!);
+    expect(seams).toHaveLength(2);
+    for (const p of seams) expect(p[1]).toBeCloseTo(50, 9);
+    // Straightening the arc keeps the glass above the chord but below the arc.
+    const total = res.doc.runs.reduce((s, r) => s + ops.runLengthMM(r), 0);
+    const arcLen = segmentLengthMM([0, 40], [100, 40], 'arc');
+    expect(total).toBeGreaterThan(100);
+    expect(total).toBeLessThan(arcLen);
+    // Every seam is on the line, so re-running finds nothing to do.
+    const again = ops.splitTubesAtRaceway(res.doc, 'rw1');
+    expect(again.doc).toBe(res.doc);
   });
 
   it('splits only the tubes that cross, in a mixed design', () => {
@@ -5350,7 +5500,35 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
       expect(kinds.filter((k) => k === 'arc_r').length).toBe(1);
     });
 
+    // Both bows are on the far side of the line from the vertex, so the only
+    // crossing IS the vertex. The opposite arrangement is the next case.
     it('an open run cut at a vertex by the raceway keeps its arcs', () => {
+      const doc: DesignDoc = {
+        version: 1,
+        view_box_mm: [0, 0, 400, 400],
+        guidelines: [{ id: 'rw1', kind: 'raceway', y_mm: 100 }],
+        runs: [{
+          id: 'o',
+          polyline: {
+            points: [[0, 0], [100, 100], [200, 200]],
+            closed: false,
+            segment_types: ['arc_r', 'arc'],
+          },
+        }],
+      };
+      const res = ops.splitTubesAtRaceway(doc, 'rw1');
+      expect(res.runsSplit).toBe(1);
+      expectWellFormedDoc(res.doc);
+      expect(res.doc.runs.map((r) => r.polyline.segment_types))
+        .toEqual([['arc_r'], ['arc']]);
+      expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+    });
+
+    // Tier 3 #120. Same vertices, bows toward the line: each arc overshoots
+    // y=100 by 0.9mm beside the vertex, so the raceway crosses the glass at
+    // x=75 and x=125 as well as at the vertex. The chord walk saw only the
+    // vertex and this test used to pin that blindness as "keeps its arcs".
+    it('an open run whose bows cross the line beside the vertex is cut at every crossing', () => {
       const doc: DesignDoc = {
         version: 1,
         view_box_mm: [0, 0, 400, 400],
@@ -5366,10 +5544,20 @@ describe('splitRun and insertVertex carry segment_types (Bug #17)', () => {
       };
       const res = ops.splitTubesAtRaceway(doc, 'rw1');
       expect(res.runsSplit).toBe(1);
+      expect(res.piecesCreated).toBe(4);
       expectWellFormedDoc(res.doc);
       expect(res.doc.runs.map((r) => r.polyline.segment_types))
-        .toEqual([['arc'], ['arc_r']]);
+        .toEqual([['line'], ['line'], ['line'], ['line']]);
+      const seams = res.doc.runs.slice(0, -1).map((r) => r.polyline.points.at(-1)!);
+      expect(seams.map((p) => p[0])).toEqual([
+        expect.closeTo(75, 9),
+        100,
+        expect.closeTo(125, 9),
+      ]);
+      for (const p of seams) expect(p[1]).toBeCloseTo(100, 9);
       expect(res.doc.runs.every((r) => r.raceway_id === 'rw1')).toBe(true);
+      // Every seam is on the line, so a second pass finds nothing to do.
+      expect(ops.splitTubesAtRaceway(res.doc, 'rw1').doc).toBe(res.doc);
     });
   });
 });
