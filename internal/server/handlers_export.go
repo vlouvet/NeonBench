@@ -37,10 +37,18 @@ type bundleManifest struct {
 }
 
 type bundleProject struct {
-	Name      string `json:"name"`
-	Units     string `json:"units"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	Name                    string   `json:"name"`
+	Units                   string   `json:"units"`
+	CreatedAt               string   `json:"created_at"`
+	UpdatedAt               string   `json:"updated_at"`
+	Customer                string   `json:"customer,omitempty"`
+	Designer                string   `json:"designer,omitempty"`
+	DueDate                 string   `json:"due_date,omitempty"`
+	JobNumber               string   `json:"job_number,omitempty"`
+	TubeEndGapMM            *float64 `json:"tube_end_gap_mm,omitempty"`
+	ChannelLetterDepthMM    *float64 `json:"channel_letter_depth_mm,omitempty"`
+	StripOverlapMM          *float64 `json:"strip_overlap_mm,omitempty"`
+	FacePerimeterStrictMode bool     `json:"face_perimeter_strict_mode,omitempty"`
 }
 
 type bundleVersionRef struct {
@@ -80,10 +88,18 @@ func (s *apiServer) handleExportBundle(w http.ResponseWriter, r *http.Request) {
 		Schema:     currentBundleSchema,
 		ExportedAt: time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
 		Project: bundleProject{
-			Name:      project.Name,
-			Units:     project.Units,
-			CreatedAt: project.CreatedAt,
-			UpdatedAt: project.UpdatedAt,
+			Name:                    project.Name,
+			Units:                   project.Units,
+			CreatedAt:               project.CreatedAt,
+			UpdatedAt:               project.UpdatedAt,
+			Customer:                project.Customer,
+			Designer:                project.Designer,
+			DueDate:                 project.DueDate,
+			JobNumber:               project.JobNumber,
+			TubeEndGapMM:            project.TubeEndGapMM,
+			ChannelLetterDepthMM:    project.ChannelLetterDepthMM,
+			StripOverlapMM:          project.StripOverlapMM,
+			FacePerimeterStrictMode: project.FacePerimeterStrictMode,
 		},
 		TubeSpec: tubeSpec,
 		Versions: make([]bundleVersionRef, 0, len(versions)),
@@ -348,9 +364,15 @@ func (s *apiServer) importBundleV1(w http.ResponseWriter, r *http.Request, manif
 	}
 	defer tx.Rollback()
 
+	project := manifest.Project
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO projects (name, tube_spec_id, units) VALUES (?, ?, ?)`,
-		projectName, tubeSpecID, units)
+		`INSERT INTO projects (name, tube_spec_id, units, customer, designer, due_date, job_number,
+		                       tube_end_gap_mm, channel_letter_depth_mm, strip_overlap_mm, face_perimeter_strict_mode)
+		 VALUES (?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?, ?, ?)`,
+		projectName, tubeSpecID, units,
+		project.Customer, project.Designer, project.DueDate, project.JobNumber,
+		project.TubeEndGapMM, project.ChannelLetterDepthMM, project.StripOverlapMM,
+		boolInt(project.FacePerimeterStrictMode))
 	if err != nil {
 		writeStorageError(w, fmt.Errorf("insert project: %w", err))
 		return
@@ -417,26 +439,34 @@ func readBundleEntries(zr *zip.Reader) ([]byte, map[string][]byte, error) {
 	return manifest, files, nil
 }
 
-// resolveTubeSpec finds an existing spec whose dimensional fields match
-// the manifest snapshot or inserts a new one. Matching by dimensions
-// (not by name) keeps re-imports from creating "12mm clear", "12mm clear
-// (2)", "12mm clear (3)" duplicates on the seeded list — the bundle
-// roundtrip is the common case.
+// resolveTubeSpec finds an existing spec whose dimensions and optional
+// rules match the manifest snapshot or inserts a new one. Matching by
+// rule set (not by name) keeps re-imports from creating "12mm clear",
+// "12mm clear (2)", "12mm clear (3)" duplicates on the seeded list —
+// the bundle roundtrip is the common case.
 func resolveTubeSpec(ctx context.Context, db *sql.DB, snap storage.TubeSpec) (int64, error) {
 	specs, err := storage.ListTubeSpecs(ctx, db)
 	if err != nil {
 		return 0, err
 	}
+	// Optional per-spec rules are part of the rule set too — a spec that
+	// differs only in a lead-in or sharp-bend override must mint a new row,
+	// never silently adopt the local one, since the imported design was
+	// validated against the snapshot's rules.
 	for _, s := range specs {
 		if floatNear(s.DiameterMM, snap.DiameterMM) &&
 			floatNear(s.MinBendRadiusMM, snap.MinBendRadiusMM) &&
 			floatNear(s.MaxSegmentLengthMM, snap.MaxSegmentLengthMM) &&
-			floatNear(s.MinSpacingMM, snap.MinSpacingMM) {
+			floatNear(s.MinSpacingMM, snap.MinSpacingMM) &&
+			optFloatsEqual(s.WallThicknessMM, snap.WallThicknessMM) &&
+			optStringsEqual(s.BendTechnique, snap.BendTechnique) &&
+			optFloatsEqual(s.MinLeadInMM, snap.MinLeadInMM) &&
+			optFloatsEqual(s.SharpBendAngleDeg, snap.SharpBendAngleDeg) {
 			return s.ID, nil
 		}
 	}
 
-	// No dimensional match → create a new spec from the snapshot. The
+	// No rule-set match → create a new spec from the snapshot. The
 	// `name` column is UNIQUE so we may need to suffix the name to
 	// avoid colliding with an existing differently-shaped spec that
 	// happens to share the imported name.
@@ -447,14 +477,52 @@ func resolveTubeSpec(ctx context.Context, db *sql.DB, snap storage.TubeSpec) (in
 	if name == "" {
 		name = fmt.Sprintf("imported %.0fmm", snap.DiameterMM)
 	}
-	res, err := db.ExecContext(ctx,
-		`INSERT INTO tube_specs (name, diameter_mm, min_bend_radius_mm, max_segment_length_mm, min_spacing_mm, is_default)
-		 VALUES (?, ?, ?, ?, ?, 0)`,
-		name, snap.DiameterMM, snap.MinBendRadiusMM, snap.MaxSegmentLengthMM, snap.MinSpacingMM)
-	if err != nil {
-		return 0, fmt.Errorf("insert tube_spec: %w", err)
+	created, err := storage.CreateTubeSpec(ctx, db, storage.CreateTubeSpecParams{
+		Name:               name,
+		DiameterMM:         snap.DiameterMM,
+		MinBendRadiusMM:    snap.MinBendRadiusMM,
+		MaxSegmentLengthMM: snap.MaxSegmentLengthMM,
+		MinSpacingMM:       snap.MinSpacingMM,
+		WallThicknessMM:    snap.WallThicknessMM,
+		BendTechnique:      snap.BendTechnique,
+		MinLeadInMM:        snap.MinLeadInMM,
+		SharpBendAngleDeg:  snap.SharpBendAngleDeg,
+		IsDefault:          false,
+	})
+	if errors.Is(err, storage.ErrTubeSpecNameTaken) {
+		return 0, storage.ErrTubeSpecNameTaken
 	}
-	return res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return created.ID, nil
+}
+
+// optFloatsEqual reports whether two optional floats are both nil or both
+// the same value (within the manifest-introduced rounding tolerance).
+func optFloatsEqual(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return floatNear(*a, *b)
+}
+
+// optStringsEqual reports whether two optional strings are both nil or
+// both equal.
+func optStringsEqual(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// boolInt maps a bool to the SQLite 0/1 integer convention (storage keeps
+// its own copy unexported, so the importer binds the value directly).
+func boolInt(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func floatNear(a, b float64) bool {

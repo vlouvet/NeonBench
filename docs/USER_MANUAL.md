@@ -52,8 +52,8 @@ The project page is the hub for one sign:
 
 - **New blank design** — opens the editor on an empty 1000 × 500 mm canvas to draw from scratch.
 - **Export bundle** — downloads a portable `.neonbench` archive (every design version's SVG +
-  design doc + validation report, plus a manifest). This is the round-trip format for
-  *Import .neonbench*.
+  design doc + validation report, plus the project settings, tube spec, and a manifest). This is
+  the round-trip format for *Import .neonbench*.
 - **Tube spec** selector + **New tube spec / Edit spec / Delete spec** — manage the glass
   library for this project. Editing a spec re-validates every version that uses it. A spec in
   use by any project can't be deleted until those projects switch away.
