@@ -405,7 +405,8 @@ change. Changes are remembered in this browser. Hovering a toolbar button shows 
 | **Enter** | Commit a pen polyline |
 
 Copied runs can be pasted into another design in the same browser tab. A pasted run is a fresh
-copy: it keeps its marks and colour, but leaves its raceway and circuit behind.
+copy: it keeps its marks and colour, and brings its wiring as a new circuit, so the copy is
+counted as its own transformer rather than sharing the original's. It leaves its raceway behind.
 
 Pressing the key of the active tool returns to Select. Tool keys do nothing while you are typing
 in a field or on the canvas.
