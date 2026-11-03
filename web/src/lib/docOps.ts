@@ -3389,9 +3389,8 @@ export function autoHousingAllElectrodes(
 //
 // ARCS (Bug #16): the source is offset through `flatRunPoints`, so the
 // generated paths follow the drawn curve rather than its chords. Two
-// consequences the operator is owed, and which have nowhere better to live
-// until the warning channel stops unmounting the editor (see the note by
-// `warnings` below):
+// consequences the operator is owed, and which are not yet surfaced as a
+// warning (see the note by `warnings` below):
 //
 //   - THE EMITTED RUNS CARRY NO `segment_types`. The offset of a circular arc
 //     is a circular arc of a different radius, but `segment_types` can only
@@ -3559,15 +3558,10 @@ export function neonize(
 
   // Stitch any non-empty warnings into a single user-facing string.
   //
-  // NOTE — deliberately NOT warning that arcs were flattened, even though the
-  // operator is owed that fact. This channel is not a toast: EditorPage's
-  // neonizeSelected pipes it into `setError`, and EditorPage early-returns
-  // `if (error) return <p className="error">{error}</p>` — the entire editor
-  // unmounts, taking the unsaved doc with it. Verified in a browser: adding a
-  // warning here replaced the editor with a bare red line of text. The two
-  // warnings below already do that, rarely; one that fired on EVERY arc
-  // neonize would make it the normal outcome. Filed as a separate bug. Until
-  // the channel is a real toast, the fact is stated in the doc-comment above.
+  // NOTE — still NOT warning that arcs were flattened, though the operator is
+  // owed that fact. It stayed out because this channel used to unmount the
+  // editor. Since Tier 3 #163 it is a dismissible banner, so the warning can
+  // be added; the fact is stated in the doc-comment above until then.
   const warnings: string[] = [];
   if (outer.selfIntersected) {
     warnings.push('Outer offset self-intersects — clean up with the node editor.');

@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom';
 import {
   api,
   parseDoc,
@@ -15,6 +15,31 @@ import {
   type ValidationReport,
 } from '../api';
 import EditorCanvas, { type EditorTool } from '../components/EditorCanvas';
+import {
+  clearDraft,
+  draftDiffersFrom,
+  loadDraft,
+  saveDraft,
+  type Draft,
+} from '../lib/draftStore';
+import ShortcutHelp from '../components/ShortcutHelp';
+import {
+  copySelection,
+  heldClipboard,
+  holdClipboard,
+  nudgeSelection,
+  pasteRuns,
+  type RunClipboard,
+} from '../lib/runClipboard';
+import {
+  formatBinding,
+  isTypingTarget,
+  loadKeymap,
+  matchHotkey,
+  saveKeymap,
+  toolForHotkey,
+  type Keymap,
+} from '../lib/hotkeys';
 import ArrangePanel from '../components/ArrangePanel';
 import ChannelLetterWizardDialog from '../components/ChannelLetterWizardDialog';
 import HersheyTextDialog from '../components/HersheyTextDialog';
@@ -39,7 +64,10 @@ import {
   formatFootageMM,
   formatLengthMM,
   formatSizeMM,
+  lengthFieldText,
   normalizeUnits,
+  nudgeStepMM,
+  UNIT_NAME,
   type DisplayUnits,
 } from '../lib/units';
 import { selectionMetrics } from '../lib/selectionMetrics';
@@ -49,9 +77,11 @@ import {
   sessionRuns,
   type InlineTextSession,
 } from '../lib/inlineTextState';
+import { LengthField } from '../components/LengthField';
 import { NumericField } from '../components/NumericField';
 import type { HousingType, ElectrodeWithHousing } from '../lib/housingLibrary';
 import { isArcKind } from '../lib/arcGeom';
+import { startsNewStep, type EditStamp } from '../lib/undoCoalesce';
 import {
   HOP_CORRIDOR_DIAMETERS,
   HOP_CORRIDOR_MAX_DIAMETERS,
@@ -67,6 +97,9 @@ import {
 // 250.83 kB / 73.16 kB-gzip OutlineTextDialog chunk. Imported eagerly it
 // pushed the main chunk to 827.82 kB / 239.98 kB gzip instead.
 const OutlineTextDialog = lazy(() => import('../components/OutlineTextDialog'));
+
+// Tier 3 #149 — how long edits settle before the local draft is rewritten.
+const DRAFT_DEBOUNCE_MS = 1000;
 
 export default function EditorPage() {
   const { id, vid } = useParams();
@@ -187,7 +220,12 @@ export default function EditorPage() {
     }
     setSelectedToOne(id);
   }
+  // Tier 3 #163 — only loadError replaces the page, because without a design
+  // there is nothing to show. `error` is a failed action on a design that is
+  // still fine, so it stays a banner: the canvas and Save must survive it.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [validateError, setValidateError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [label, setLabel] = useState('');
@@ -283,6 +321,15 @@ export default function EditorPage() {
   // timer below. Lives at the editor's `<p className="meta">` strip
   // so it sits in operator's eyeline above the canvas.
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // Tier 3 #149 — a draft of unsaved work found on load, waiting for the
+  // operator to restore or discard it.
+  const [draftOffer, setDraftOffer] = useState<Draft | null>(null);
+  // The doc the next draft write will store. A ref so the pagehide and
+  // unmount flushes can reach the latest doc without re-binding.
+  const pendingDraftRef = useRef<DesignDoc | null>(null);
+  // Saving navigates to the new version while `dirty` is still true; this is
+  // what stops the unsaved-changes guard from objecting to its own save.
+  const leavingBySaveRef = useRef(false);
   useEffect(() => {
     if (!statusMessage) return;
     const t = setTimeout(() => setStatusMessage(null), 5000);
@@ -328,10 +375,10 @@ export default function EditorPage() {
     });
   }
 
-  // Undo/redo: stacks of past/future doc snapshots. Coalescing collapses
-  // edits that land within COALESCE_MS of the previous edit into a single
-  // undo step — typing into the diameter input or rapid-clicking a tool
-  // shouldn't bury a meaningful prior state under 30 trivial entries.
+  // Undo/redo: stacks of past/future doc snapshots. Coalescing folds the many
+  // edits of one gesture into a single undo step, so typing into the diameter
+  // input doesn't bury a meaningful prior state under 30 trivial entries. See
+  // lib/undoCoalesce.ts for the rule.
   //
   // The stacks live on refs (mutable, no re-render on push/pop), but the
   // sidebar's Undo/Redo buttons read canUndo / canRedo, which need to be
@@ -340,36 +387,54 @@ export default function EditorPage() {
   // useState slots and update them alongside every push/pop.
   const undoStackRef = useRef<DesignDoc[]>([]);
   const redoStackRef = useRef<DesignDoc[]>([]);
-  const lastPushAtRef = useRef<number>(0);
+  const lastEditRef = useRef<EditStamp | null>(null);
+  const actionRef = useRef({ id: 0, open: false });
   const [undoLen, setUndoLen] = useState(0);
   const [redoLen, setRedoLen] = useState(0);
-  const COALESCE_MS = 500;
   const HISTORY_CAP = 50;
 
   function resetHistory() {
     undoStackRef.current = [];
     redoStackRef.current = [];
-    lastPushAtRef.current = 0;
+    lastEditRef.current = null;
     setUndoLen(0);
     setRedoLen(0);
   }
 
-  function editDoc(updater: (prev: DesignDoc) => DesignDoc) {
+  // All edits queued from one event share an action id; the microtask closes
+  // the action once that event's handler has returned.
+  function currentAction(): number {
+    const action = actionRef.current;
+    if (!action.open) {
+      action.open = true;
+      action.id += 1;
+      queueMicrotask(() => {
+        action.open = false;
+      });
+    }
+    return action.id;
+  }
+
+  // `group` names a gesture that fires many edits for one change: a drag, or
+  // typing in one field. Leave it out for anything else, so that each action
+  // gets its own undo step however quickly the next one follows.
+  function editDoc(updater: (prev: DesignDoc) => DesignDoc, group?: string) {
+    const stamp: EditStamp = { action: currentAction(), group, at: Date.now() };
     setDoc((prev) => {
       if (!prev) return prev;
       const next = updater(prev);
       if (next === prev) return prev;
-      const now = Date.now();
       const stack = undoStackRef.current;
-      // Coalesce rapid sequential edits into the most-recent undo entry so
-      // one Cmd+Z reverts a logical action, not a single keystroke.
-      if (stack.length > 0 && now - lastPushAtRef.current < COALESCE_MS) {
-        // Replace top: keep the OLDER snapshot already on the stack.
-      } else {
+      // The `prev` check matters under StrictMode, which runs this updater
+      // twice. A second run must not push the same snapshot again.
+      if (
+        stack[stack.length - 1] !== prev &&
+        (stack.length === 0 || startsNewStep(lastEditRef.current, stamp))
+      ) {
         stack.push(prev);
         if (stack.length > HISTORY_CAP) stack.shift();
       }
-      lastPushAtRef.current = now;
+      lastEditRef.current = stamp;
       // Any new edit invalidates the redo branch.
       redoStackRef.current = [];
       setUndoLen(stack.length);
@@ -413,7 +478,7 @@ export default function EditorPage() {
       if (!cur) return cur;
       const prev = stack.pop()!;
       redoStackRef.current.push(cur);
-      lastPushAtRef.current = 0; // next edit starts a fresh coalesce window
+      lastEditRef.current = null; // the next edit starts a new step
       setUndoLen(stack.length);
       setRedoLen(redoStackRef.current.length);
       return prev;
@@ -428,7 +493,7 @@ export default function EditorPage() {
       if (!cur) return cur;
       const next = stack.pop()!;
       undoStackRef.current.push(cur);
-      lastPushAtRef.current = 0;
+      lastEditRef.current = null;
       setUndoLen(undoStackRef.current.length);
       setRedoLen(stack.length);
       return next;
@@ -448,71 +513,80 @@ export default function EditorPage() {
       .then(([p, v, specs]) => {
         setProject(p);
         setVersion(v);
-        setDoc(parseDoc(v));
+        const savedDoc = parseDoc(v);
+        setDoc(savedDoc);
         setReport(parseReport(v));
+        leavingBySaveRef.current = false;
+        const draft = loadDraft(projectId, versionId);
+        if (draft && savedDoc && draftDiffersFrom(draft, savedDoc)) {
+          setDraftOffer(draft);
+        } else {
+          if (draft) clearDraft(projectId, versionId);
+          setDraftOffer(null);
+        }
         setAllSpecs(specs);
         setTubeSpec(specs.find((s) => s.id === p.tube_spec_id) ?? null);
         setDirty(false);
         resetHistory();
+        setLoadError(null);
+        setError(null);
+        setValidateError(null);
       })
-      .catch((e: Error) => setError(e.message));
+      .catch((e: Error) => setLoadError(e.message));
   }, [projectId, versionId]);
 
-  // Keyboard shortcuts: Cmd/Ctrl+Z = undo, Cmd/Ctrl+Shift+Z = redo. Skipped
-  // when the user is typing into an input — otherwise an editor undo would
-  // hijack input field text undo. Also handles the unmodified single-key
-  // tool hotkeys (Tier 3 #61: 'O' for Break/Move Opening).
+  // Tier 3 #149 — keep a local draft of unsaved work. Writes pause while a
+  // restore offer is open: the stored draft is the thing being offered, and
+  // overwriting it would quietly destroy the choice. Those edits still have
+  // the leave-page warning below.
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
+    if (!doc || !dirty || draftOffer) return;
+    pendingDraftRef.current = doc;
+    const handle = window.setTimeout(() => {
+      pendingDraftRef.current = null;
+      if (!saveDraft(projectId, versionId, doc)) {
+        setStatusMessage('Could not keep a local draft. Save a new version to protect your work.');
       }
-      const meta = e.metaKey || e.ctrlKey;
-      // Tier 2 #101 — a live text caret owns every unmodified key.
-      // Without this, typing "open channel" toggles Break/Move Opening
-      // on the 'o' and Connect Tubes on the 'c', mid-word. Cmd/Ctrl
-      // combinations are deliberately still live, so undo and redo keep
-      // working while typing.
-      if (textCaretActive && !meta) return;
-      if (!meta) {
-        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'o') {
-          // Tier 3 #61 — toggle Break/Move Opening tool. Pressing while
-          // already active reverts to select so the operator can dismiss
-          // the tool with the same key.
-          e.preventDefault();
-          setTool(tool === 'break-open' ? 'select' : 'break-open');
-        }
-        if (!e.altKey && !e.shiftKey && e.key.toLowerCase() === 'c') {
-          // Tier 3 #60 — toggle Connect Tubes tool. Same toggle-back-
-          // to-select-on-second-press convention 'O' uses for break/move.
-          e.preventDefault();
-          setTool(tool === 'connect' ? 'select' : 'connect');
-        }
-        return;
-      }
-      if (e.key.toLowerCase() === 'z') {
-        e.preventDefault();
-        if (e.shiftKey) {
-          redo();
-        } else {
-          undo();
-        }
-      } else if (e.key.toLowerCase() === 'y') {
-        e.preventDefault();
-        redo();
-      }
+    }, DRAFT_DEBOUNCE_MS);
+    return () => window.clearTimeout(handle);
+  }, [doc, dirty, draftOffer, projectId, versionId]);
+
+  // The debounce leaves up to a second unwritten, so flush it on the way out.
+  useEffect(() => {
+    function flush() {
+      const pending = pendingDraftRef.current;
+      if (!pending) return;
+      pendingDraftRef.current = null;
+      saveDraft(projectId, versionId, pending);
     }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // `setTool` is deliberately not a dependency. It now closes over the
-    // text session (leaving the text tool commits it), so listing it
-    // would re-bind this window listener on every render — and the
-    // staleness it would guard against is unreachable: the only calls
-    // to `setTool` in here are the 'o' and 'c' hotkeys, which return
-    // above whenever a caret is live.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tool, textCaretActive]);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, [projectId, versionId]);
+
+  useEffect(() => {
+    if (!dirty) return;
+    function warn(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty]);
+
+  // beforeunload covers reloads and closed tabs; in-app links never unload
+  // the page, so they need the router's blocker.
+  const blocker = useBlocker(() => dirty && !leavingBySaveRef.current);
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    const leave = window.confirm(
+      'Leave without saving a new version? Your edits stay in a draft on this computer, and you can restore them when you reopen this version.',
+    );
+    if (leave) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
 
   // Debounced live validation: every meaningful edit kicks a 500ms timer;
   // when it fires we submit the current doc to the server. In-flight calls
@@ -529,13 +603,14 @@ export default function EditorPage() {
       api
         .validateDoc(projectId, doc, ctrl.signal)
         .then((rep) => {
-          if (!ctrl.signal.aborted) setReport(rep);
+          if (ctrl.signal.aborted) return;
+          setReport(rep);
+          setValidateError(null);
         })
         .catch((e: Error) => {
-          if (!ctrl.signal.aborted) {
-            // Surface but don't crash the editor — validation is advisory.
-            setError(`live validate: ${e.message}`);
-          }
+          // Separate from `error`: this clears itself on the next good
+          // validate, and must not wipe out a message from an action.
+          if (!ctrl.signal.aborted) setValidateError(e.message);
         })
         .finally(() => {
           if (!ctrl.signal.aborted) setValidating(false);
@@ -548,75 +623,6 @@ export default function EditorPage() {
     // rules the doc is judged against without changing the doc itself; without
     // it this effect cannot re-fire to correct a stale report.
   }, [doc, dirty, projectId, project?.tube_spec_id]);
-
-  // Esc disarms a pending join (matches the cancel semantics of the
-  // other in-progress drawing tools). Tool-change disarm is handled in
-  // the tool-button click sites so we don't have to setState in an
-  // effect.
-  //
-  // Tier 3 #33a — Esc also clears multi-select; Cmd-A / Ctrl-A selects
-  // every run; Delete / Backspace deletes the selection. All of these
-  // skip when the user is typing into an input so the keys keep their
-  // text-editing meaning inside form fields.
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      const isFormField =
-        target &&
-        (target.tagName === 'INPUT' ||
-          target.tagName === 'TEXTAREA' ||
-          target.isContentEditable);
-      if (isFormField) return;
-      // Tier 2 #101 — see the tool-hotkey handler above. Escape must
-      // reach the caret (where it COMMITS the text) rather than clear
-      // the run selection, and Delete/Backspace must edit the string
-      // rather than delete the selected runs.
-      if (textCaretActive) return;
-      if (e.key === 'Escape') {
-        if (joinArm) {
-          e.preventDefault();
-          setJoinArm(null);
-        } else if (selectedRunIds.length > 0) {
-          // Esc with no in-progress join: drop the selection. Drawing
-          // tools own their own Esc handler in EditorCanvas (returns
-          // before this fires, since that handler doesn't preventDefault
-          // for empty in-progress shapes — but the no-op is harmless).
-          e.preventDefault();
-          clearSelection();
-        }
-        return;
-      }
-      const meta = e.metaKey || e.ctrlKey;
-      if (meta && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
-        // Cmd-A / Ctrl-A — select every run. Skipped while editing a
-        // form field so OS-level "Select All Text" still works.
-        e.preventDefault();
-        selectAllRuns();
-        return;
-      }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedRunIds.length > 0) {
-        // Delete / Backspace removes every selected run. Skipped if no
-        // selection so a stray keypress doesn't fire a no-op editDoc
-        // (would mark the doc dirty for nothing). Inlined here (rather
-        // than calling out to a hoisted helper) so the lint checker's
-        // "function used before declaration" rule stays happy without
-        // having to rearrange the whole component.
-        if (e.metaKey || e.ctrlKey || e.altKey) return;
-        e.preventDefault();
-        const ids = new Set(selectedRunIds);
-        editDoc((prev) => ({
-          ...prev,
-          runs: prev.runs.filter((r) => !ids.has(r.id)),
-        }));
-        clearSelection();
-      }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // selectAllRuns / deleteSelected close over `doc` and selection
-    // state; relisting the deps keeps the closures fresh as those change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [joinArm, selectedRunIds, doc, textCaretActive]);
 
   // Tier 3 #47 — list of GLOBAL indices (into `report.issues`) of the
   // issues that pass the severity filter. j/k keyboard nav cycles
@@ -730,46 +736,169 @@ export default function EditorPage() {
     if (id) setSelectedToOne(id);
   }
 
-  // Keyboard nav: j / ] = next, k / [ = prev. Cycles through the
-  // currently-visible filtered set; skipped while the user is typing
-  // in an input so the j key still works as a regular character.
+  // Tier 3 #102 — the single keyboard entry point for commands and tools.
+  // matchHotkey owns the "not while typing" guard; the bindings live in
+  // lib/hotkeys so the toolbar tooltips and the `?` list read the same data.
+  // Gesture keys (Enter, Shift, Esc mid-draw) stay in EditorCanvas.
+  const [keymap, setKeymap] = useState<Keymap>(loadKeymap);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  function changeKeymap(next: Keymap) {
+    setKeymap(next);
+    saveKeymap(next);
+  }
+
+  function countRuns(n: number): string {
+    return `${n} run${n === 1 ? '' : 's'}`;
+  }
+
+  // `steps` is how many large nudges away from the original to land.
+  function pasteIntoDoc(clip: RunClipboard, steps: number) {
+    const offset = steps * nudgeStepMM(displayUnits, true);
+    const result = applyOp((d) => pasteRuns(d, clip, offset, offset));
+    if (!result) return;
+    setSelectedRunIds(result.newIds);
+    setStatusMessage(`Pasted ${countRuns(result.newIds.length)}.`);
+  }
+
+  // Returns whether the key did anything: an unhandled key must keep its
+  // default, or a stray Delete with nothing selected would be swallowed.
+  function runHotkey(id: string, e: KeyboardEvent): boolean {
+    const armed = toolForHotkey(id);
+    if (armed) {
+      // Pressing the key of the active tool drops back to Select.
+      setTool(tool === armed ? 'select' : armed);
+      return true;
+    }
+    switch (id) {
+      case 'edit.undo':
+        undo();
+        return true;
+      case 'edit.redo':
+        redo();
+        return true;
+      case 'edit.selectAll':
+        selectAllRuns();
+        return true;
+      case 'edit.delete': {
+        if (selectedRunIds.length === 0) return false;
+        const ids = new Set(selectedRunIds);
+        editDoc((prev) => ({
+          ...prev,
+          runs: prev.runs.filter((r) => !ids.has(r.id)),
+        }));
+        clearSelection();
+        return true;
+      }
+      case 'edit.copy':
+      case 'edit.cut': {
+        // No selection: leave the key alone so page text still copies.
+        const clip = doc ? copySelection(doc, selectedRunIds) : null;
+        if (!clip) return false;
+        holdClipboard(clip);
+        if (id === 'edit.cut') {
+          const cut = new Set(clip.runs.map((r) => r.id));
+          editDoc((prev) => ({ ...prev, runs: prev.runs.filter((r) => !cut.has(r.id)) }));
+          clearSelection();
+        }
+        setStatusMessage(`${id === 'edit.cut' ? 'Cut' : 'Copied'} ${countRuns(clip.runs.length)}.`);
+        return true;
+      }
+      case 'edit.paste':
+      case 'edit.pasteInPlace': {
+        const clip = heldClipboard();
+        if (!clip) return false;
+        // Each plain paste steps further out, so repeats do not stack up.
+        if (id === 'edit.paste') clip.pasteCount += 1;
+        pasteIntoDoc(clip, id === 'edit.paste' ? clip.pasteCount : 0);
+        return true;
+      }
+      case 'edit.duplicate': {
+        const clip = doc ? copySelection(doc, selectedRunIds) : null;
+        if (!clip) return false;
+        pasteIntoDoc(clip, 1);
+        return true;
+      }
+      case 'nudge.left':
+      case 'nudge.right':
+      case 'nudge.up':
+      case 'nudge.down':
+      case 'nudge.leftCoarse':
+      case 'nudge.rightCoarse':
+      case 'nudge.upCoarse':
+      case 'nudge.downCoarse': {
+        // Select tool only: in Node edit the arrows would move the whole run
+        // while the operator is looking at one vertex.
+        if (!doc || tool !== 'select' || selectedRunIds.length === 0) return false;
+        const step = nudgeStepMM(displayUnits, id.endsWith('Coarse'));
+        const dx = id.includes('left') ? -step : id.includes('right') ? step : 0;
+        const dy = id.includes('up') ? -step : id.includes('down') ? step : 0;
+        if (nudgeSelection(doc, selectedRunIds, dx, dy) === doc) return false;
+        editDoc((prev) => nudgeSelection(prev, selectedRunIds, dx, dy), 'nudge');
+        setStatusMessage(`Nudged ${formatLengthMM(step, displayUnits)}.`);
+        return true;
+      }
+      case 'edit.cancel':
+        if (joinArm) {
+          setJoinArm(null);
+          return true;
+        }
+        if (selectedRunIds.length > 0) {
+          clearSelection();
+          return true;
+        }
+        // Last in the chain, and only if EditorCanvas did not just spend this
+        // Esc cancelling a shape: one press should not also drop the tool.
+        if (!e.defaultPrevented && tool !== 'select') {
+          setTool('select');
+          return true;
+        }
+        return false;
+      case 'issue.next':
+      case 'issue.prev': {
+        if (visibleIssueIndices.length === 0) return false;
+        const dir = id === 'issue.next' ? 1 : -1;
+        // No issue selected yet: start at the first, or the last going back.
+        const curPos = selectedIssueIndex === null ? -1 : visibleIssueIndices.indexOf(selectedIssueIndex);
+        const count = visibleIssueIndices.length;
+        const nextPos = curPos < 0 ? (dir > 0 ? 0 : count - 1) : (curPos + dir + count) % count;
+        jumpToIssue(visibleIssueIndices[nextPos]);
+        return true;
+      }
+      case 'help.shortcuts':
+        setShortcutsOpen(true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // The latest runHotkey, so the window listener need not re-bind every render.
+  const runHotkeyRef = useRef(runHotkey);
+  useEffect(() => {
+    runHotkeyRef.current = runHotkey;
+  });
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
-        return;
-      }
-      // Tier 2 #101 — 'j' and 'k' are letters first while a caret is
-      // live; jumping the viewport to the next validation issue in the
-      // middle of a word is the same class of ambush as switching tools.
-      if (textCaretActive) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (visibleIssueIndices.length === 0) return;
-      let dir: 1 | -1;
-      if (e.key === 'j' || e.key === ']') dir = 1;
-      else if (e.key === 'k' || e.key === '[') dir = -1;
-      else return;
-      e.preventDefault();
-      // Pressing the key while no issue is selected starts at the
-      // first (or last, when going backward) visible issue.
-      const cur = selectedIssueIndex;
-      const curPos = cur === null ? -1 : visibleIssueIndices.indexOf(cur);
-      let nextPos: number;
-      if (curPos < 0) {
-        nextPos = dir > 0 ? 0 : visibleIssueIndices.length - 1;
-      } else {
-        nextPos =
-          (curPos + dir + visibleIssueIndices.length) %
-          visibleIssueIndices.length;
-      }
-      jumpToIssue(visibleIssueIndices[nextPos]);
+      const id = matchHotkey(e, keymap, {
+        typing: isTypingTarget(e.target),
+        textCaret: textCaretActive,
+        // Menus and dialogs own the keyboard, but letters do not reach them
+        // on their own. Without this they would switch tools behind the menu.
+        overlayOpen: document.querySelector('.modal-backdrop, [role="menu"]') !== null,
+      });
+      if (id && runHotkeyRef.current(id, e)) e.preventDefault();
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-    // jumpToIssue closes over `doc` and `report`; re-binding keeps
-    // the closure fresh as those change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleIssueIndices, selectedIssueIndex, doc, report, textCaretActive]);
+  }, [keymap, textCaretActive]);
+
+  // Tooltip text with the action's live binding, so a remap cannot leave a
+  // stale key in a hover.
+  function tip(id: string, text: string): string {
+    const binding = keymap[id]?.[0];
+    return binding ? `${text} [${formatBinding(binding)}]` : text;
+  }
+
 
   // Tier 1 #129 — flatten-aware size + glass length of the current selection,
   // shared with the on-canvas label so the panel and the canvas can never
@@ -785,7 +914,7 @@ export default function EditorPage() {
     [doc, selectedRunIds],
   );
 
-  if (error) return <p className="error">{error}</p>;
+  if (loadError) return <p className="error">{loadError}</p>;
   if (!project || !version) return <p className="meta">Loading…</p>;
   if (!doc) {
     return (
@@ -870,10 +999,10 @@ export default function EditorPage() {
           next = ops.setRunColor(next, id, color);
         }
         return next;
-      });
+      }, `color:${runId}`);
       return;
     }
-    editDoc((prev) => ops.setRunColor(prev, runId, color));
+    editDoc((prev) => ops.setRunColor(prev, runId, color), `color:${runId}`);
   }
 
   function placeAnnotation(
@@ -939,7 +1068,7 @@ export default function EditorPage() {
   }
 
   function moveVertex(runId: string, pointIndex: number, x: number, y: number) {
-    editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y));
+    editDoc((prev) => ops.moveVertex(prev, runId, pointIndex, x, y), 'drag');
   }
 
   // Tier 3 #48 — multi-vertex drag committer. The canvas already
@@ -949,7 +1078,7 @@ export default function EditorPage() {
     runId: string,
     writes: { pointIndex: number; x: number; y: number }[],
   ) {
-    editDoc((prev) => ops.moveVertices(prev, runId, writes));
+    editDoc((prev) => ops.moveVertices(prev, runId, writes), 'drag');
   }
 
   // Drag-to-resize handles (feat-editor-scale-handles). The canvas scales
@@ -957,7 +1086,7 @@ export default function EditorPage() {
   // back the absolute new points for each run; we replace them in one editDoc
   // so the live drag coalesces to a single undo step.
   function scaleRuns(updates: { runId: string; points: [number, number][] }[]) {
-    editDoc((prev) => ops.setRunsPoints(prev, updates));
+    editDoc((prev) => ops.setRunsPoints(prev, updates), 'drag');
   }
 
   // Tier 3 #48 — vertex-merge on drop committer. The canvas only fires
@@ -965,7 +1094,7 @@ export default function EditorPage() {
   // radius of `keepIndex` — kicking the dropped vertex's references
   // onto the kept one (see docOps.mergeVertices).
   function mergeVerticesOnRun(runId: string, keepIndex: number, dropIndex: number) {
-    editDoc((prev) => ops.mergeVertices(prev, runId, keepIndex, dropIndex));
+    editDoc((prev) => ops.mergeVertices(prev, runId, keepIndex, dropIndex), 'drag');
   }
 
   function deleteVertex(runId: string, pointIndex: number) {
@@ -1081,7 +1210,7 @@ export default function EditorPage() {
   }
 
   function setRunNotes(runId: string, notes: string) {
-    editDoc((prev) => ops.setRunNotes(prev, runId, notes));
+    editDoc((prev) => ops.setRunNotes(prev, runId, notes), `notes:${runId}`);
   }
 
   function setRunDiameter(runId: string, diameterMM: number | null) {
@@ -1095,10 +1224,10 @@ export default function EditorPage() {
           next = ops.setRunDiameter(next, id, diameterMM);
         }
         return next;
-      });
+      }, `diameter:${runId}`);
       return;
     }
-    editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM));
+    editDoc((prev) => ops.setRunDiameter(prev, runId, diameterMM), `diameter:${runId}`);
   }
 
   function setRunChannelLetterFace(runId: string, isFace: boolean) {
@@ -1106,7 +1235,7 @@ export default function EditorPage() {
   }
 
   function setRunChannelLetterDepth(runId: string, depthMM: number | null) {
-    editDoc((prev) => ops.setRunChannelLetterDepth(prev, runId, depthMM));
+    editDoc((prev) => ops.setRunChannelLetterDepth(prev, runId, depthMM), `depth:${runId}`);
   }
 
   function setRunRacewayID(runId: string, racewayID: string) {
@@ -1292,7 +1421,7 @@ export default function EditorPage() {
   // axis off the guide itself, so `posMM` is y for a horizontal guide and x
   // for a vertical one and no caller has to know which.
   function moveGuideline(id: string, posMM: number) {
-    editDoc((prev) => guides.moveGuide(prev, id, posMM));
+    editDoc((prev) => guides.moveGuide(prev, id, posMM), `guide:${id}`);
   }
 
   // Tier 2 #91 — a construction guide dragged off a canvas ruler. Selected
@@ -1393,11 +1522,14 @@ export default function EditorPage() {
     value: number,
   ) {
     if (!doc || !selectedGuidelineId) return;
-    editDoc((prev) => ops.setRacewayGeometry(prev, selectedGuidelineId, { [field]: value }));
+    editDoc(
+      (prev) => ops.setRacewayGeometry(prev, selectedGuidelineId, { [field]: value }),
+      `raceway:${selectedGuidelineId}:${field}`,
+    );
   }
 
   function dragRacewayEnd(id: string, end: 'left' | 'right', xMM: number) {
-    editDoc((prev) => ops.dragRacewayEnd(prev, id, end, xMM));
+    editDoc((prev) => ops.dragRacewayEnd(prev, id, end, xMM), `raceway-end:${id}:${end}`);
   }
 
   function removeRacewayBox() {
@@ -1675,7 +1807,7 @@ export default function EditorPage() {
       `Arrayed ${plan.runIds.length} run${plan.runIds.length === 1 ? '' : 's'} ` +
         `into a ${plan.countX} × ${plan.countY} grid — added ${plan.newRuns} run` +
         `${plan.newRuns === 1 ? '' : 's'}. Copies keep their channel-letter settings; ` +
-        `they do not inherit the raceway.`,
+        `they do not inherit the raceway. Wired copies get a new circuit per cell.`,
     );
   }
 
@@ -2166,6 +2298,22 @@ export default function EditorPage() {
     focusTimerRef.current = window.setTimeout(() => setFocusedElement(null), 2600);
   }
 
+  function restoreDraft() {
+    if (!draftOffer) return;
+    // Through editDoc so one undo returns to the saved version.
+    const restored = draftOffer.doc;
+    editDoc(() => restored);
+    clearSelection();
+    setDraftOffer(null);
+  }
+
+  function discardDraft() {
+    const ok = window.confirm('Discard this draft? Its unsaved edits cannot be recovered.');
+    if (!ok) return;
+    clearDraft(projectId, versionId);
+    setDraftOffer(null);
+  }
+
   async function save() {
     if (!doc) return;
     setSaving(true);
@@ -2176,6 +2324,9 @@ export default function EditorPage() {
         label: label.trim() || undefined,
         design_doc: doc,
       });
+      pendingDraftRef.current = null;
+      clearDraft(projectId, versionId);
+      leavingBySaveRef.current = true;
       navigate(`/projects/${projectId}/edit/${newVersion.id}`, { replace: true });
       setDirty(false);
       setLabel('');
@@ -2227,106 +2378,106 @@ export default function EditorPage() {
               className="tool-btn"
               onClick={undo}
               disabled={!canUndo}
-              title="Undo (Cmd/Ctrl+Z)"
+              title={tip('edit.undo', 'Undo')}
             >Undo</button>
             <button
               type="button"
               className="tool-btn"
               onClick={redo}
               disabled={!canRedo}
-              title="Redo (Cmd/Ctrl+Shift+Z)"
+              title={tip('edit.redo', 'Redo')}
             >Redo</button>
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
               className={tool === 'select' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('select')}
-              title="Select tool (click runs to highlight)"
+              title={tip('tool.select', 'Select tool (click runs to highlight)')}
             >Select</button>
             <button
               type="button"
               className={tool === 'electrode' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('electrode')}
-              title="Place electrode (click on a path)"
+              title={tip('tool.electrode', 'Place electrode (click on a path)')}
             >Place electrode</button>
             <button
               type="button"
               className={tool === 'blockout' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('blockout')}
-              title="Mark blockout (click two points on the same run)"
+              title={tip('tool.blockout', 'Mark blockout (click two points on the same run)')}
             >Mark blockout</button>
             <button
               type="button"
               className={tool === 'jump' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('jump')}
-              title="Mark a jump-over (tube lifts to clear another tube)"
+              title={tip('tool.jump', 'Mark a jump-over (tube lifts to clear another tube)')}
             >Mark jump</button>
             <button
               type="button"
               className={tool === 'support' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('support')}
-              title="Mark a support point (chassis-mount)"
+              title={tip('tool.support', 'Mark a support point (chassis-mount)')}
             >Mark support</button>
             <button
               type="button"
               className={tool === 'doubleback' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('doubleback')}
-              title="Mark a hairpin as an intentional double-back (suppresses bend-radius warning)"
+              title={tip('tool.doubleback', 'Mark a hairpin as an intentional double-back (suppresses bend-radius warning)')}
             >Mark double-back</button>
             <button
               type="button"
               className={tool === 'drop_bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('drop_bend')}
-              title="Mark a drop bend (tube briefly dips behind the substrate; emits a DROP entry in the bend list, a subtle dip in 3D preview)"
+              title={tip('tool.drop_bend', 'Mark a drop bend (tube briefly dips behind the substrate; emits a DROP entry in the bend list, a subtle dip in 3D preview)')}
             >Mark drop</button>
             <button
               type="button"
               className={tool === 'insert-doubleback' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('insert-doubleback')}
-              title="Splice a U-shaped hairpin into a polyline at the click point (default depth 1.5× tube ø, shift-click to flip side)"
+              title={tip('tool.insert-doubleback', 'Splice a U-shaped hairpin into a polyline at the click point (default depth 1.5× tube ø, shift-click to flip side)')}
             >Insert DB</button>
             <button
               type="button"
               className={tool === 'connect' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('connect')}
-              title="Connect tubes (C): click two electrode pins on different runs to commit a jumper run between them. Esc / right-click cancels a staged source."
+              title={tip('tool.connect', 'Connect tubes: click two electrode pins on different runs to commit a jumper run between them. Esc / right-click cancels a staged source.')}
             >Connect</button>
             <button
               type="button"
               className={tool === 'bend' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('bend')}
-              title="Add a manual bend point (overrides auto-detect for that run)"
+              title={tip('tool.bend', 'Add a manual bend point (overrides auto-detect for that run)')}
             >Add bend</button>
             <span className="toolbar-divider" aria-hidden />
             <button
               type="button"
               className={tool === 'pen' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('pen')}
-              title="Draw a freeform polyline (click to drop vertices, double-click or Enter to commit, Esc to cancel)"
+              title={tip('tool.pen', 'Draw a freeform polyline (click to drop vertices, double-click or Enter to commit, Esc to cancel)')}
             >Pen</button>
             <button
               type="button"
               className={tool === 'rect' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('rect')}
-              title="Draw an axis-aligned rectangle (drag from corner to corner)"
+              title={tip('tool.rect', 'Draw an axis-aligned rectangle (drag from corner to corner)')}
             >Rect</button>
             <button
               type="button"
               className={tool === 'circle' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('circle')}
-              title="Draw a circle (drag from center to radius)"
+              title={tip('tool.circle', 'Draw a circle (drag from center to radius)')}
             >Circle</button>
             <button
               type="button"
               className={tool === 'arc' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('arc')}
-              title="Draw a three-point circular arc (click start, mid, end)"
+              title={tip('tool.arc', 'Draw a three-point circular arc (click start, mid, end)')}
             >Arc</button>
             <button
               type="button"
               className={tool === 'text' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('text')}
-              title="Type text directly on the canvas: click to place the caret, then type. Alt+←/→ kerns the pair at the caret. Esc or a click elsewhere commits."
+              title={tip('tool.text', 'Type text directly on the canvas: click to place the caret, then type. Alt+←/→ kerns the pair at the caret. Esc or a click elsewhere commits.')}
             >Text</button>
             {tool === 'text' && (
               // Size and face for the next (and current) caret. Shown
@@ -2336,25 +2487,15 @@ export default function EditorPage() {
               <>
                 <label className="meta" title="Cap height — the literal height of a capital, in mm">
                   {' '}size{' '}
-                  <NumericField
-                    // NOT a raw <input type="number">: a numeric `step`
-                    // makes `min` a lattice base and an off-lattice
-                    // value silently swallows form submits. This is a
-                    // millimetre measurement in an imperial trade —
-                    // 12.7, 19.05 and 25.4 all have to be typeable.
-                    // (Tier 3 #112 took this file off the lint rule's
-                    // legacy exempt list, so the rule now catches it
-                    // here rather than relying on discipline.)
-                    value={textCapHeightMM}
-                    min={1}
-                    onChange={(e) => {
-                      const v = Number(e.currentTarget.value);
-                      if (Number.isFinite(v) && v > 0) setTextCapHeightMM(v);
-                    }}
+                  <LengthField
+                    positive
+                    valueMM={textCapHeightMM}
+                    units={displayUnits}
+                    onChangeMM={setTextCapHeightMM}
                     style={{ width: '5rem' }}
-                    aria-label="Inline text cap height (mm)"
+                    aria-label={`Inline text cap height (${UNIT_NAME[displayUnits]})`}
                   />
-                  {' mm'}
+                  {` ${UNIT_NAME[displayUnits]}`}
                 </label>
                 <select
                   value={textFontKey}
@@ -2390,25 +2531,25 @@ export default function EditorPage() {
               type="button"
               className={tool === 'label' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('label')}
-              title="Drop a text label anywhere on the canvas"
+              title={tip('tool.label', 'Drop a text label anywhere on the canvas')}
             >Label</button>
             <button
               type="button"
               className={tool === 'dimension' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('dimension')}
-              title="Measure a distance between two points (click two points)"
+              title={tip('tool.dimension', 'Measure a distance between two points (click two points)')}
             >Dimension</button>
             <button
               type="button"
               className={tool === 'node' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('node')}
-              title="Edit polyline vertices on the selected run (drag to move, shift-click to delete)"
+              title={tip('tool.node', 'Edit polyline vertices on the selected run (drag to move, shift-click to delete)')}
             >Node edit</button>
             <button
               type="button"
               className={tool === 'break-open' ? 'tool-btn active' : 'tool-btn'}
               onClick={() => setTool('break-open')}
-              title="Break/Move Opening (O): click a vertex on a closed run to insert an opening, or on an open run to move the existing opening"
+              title={tip('tool.break-open', 'Break/Move Opening: click a vertex on a closed run to insert an opening, or on an open run to move the existing opening')}
             >Break/Move Opening</button>
             <span className="toolbar-divider" aria-hidden />
             <button
@@ -2422,15 +2563,13 @@ export default function EditorPage() {
                 lattice. `min` is kept as a plain lower bound; the arrow
                 keys now step by the browser default of 1 instead of 0.5,
                 which is the documented cost of the rule. */}
-            <NumericField
-              min="0.1"
-              value={snapMM}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                if (v > 0) setSnapMM(v);
-              }}
+            <LengthField
+              positive
+              valueMM={snapMM}
+              units={displayUnits}
+              onChangeMM={setSnapMM}
               className="snap-input"
-              title="Snap grid spacing in mm"
+              title={`Snap grid spacing (${UNIT_NAME[displayUnits]})`}
             />
             {/* Tier 2 #91 — rulers & guides. Sits next to Snap because guide
                 snapping rides the same snap-enabled toggle. */}
@@ -2528,6 +2667,15 @@ export default function EditorPage() {
                 />
               )}
             </div>
+            <button
+              type="button"
+              className="tool-btn"
+              onClick={() => setShortcutsOpen(true)}
+              title={tip('help.shortcuts', 'Keyboard shortcuts')}
+              aria-label="Keyboard shortcuts"
+            >
+              ?
+            </button>
           </div>
         </div>
         <p className="meta">
@@ -2564,6 +2712,33 @@ export default function EditorPage() {
           {' · '}
           {doc.runs.length} runs · {totalElectrodes} electrodes placed · drag to pan, wheel to zoom · shift+click an electrode to delete
         </p>
+        {draftOffer && (
+          <div className="draft-offer" role="alert">
+            <span>
+              Unsaved work from {new Date(draftOffer.savedAt).toLocaleString()} was kept on this
+              computer.
+            </span>
+            <button type="button" className="tool-btn" onClick={restoreDraft}>
+              Restore
+            </button>
+            <button type="button" className="tool-btn" onClick={discardDraft}>
+              Discard
+            </button>
+          </div>
+        )}
+        {error && (
+          <div className="editor-alert" role="alert">
+            <span className="error">{error}</span>
+            <button type="button" className="tool-btn" onClick={() => setError(null)}>
+              Dismiss
+            </button>
+          </div>
+        )}
+        {dirty && validateError && (
+          <div className="editor-alert" role="alert">
+            <span className="error">Live validation failed: {validateError}</span>
+          </div>
+        )}
         {statusMessage && (
           // Tier 2 #72 — transient confirmation toast for the auto-batch
           // ops (doubleback-all / housing-all). Auto-clears after 5s.
@@ -2976,39 +3151,48 @@ export default function EditorPage() {
                     recurring bug class 3). Tier 3 #112 moved the guarantee
                     from discipline to the type system. */}
                 <label className="diameter-picker">
-                  Left x (mm)
-                  <NumericField
-                    value={selectedRaceway.x_mm}
-                    onChange={(e) => setRacewayGeometry('x_mm', Number(e.target.value))}
+                  Left x ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    valueMM={selectedRaceway.x_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('x_mm', mm)}
                   />
                 </label>
                 <label className="diameter-picker">
-                  Length (mm)
-                  <NumericField
-                    value={selectedRaceway.length_mm}
-                    onChange={(e) => setRacewayGeometry('length_mm', Number(e.target.value))}
+                  Length ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    valueMM={selectedRaceway.length_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('length_mm', mm)}
                   />
                 </label>
                 <label
                   className="diameter-picker"
                   title="Box height. Empty = the 203.2mm (8in) shop default."
                 >
-                  Height (mm)
-                  <NumericField
-                    placeholder={String(RACEWAY_DEFAULT_HEIGHT_MM)}
-                    value={selectedRaceway.height_mm ?? ''}
-                    onChange={(e) => setRacewayGeometry('height_mm', Number(e.target.value))}
+                  Height ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    placeholder={lengthFieldText(RACEWAY_DEFAULT_HEIGHT_MM, displayUnits)}
+                    valueMM={selectedRaceway.height_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('height_mm', mm)}
+                    onClear={() => setRacewayGeometry('height_mm', 0)}
                   />
                 </label>
                 <label
                   className="diameter-picker"
                   title="Box depth, front face to wall. Empty = the 203.2mm (8in) shop default — a 159mm neon transformer cannot sit across a 5in box, which is why the neon-era standard is bigger than the LED-era one."
                 >
-                  Depth (mm)
-                  <NumericField
-                    placeholder={String(RACEWAY_DEFAULT_DEPTH_MM)}
-                    value={selectedRaceway.depth_mm ?? ''}
-                    onChange={(e) => setRacewayGeometry('depth_mm', Number(e.target.value))}
+                  Depth ({UNIT_NAME[displayUnits]})
+                  <LengthField
+                    positive
+                    placeholder={lengthFieldText(RACEWAY_DEFAULT_DEPTH_MM, displayUnits)}
+                    valueMM={selectedRaceway.depth_mm}
+                    units={displayUnits}
+                    onChangeMM={(mm) => setRacewayGeometry('depth_mm', mm)}
+                    onClear={() => setRacewayGeometry('depth_mm', 0)}
                   />
                 </label>
                 <button
@@ -3126,6 +3310,7 @@ export default function EditorPage() {
               </div>
               <ArrangePanel
                 doc={doc}
+                units={displayUnits}
                 selectedRunIds={selectedRunIds}
                 onAlign={alignSelected}
                 onDistribute={distributeSelected}
@@ -3639,6 +3824,7 @@ export default function EditorPage() {
       </div>
       {hersheyOpen && (
         <HersheyTextDialog
+          units={displayUnits}
           onCancel={() => setHersheyOpen(false)}
           onInsert={(runs) => insertHersheyText(runs)}
         />
@@ -3646,6 +3832,7 @@ export default function EditorPage() {
       {outlineTextOpen && (
         <Suspense fallback={null}>
           <OutlineTextDialog
+            units={displayUnits}
             onCancel={() => setOutlineTextOpen(false)}
             onInsert={(runs) => insertOutlineText(runs)}
           />
@@ -3653,6 +3840,7 @@ export default function EditorPage() {
       )}
       {channelLetterOpen && (
         <ChannelLetterWizardDialog
+          units={displayUnits}
           onCancel={() => setChannelLetterOpen(false)}
           onInsert={(runs) => insertChannelLetterWizardOutput(runs)}
         />
@@ -3722,6 +3910,13 @@ export default function EditorPage() {
       })()}
       {printSrc && (
         <PrintHost src={printSrc} onClose={() => setPrintSrc(null)} />
+      )}
+      {shortcutsOpen && (
+        <ShortcutHelp
+          keymap={keymap}
+          onChange={changeKeymap}
+          onClose={() => setShortcutsOpen(false)}
+        />
       )}
     </section>
   );

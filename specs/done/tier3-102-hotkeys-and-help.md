@@ -1,6 +1,6 @@
 # Tier 3 #102 — Keyboard shortcut reference, remapping, and tooltips
 
-> **Status:** active · drafted 2026-08-31 · branch `task/3-hotkeys-help`
+> **Status:** done · drafted 2026-08-31 · branch `task/3-hotkeys-help`
 
 ## Goal
 
@@ -79,3 +79,18 @@ Chorded/sequential shortcuts, per-tool contextual bindings, and a full help
 system with prose documentation. `#113 Online Help` is satisfied by a
 discoverable, always-accurate shortcut reference; if a prose manual is wanted
 later, `docs/USER_MANUAL.md` already exists to link to.
+
+## Outcome (2026-11-02)
+
+Shipped as specified, with three differences:
+
+- **Gesture keys were not migrated, on purpose.** Enter, Shift and Esc mid-draw read
+  EditorCanvas's in-progress state, which is the "per-tool contextual bindings"
+  this spec rules out. They stay in the canvas and appear in the reference as
+  `FIXED_KEYS`.
+- **Single-letter defaults were added for all 19 tools**, and Esc now ends on Select.
+  Both are additive: no shipped binding changed. They came from the usability
+  review (`docs/usability-review-2026-11.md`).
+- **The guard is wider than the old ones.** It now also covers focused dropdowns,
+  open dialogs and open menus, because with a letter on every tool those keys would
+  otherwise switch tools behind the thing the operator is using.

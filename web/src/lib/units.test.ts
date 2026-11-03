@@ -8,9 +8,12 @@ import {
   formatLengthMM,
   formatSizeMM,
   inchesToMM,
+  lengthFieldText,
   mmToInches,
   normalizeUnits,
+  nudgeStepMM,
   parseLengthToMM,
+  resolveLengthEdit,
 } from './units';
 
 describe('normalizeUnits', () => {
@@ -253,5 +256,67 @@ describe('formatFootageMM', () => {
 
   it('answers an em dash for non-finite input', () => {
     expect(formatFootageMM(NaN, 'in')).toBe('—');
+  });
+});
+
+describe('lengthFieldText', () => {
+  it('leaves millimetres exactly as stored', () => {
+    expect(lengthFieldText(12.7, 'mm')).toBe('12.7');
+    expect(lengthFieldText(0.25, 'mm')).toBe('0.25');
+  });
+
+  it('shows a real fraction as a fraction', () => {
+    expect(lengthFieldText(inchesToMM(48.5), 'in')).toBe('48 1/2');
+    expect(lengthFieldText(inchesToMM(0.75), 'in')).toBe('3/4');
+    expect(lengthFieldText(inchesToMM(18), 'in')).toBe('18');
+  });
+
+  it('does not round a value onto a sixteenth', () => {
+    // A readout may print 7 7/8; a field must not claim that is what is stored.
+    expect(lengthFieldText(200, 'in')).toBe('7.874');
+    // The case that forced this: in sixteenths this prints "0".
+    expect(lengthFieldText(0.5, 'in')).toBe('0.0197');
+    expect(formatLengthMM(0.5, 'in', { suffix: false })).toBe('0');
+  });
+
+  it('is empty for no value', () => {
+    expect(lengthFieldText(null, 'in')).toBe('');
+    expect(lengthFieldText(undefined, 'mm')).toBe('');
+    expect(lengthFieldText(Number.NaN, 'mm')).toBe('');
+  });
+});
+
+describe('resolveLengthEdit', () => {
+  it('reads what a sign shop writes, in inch mode', () => {
+    expect(resolveLengthEdit(`1' 6"`, 'in', 100)).toEqual({ kind: 'value', mm: inchesToMM(18) });
+    expect(resolveLengthEdit('48 1/2', 'in', 100)).toEqual({ kind: 'value', mm: inchesToMM(48.5) });
+  });
+
+  it('reports empty and invalid separately, so a caller can keep the old value', () => {
+    expect(resolveLengthEdit('  ', 'in', 100)).toEqual({ kind: 'empty' });
+    expect(resolveLengthEdit('abc', 'in', 100)).toEqual({ kind: 'invalid' });
+    expect(resolveLengthEdit('48 1/', 'in', 100)).toEqual({ kind: 'invalid' });
+    expect(resolveLengthEdit('1 1/2', 'mm', 100)).toEqual({ kind: 'invalid' });
+  });
+
+  it('restores the stored value exactly when the shown text comes back', () => {
+    // 200 mm shows as 7.874, which parses to 199.9996. Without the baseline
+    // rule, an edit that changed nothing would move the geometry.
+    const shown = lengthFieldText(200, 'in');
+    expect(parseLengthToMM(shown, 'in')).not.toBe(200);
+    expect(resolveLengthEdit(shown, 'in', 200)).toEqual({ kind: 'value', mm: 200 });
+  });
+
+  it('survives having no baseline', () => {
+    expect(resolveLengthEdit('8', 'in', null)).toEqual({ kind: 'value', mm: inchesToMM(8) });
+  });
+});
+
+describe('nudgeStepMM', () => {
+  it('steps in what the project reads', () => {
+    expect(nudgeStepMM('mm', false)).toBe(1);
+    expect(nudgeStepMM('mm', true)).toBe(10);
+    expect(nudgeStepMM('in', false)).toBeCloseTo(1.5875, 9);
+    expect(nudgeStepMM('in', true)).toBeCloseTo(12.7, 9);
   });
 });

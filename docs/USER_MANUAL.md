@@ -209,7 +209,18 @@ warnings** to filter both the list and the on-canvas markers; click a group to j
 Type a label in **New version label** and click **Save as new version** to snapshot the design. Each
 version has its own 3D preview and export. Versions can be renamed later from the project page.
 
+**Unsaved work.** Edits you have not saved as a version are kept in a draft on this computer as
+you work. Leaving the editor or closing the tab warns you first. If you come back to a version
+with a draft, a banner offers **Restore** or **Discard**. A draft is not a version: it does not
+appear in the version list, and it cannot print or export until you save it.
+
 #### 4.8 Printing & export
+
+**Typing sizes.** In a project shown in inches, size fields accept what you would write on the
+job: `48`, `48 1/2`, `4'`, `4' 6"` or `4 ft 6 in`. This covers letter height, raceway size and
+position, step-and-repeat pitch and the snap grid. A size that does not land on a sixteenth is
+shown as a decimal, so the field always shows what is stored. Glass stays in millimetres
+everywhere: tube diameter, end gap and bend radius are never converted.
 
 **Print** generates the shop PDF. The **Print options** popover sets:
 
@@ -367,18 +378,37 @@ The **Color** dropdown on a run sets both the documentation color and the 3D emi
 
 ## Appendix B — Keyboard shortcuts
 
+Press **?** in the editor for the full list. It shows the keys currently in force, and it is
+where you change them: click a key, press the new one, and **Reset to defaults** undoes every
+change. Changes are remembered in this browser. Hovering a toolbar button shows its key too.
+
 | Key | Action |
 |---|---|
 | **Cmd/Ctrl + Z** | Undo |
 | **Cmd/Ctrl + Shift + Z** / **Cmd/Ctrl + Y** | Redo |
 | **Cmd/Ctrl + A** | Select all runs |
 | **Delete / Backspace** | Delete selected runs |
-| **O** | Break/Move Opening tool |
-| **C** | Connect tool |
-| **J** / **]** , **K** / **[** | Cycle selection to next / previous run |
+| **Cmd/Ctrl + C / X / V** | Copy / cut / paste the selected runs |
+| **Cmd/Ctrl + Shift + V** | Paste in place |
+| **Cmd/Ctrl + D** | Duplicate |
+| **Arrow keys** | Nudge the selection 1 mm, or 1/16″ in an inch project (Select tool) |
+| **Shift + arrow keys** | Nudge 10 mm, or 1/2″ |
+| **Esc** | Cancel the action in progress, then clear the selection, then return to Select |
+| **V** / **N** / **O** | Select / Node edit / Break/Move Opening |
+| **P** / **R** / **Shift+R** / **A** | Pen / Rectangle / Circle / Arc |
+| **T** / **L** / **M** | Text / Label / Dimension |
+| **E** / **B** / **U** / **Shift+U** | Place electrode / Mark blockout / Mark jump / Mark drop |
+| **S** / **D** / **I** / **C** / **G** | Mark support / Mark double-back / Insert double-back / Connect / Add bend |
+| **J** / **]** , **K** / **[** | Next / previous validation issue |
+| **?** | Show this list |
 | **Shift** (while resizing) | Uniform scale |
-| **Esc** | Cancel the current tool action / staged point |
 | **Enter** | Commit a pen polyline |
+
+Copied runs can be pasted into another design in the same browser tab. A pasted run is a fresh
+copy: it keeps its marks and colour, but leaves its raceway and circuit behind.
+
+Pressing the key of the active tool returns to Select. Tool keys do nothing while you are typing
+in a field or on the canvas.
 
 ---
 

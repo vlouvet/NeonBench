@@ -33,7 +33,9 @@ import {
   type PitchMode,
   type StepRepeatOptions,
 } from '../lib/stepRepeat';
+import { LengthField } from './LengthField';
 import { NumericField } from './NumericField';
+import { UNIT_NAME, type DisplayUnits } from '../lib/units';
 
 export type ArrangePanelProps = {
   doc: DesignDoc | null;
@@ -43,6 +45,7 @@ export type ArrangePanelProps = {
   onMirror: (axis: Axis) => void;
   onReorder: (move: DepthMove) => void;
   onStepRepeat: (opts: StepRepeatOptions) => void;
+  units: DisplayUnits;
 };
 
 const gridStyle: React.CSSProperties = {
@@ -211,6 +214,7 @@ export default function ArrangePanel({
   onMirror,
   onReorder,
   onStepRepeat,
+  units,
 }: ArrangePanelProps) {
   const usable = doc ? arrangeableRunIds(doc, selectedRunIds).length : 0;
   const alignWhy = disabledReason(doc, selectedRunIds, 'align');
@@ -223,15 +227,17 @@ export default function ArrangePanel({
   // plan does the validating and says what is wrong in words.
   const [countX, setCountX] = useState(String(DEFAULT_STEP_REPEAT.countX));
   const [countY, setCountY] = useState(String(DEFAULT_STEP_REPEAT.countY));
-  const [pitchX, setPitchX] = useState(String(DEFAULT_STEP_REPEAT.pitchXMM));
-  const [pitchY, setPitchY] = useState(String(DEFAULT_STEP_REPEAT.pitchYMM));
+  // Pitches are millimetres. LengthField keeps its own text, so the same
+  // worry does not apply to them.
+  const [pitchX, setPitchX] = useState<number>(DEFAULT_STEP_REPEAT.pitchXMM);
+  const [pitchY, setPitchY] = useState<number>(DEFAULT_STEP_REPEAT.pitchYMM);
   const [pitchMode, setPitchMode] = useState<PitchMode>(DEFAULT_STEP_REPEAT.pitchMode);
 
   const arrayOpts: StepRepeatOptions = {
     countX: Number(countX),
     countY: Number(countY),
-    pitchXMM: Number(pitchX),
-    pitchYMM: Number(pitchY),
+    pitchXMM: pitchX,
+    pitchYMM: pitchY,
     pitchMode,
   };
   const plan = stepRepeatPlan(doc, selectedRunIds, arrayOpts);
@@ -388,21 +394,25 @@ export default function ArrangePanel({
       </div>
       <div style={fieldRowStyle}>
         <label style={fieldStyle}>
-          {pitchLabel} X (mm)
-          <NumericField
-            value={pitchX}
+          {pitchLabel} X ({UNIT_NAME[units]})
+          <LengthField
+            valueMM={pitchX}
+            units={units}
             data-testid="step-repeat-pitch-x"
             style={fieldInputStyle}
-            onChange={(e) => setPitchX(e.target.value)}
+            onChangeMM={setPitchX}
+            onClear={() => setPitchX(0)}
           />
         </label>
         <label style={fieldStyle}>
-          {pitchLabel} Y (mm)
-          <NumericField
-            value={pitchY}
+          {pitchLabel} Y ({UNIT_NAME[units]})
+          <LengthField
+            valueMM={pitchY}
+            units={units}
             data-testid="step-repeat-pitch-y"
             style={fieldInputStyle}
-            onChange={(e) => setPitchY(e.target.value)}
+            onChangeMM={setPitchY}
+            onClear={() => setPitchY(0)}
           />
         </label>
       </div>
@@ -453,7 +463,8 @@ export default function ArrangePanel({
       <p className="meta hint-line" style={{ margin: 0 }}>
         Align, distribute and array use each run&rsquo;s true outline, so a
         curved tube lands by its bow rather than by its end points. Copies do
-        not inherit the original&rsquo;s raceway.
+        not inherit the original&rsquo;s raceway, and wired copies get a new
+        circuit per cell.
       </p>
     </div>
   );
