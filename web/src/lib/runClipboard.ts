@@ -31,7 +31,7 @@ export type RunClipboard = {
   runs: DesignRun[];
   /** Source group id to its name and visibility, for naming the new groups. */
   groups: Group[];
-  /** Source circuit ids the copied runs reference, for naming the new ones. */
+  /** Source circuits the copied runs reference, for naming the new ones. */
   circuits: Circuit[];
   /** How many times this copy has been pasted, so pastes fan out. */
   pasteCount: number;
