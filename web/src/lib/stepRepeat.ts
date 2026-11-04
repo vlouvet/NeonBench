@@ -374,10 +374,8 @@ export function stepRepeat(
           }
         }
         // Allocated one at a time against the growing runs array so two
-        // copies can never claim the same slot. `nextRunId` hands back the
-        // LOWEST unused id, so a doc with gaps fills them before extending:
-        // the ids of a large array are not in cell order until Tier 3 #89's
-        // high-water-mark allocator lands. Uniqueness holds either way.
+        // copies can never claim the same slot. `nextRunId` mints above the
+        // highest id, so the ids of a large array stay in cell order.
         runs.push(copyRun(src, nextRunId({ ...doc, runs }), dx, dy, groupId, circuitId));
       }
     }

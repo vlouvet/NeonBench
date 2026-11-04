@@ -707,6 +707,29 @@ describe('splitRun', () => {
     expect(b.notes).toBe('15kV');
   });
 
+  // Tier 3 #89: splitRun allocates above the highest existing id rather than
+  // filling gaps, so a doc numbered with holes gets fresh top ids and the
+  // untouched runs are never renamed.
+  it('mints fresh ids above a gapped doc and leaves existing ids alone', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 100, 100],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        { id: 'r5', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        {
+          id: 'target',
+          polyline: { points: [[0, 0], [10, 0], [20, 0], [30, 0]], closed: false },
+        },
+      ],
+    };
+    const next = ops.splitRun(doc, 'target', 1);
+    const ids = next.runs.map((r) => r.id).sort();
+    expect(ids).toEqual(['r1', 'r5', 'r6', 'r7']);
+    expect(next.runs.some((r) => r.id === 'r1')).toBe(true);
+    expect(next.runs.some((r) => r.id === 'r5')).toBe(true);
+  });
+
   it('splitting a closed run produces two open runs', () => {
     // Square loop: 4 distinct vertices marked closed.
     const doc: DesignDoc = {
@@ -864,7 +887,7 @@ describe('nextRunId', () => {
     expect(ops.nextRunId(doc)).toBe('r1');
   });
 
-  it('skips taken ids and returns the lowest unused', () => {
+  it('mints above the highest id, leaving gaps unfilled', () => {
     const doc: DesignDoc = {
       version: 1,
       view_box_mm: [0, 0, 10, 10],
@@ -873,7 +896,7 @@ describe('nextRunId', () => {
         { id: 'r3', polyline: { points: [[0, 0], [1, 0]], closed: false } },
       ],
     };
-    expect(ops.nextRunId(doc)).toBe('r2');
+    expect(ops.nextRunId(doc)).toBe('r4');
   });
 
   it('ignores ids that don\'t match the prefix', () => {
@@ -900,6 +923,23 @@ describe('nextRunId', () => {
       ],
     };
     expect(ops.nextRunId(doc, 'cut-')).toBe('cut-3');
+  });
+
+  // The trade-off pinned by the max-based allocator (Tier 3 #89): there is
+  // no stored high-water mark, so the scan reads the live doc — deleting the
+  // top-numbered run frees its number up for reuse. That is cheaper than
+  // shuffling ids back down, and it is intended.
+  it('reuses the top run number once the top run is deleted', () => {
+    const doc: DesignDoc = {
+      version: 1,
+      view_box_mm: [0, 0, 10, 10],
+      runs: [
+        { id: 'r1', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+        { id: 'r2', polyline: { points: [[0, 0], [1, 0]], closed: false } },
+      ],
+    };
+    const pruned: DesignDoc = { ...doc, runs: [doc.runs[0]] }; // r2 deleted
+    expect(ops.nextRunId(pruned)).toBe('r2');
   });
 });
 
@@ -2850,6 +2890,24 @@ describe('autoSplitOverlongTubes', () => {
     for (const L of lengthsOf(res.doc)) expect(L).toBeCloseTo(875, 6);
   });
 
+  // Tier 3 #89: a batch split must mint ids in ascending numeric order that
+  // follow physical order along the glass — the run list is how the operator
+  // identifies a piece, so it has to read top-to-bottom in build order.
+  it('mints a 4-way split in ascending ids matching physical order', () => {
+    const res = ops.autoSplitOverlongTubes(lineDoc(3500), 1000);
+    const nums = res.doc.runs.map((r) => parseInt(r.id.slice(1), 10));
+    for (let i = 1; i < nums.length; i++) {
+      expect(nums[i]).toBeGreaterThan(nums[i - 1]);
+    }
+    // Each piece's first vertex moves forward along +X from the source's
+    // origin the further down the run list it sits.
+    const starts = res.doc.runs.map((r) => r.polyline.points[0][0]);
+    expect(starts[0]).toBe(0);
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i]).toBeGreaterThan(starts[i - 1]);
+    }
+  });
+
   // The postcondition the button actually promises. An exact multiple is the
   // dangerous case: nominal piece length lands *on* the limit, and the
   // validator's test is a strict `>`, so a picometre of float drift would
@@ -3521,6 +3579,22 @@ describe('raceway guideline ops', () => {
 
   // A letter's face outline is a closed loop; a raceway through an "O" is
   // ordinary work, so closed runs must be handled rather than skipped.
+  // Tier 3 #89: splitting several runs at a line should keep ids ascending
+  // across the whole batch, so the run list reads in build order top to bottom.
+  it('splits several crossing runs with ascending ids', () => {
+    const doc = withLine(
+      [vertical('a', 10, 0, 100), vertical('b', 20, 0, 100), vertical('c', 30, 0, 100)],
+      40,
+    );
+    const res = ops.splitTubesAtRaceway(doc, 'rw1');
+    expect(res.runsSplit).toBe(3);
+    expect(res.piecesCreated).toBe(6);
+    const nums = res.doc.runs.map((r) => parseInt(r.id.replace(/^\D*/, ''), 10) || 0);
+    for (let i = 1; i < nums.length; i++) {
+      expect(nums[i]).toBeGreaterThan(nums[i - 1]);
+    }
+  });
+
   it('opens a closed loop at the line and cuts it into arcs', () => {
     const sq: DesignRun = {
       id: 'o',
