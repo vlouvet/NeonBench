@@ -1700,11 +1700,7 @@ export function moveOpening(
   if (n < 2) {
     throw new OperationError('moveOpening: open polyline needs at least 2 vertices');
   }
-  // A loop-shaped open run is the shape breakOpen produces: an n-point
-  // walk ending on a duplicate of its start, so every one of the loop's
-  // n-1 segments is still glass (see the doc comment). Treating it as a
-  // cycle whose missing gap is the opening would strand the duplicate as
-  // a zero-length segment and turn a real segment into the gap (#123).
+  // breakOpen's duplicate-terminated walk: rotate it as a loop (#123).
   if (isGeometricLoop(run)) {
     if (newStartVertexIndex < 0 || newStartVertexIndex >= n) {
       throw new OperationError(
