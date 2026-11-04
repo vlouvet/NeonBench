@@ -6107,25 +6107,11 @@ describe('Tier 3 #119 — segment_types through the last three point-count ops',
       expect('segment_types' in out.polyline).toBe(false);
     });
 
-    // SPEC CORRECTION, pinned so it is not re-litigated from prose.
-    //
-    // Tier 3 #119's spec asks for the same geometric invariant on moveOpening
-    // that breakOpen satisfies — "the result must draw the same glass as the
-    // source, it is the same loop re-indexed". It is not, and the reason is in
-    // the POINTS, not in segment_types: moveOpening treats an open polyline as
-    // a cycle whose missing segment IS the opening, so rotating it necessarily
-    // trades one segment of glass for another (asserted exactly, above). That
-    // is the op's documented behaviour and its existing tests assert it.
-    //
-    // Feeding it a breakOpen output — the case its own doc comment names as
-    // the common one — is where that reading gets expensive: breakOpen ends
-    // the walk on a DUPLICATE of the start vertex (zero-width opening, full
-    // perimeter), so moveOpening drops a real segment of glass and leaves the
-    // duplicate stranded mid-polyline as a zero-length segment. Measured here
-    // rather than described. Reconciling the two ops is a shape decision for
-    // the repo owner and a change to the point handling, which #119 explicitly
-    // scopes out — this test exists so the next person finds the numbers.
-    it('KNOWN LIMIT: on a breakOpen output it drops a segment and strands the duplicate', () => {
+    // An open run that breakOpen produces ends on a duplicate of its start
+    // vertex — the only shape in which every loop segment is still glass.
+    // moveOpening recognises and agrees with that shape: rotate the distinct
+    // vertices, re-duplicate the new start, keep all glass. #123.
+    it('keeps all glass on a breakOpen output, re-starting the walk', () => {
       const loop: DesignRun = {
         id: 'a',
         polyline: {
@@ -6135,18 +6121,47 @@ describe('Tier 3 #119 — segment_types through the last three point-count ops',
         },
       };
       const opened = ops.breakOpen(docOf([loop]), 'a', 0);
-      // breakOpen itself is exact: the full perimeter, ending on a duplicate.
       expect(ops.runLengthMM(opened.runs[0])).toBeCloseTo(ops.runLengthMM(loop), 9);
-      expect(opened.runs[0].polyline.points[0])
-        .toEqual(opened.runs[0].polyline.points[4]);
 
       const moved = ops.moveOpening(opened, 'a', 2).runs[0];
       expectWellFormedRun(moved);
-      // The duplicate is now stranded in the middle as a zero-length segment…
-      expect(moved.polyline.points[2]).toEqual(moved.polyline.points[3]);
-      // …and old segment 1 (the 100mm straight) is gone from the takeoff.
-      expect(ops.runLengthMM(opened.runs[0]) - ops.runLengthMM(moved))
-        .toBeCloseTo(100, 9);
+      // Glass is unchanged — still the full perimeter.
+      expect(ops.runLengthMM(moved)).toBeCloseTo(ops.runLengthMM(opened.runs[0]), 9);
+      // Same point count, still ends on a duplicate of its start, and no two
+      // consecutive points coincide (no stranded zero-length segment).
+      expect(moved.polyline.points).toHaveLength(opened.runs[0].polyline.points.length);
+      expect(moved.polyline.points[0])
+        .toEqual(moved.polyline.points[moved.polyline.points.length - 1]);
+      for (let i = 0; i < moved.polyline.points.length - 1; i++) {
+        expect(moved.polyline.points[i]).not.toEqual(moved.polyline.points[i + 1]);
+      }
+      // The drawn shape, read as a loop, is the source loop re-started at the
+      // new vertex — byte-identical to a direct breakOpen at that vertex.
+      const direct = ops.breakOpen(docOf([loop]), 'a', 2).runs[0];
+      expect(flatRunPoints(moved)).toEqual(flatRunPoints(direct));
+      expect(moved.polyline.segment_types).toEqual(direct.polyline.segment_types);
+    });
+
+    // The trailing duplicate is the same coordinate as vertex 0, so asking to
+    // move the opening there behaves identically to index 0.
+    it('treats the trailing duplicate as vertex 0', () => {
+      const loop: DesignRun = {
+        id: 'a',
+        polyline: {
+          points: [[0, 0], [100, 0], [100, 100], [0, 100]],
+          closed: true,
+          segment_types: ['arc', 'line', 'arc_r', 'line'],
+        },
+      };
+      const opened = ops.breakOpen(docOf([loop]), 'a', 0);
+      const viaDup = ops.moveOpening(
+        opened,
+        'a',
+        opened.runs[0].polyline.points.length - 1,
+      ).runs[0];
+      const viaZero = ops.moveOpening(opened, 'a', 0).runs[0];
+      expect(viaDup.polyline.points).toEqual(viaZero.polyline.points);
+      expect(viaDup.polyline.segment_types).toEqual(viaZero.polyline.segment_types);
     });
   });
 });

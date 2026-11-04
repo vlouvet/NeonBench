@@ -1668,6 +1668,13 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
 // walk-relative — rotating the start vertex doesn't change which
 // vertex is "k hops in".
 //
+// A loop-shaped open run (isGeometricLoop) is special: it is the shape
+// breakOpen produces, ending on a duplicate of its start so every loop
+// segment is still glass. Rotating it as if its missing gap were the
+// opening would strand the duplicate as a zero-length segment and turn
+// a real segment into the gap. Instead its distinct vertices rotate and
+// the new start is re-duplicated, preserving all glass.
+//
 // Throws if the run is closed, the run lacks exactly two electrodes,
 // or the chosen vertex isn't on the existing live walk.
 export function moveOpening(
@@ -1692,6 +1699,43 @@ export function moveOpening(
   const n = pts.length;
   if (n < 2) {
     throw new OperationError('moveOpening: open polyline needs at least 2 vertices');
+  }
+  // A loop-shaped open run is the shape breakOpen produces: an n-point
+  // walk ending on a duplicate of its start, so every one of the loop's
+  // n-1 segments is still glass (see the doc comment). Treating it as a
+  // cycle whose missing gap is the opening would strand the duplicate as
+  // a zero-length segment and turn a real segment into the gap (#123).
+  if (isGeometricLoop(run)) {
+    if (newStartVertexIndex < 0 || newStartVertexIndex >= n) {
+      throw new OperationError(
+        `moveOpening: vertex ${newStartVertexIndex} not on live walk`,
+      );
+    }
+    // The trailing duplicate is the same coordinate as vertex 0.
+    const start = newStartVertexIndex === n - 1 ? 0 : newStartVertexIndex;
+    const distinct = pts.slice(0, n - 1);
+    const rotated = distinct.slice(start).concat(distinct.slice(0, start));
+    const newPts = [...rotated, rotated[0]];
+    // Rotate segment_types as a CLOSED loop of n-1 segments: new segment j
+    // is old segment (start + j) mod (n-1). The old closing segment (last
+    // distinct vertex back to the start) is real glass, so it keeps its type
+    // rather than entering as a 'line'.
+    let rotTypes: SegmentKind[] | undefined;
+    if (run.polyline.segment_types) {
+      rotTypes = [];
+      for (let j = 0; j < n - 1; j++) {
+        rotTypes.push(segmentTypeAt(run, (start + j) % (n - 1)));
+      }
+    }
+    return mapRun(doc, runId, (r) => {
+      const polyline = { ...r.polyline, points: newPts };
+      if (rotTypes) polyline.segment_types = rotTypes;
+      return {
+        ...r,
+        polyline,
+        electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+      };
+    });
   }
   // For an OPEN run, runArcs walks the full polyline regardless of
   // electrode positions — direction is meaningful only for closed
