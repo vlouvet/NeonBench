@@ -1969,9 +1969,9 @@ export function insertVertex(
   ]);
 }
 
-// nextRunId returns one more than the highest `${prefix}${n}` (n starting
-// at 1) on the doc — ``r1`` on a doc with none. Defaults to prefix "r".
-// It does not fill gaps. Independent of any existing runs that don't
+// nextRunId returns one more than the highest `${prefix}${n}` on the doc,
+// `r1` on a doc with none. Defaults to prefix "r". Independent of any
+// existing runs that don't
 // follow this scheme — non-matching ids (e.g. "text-1", "circle-2") are
 // simply ignored when scanning, so this helper neither renames them nor
 // lets them eat an integer slot.
@@ -1981,10 +1981,9 @@ export function insertVertex(
 // splits (`<id>-a-a`, `<id>-a-b`, …) and keeps run ids legible.
 export function nextRunId(doc: DesignDoc, prefix: string = 'r'): string {
   const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
-  // Ids mint above the highest `<prefix><n>` on the doc, not into the lowest
-  // gap. Gaps are cheaper than shuffling a batch split's ids back into the
-  // holes it freed — deleting the top run lets its number be reused. Do not
-  // "fix" this back to lowest-free.
+  // Never fill gaps: a batch split would shuffle its ids back into the holes
+  // it freed (#89). Deleting the top run lets its number be reused; gaps are
+  // the cheaper trade. Do not "fix" this back to lowest-free.
   let max = 0;
   for (const r of doc.runs) {
     const m = re.exec(r.id);
