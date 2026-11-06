@@ -7,8 +7,9 @@
  * width off the canvas, then off the panel, and gets two answers stops
  * trusting both — and the only way to guarantee that is one function.
  *
- * FLATTEN FOR MEASURING. Every extent here comes from `selectionBBoxMM` /
- * `runLengthMM`, which flatten arc segments first. Measuring the raw vertex
+ * FLATTEN FOR MEASURING. Every extent here comes from `selectionBBoxMM`, which
+ * flattens arc segments first, and every length from `runLengthMM`, which
+ * measures each arc by r*theta (Tier 3 #178). Measuring the raw vertex
  * array instead is the bug this row exists to fix: at ARC_BULGE 0.5 an arc
  * bows a quarter of its chord off that chord, so a two-vertex arc run's raw
  * "bounding box" is a zero-height line while the glass it describes is 10 mm
@@ -36,8 +37,9 @@ export type SelectionMetrics = {
    * chord — not the live arc between its electrodes. That is a deliberate
    * choice between two defensible answers. The perimeter is the glass that
    * gets cut and bent, it is what `runLengthMM` measures, and it is what the
-   * validator's `total_length_mm` sums, so the panel agrees with the
-   * "total tube" badge above it. A closed loop's unlit arc is still glass.
+   * validator's `total_length_mm` sums (to within its flattening, a hair
+   * under r*theta on an arc), so the panel agrees with the "total tube"
+   * badge above it. A closed loop's unlit arc is still glass.
    * The UI labels this "tube" rather than "lit" so the choice is visible.
    */
   lengthMM: number;

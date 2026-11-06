@@ -46,6 +46,7 @@ import {
   runHasArcs,
   segmentCount,
   segmentIndexBetween,
+  segmentLengthMM,
   segmentTypeAt,
 } from './arcGeom';
 import {
@@ -381,8 +382,10 @@ type BlockoutSpan = { start: number; end: number };
 // LiveWalkMM is a run's live arc with a millimetre odometer against it:
 // `cumMM[k]` is the glass length from the first live vertex to `live[k]`,
 // measured on the FLATTENED curve so an arc contributes its bow and not its
-// chord — the same thing runLengthMM does, and the same thing the Go
-// validator's pipeline does.
+// chord. It is an internal odometer: the projection below walks the same
+// flattened points, so the two must agree with each other, and no millimetre
+// it produces leaves this file. It is ~0.03% short of runLengthMM's r*theta on
+// an arc (Tier 3 #178), which only matters to code comparing the two.
 type LiveWalkMM = {
   live: number[];
   cumMM: number[];
@@ -4255,58 +4258,51 @@ export function chordLengthMM(points: [number, number][], closed = false): numbe
   return total;
 }
 
-// runLengthMM is the length of the glass a run actually draws — which is to
-// say the number the Go validator will report for it, and therefore the number
-// that decides whether it comes back flagged.
+// runLengthMM is the length of the glass a run actually draws: every line by
+// its chord and every arc by r*theta, its exact length.
 //
-// Tier 3 #111. The two sides never disagreed about the ALGORITHM: Go's
-// `(*Polyline).Length()` is the same chord sum as `chordLengthMM`. They
-// disagreed about what they were handed. The validator never sees raw
-// vertices — `designdoc.ToSVG` emits each arc segment as cubics,
-// `validate.ExtractMMPolylines` subdivides those into many points, and only
-// then is `Length()` called. So Go summed ~33 short chords along a curve where
-// this file summed the 1 chord across it, and a run the auto-split believed it
-// had fixed came back flagged.
+// Tier 3 #111 made this arc-aware; before it, an arc measured as its chord,
+// 15.9% short. Tier 3 #178 settled HOW to measure an arc. Go had three answers:
+//   - the takeoff's glass footage, the PDF's return-strip perimeter and bend
+//     positions, and the DXF's bulges are all r*theta (`Polyline.LengthMM`,
+//     `WalkSegmentLengthMM` in internal/designdoc/arc.go);
+//   - the validator measures `designdoc.ToSVG`'s cubics after flattening them
+//     to 0.05mm (internal/validate/pathd.go), which comes out a little UNDER
+//     r*theta at every size: 115.8964 against 115.9119 on a 100mm chord;
+//   - the 5° flattening this function used to sum came out under BOTH, and
+//     the gap grows with the arc: 115.8776 at 100mm, 0.31mm short at 900mm.
+// r*theta is the one that matches what is cut, billed and printed, and since
+// the validator never measures longer than it, a run this calls short enough
+// cannot then be flagged overlong. arcLengthSplit.test.ts pins that against
+// the real validator's numbers, and the shared fixtures with Go.
 //
-// The fix is to flatten first, with the same flattener the editor draws with.
-// Measured against the real Go pipeline for a 100mm chord marked 'arc': Go
-// 115.8964, this 115.8776 (the two flatteners take different numbers of
-// samples), the old chord answer 100.0000. Both arc kinds measure the same —
-// which side the bow sits on moves glass, it does not add any.
-//
-// `flatRunPoints` returns the live array untouched when a run has no arcs, so
-// for a line-only run this is the same arithmetic over the same points as
-// before: provably a no-op, pinned in docOps.test.ts.
-//
-// Passing the run's own `closed` flag is correct for BOTH shapes
-// `flatRunPoints` can return, but for different reasons, so don't "simplify"
-// it away:
-//   - no arcs: the array is the live vertex list, which does not repeat
-//     points[0], so the closing chord still has to be added — and is.
-//   - has arcs: the flattened array already ENDS at points[0], so the closing
-//     chord measures 0 and adding it is a no-op.
-// docOps.test.ts pins both, because a change to either function could
-// otherwise silently drop or double-count the closing chord.
-//
-// FLATTEN VS INDEX: the points this hands to chordLengthMM exist to measure
-// shape. Electrodes, blockouts, annotations and bends index the LIVE vertex
-// array; never resolve one of those against a flattened array.
+// A line-only run measures with chordLengthMM, unchanged: the same naive
+// sqrt as the validator's dist(), over the same points, so it is provably a
+// no-op for every run without an arc. Both arc kinds measure the same — which
+// side the bow sits on moves glass, it does not add any.
 export function runLengthMM(run: DesignRun): number {
-  return chordLengthMM(flatRunPoints(run), !!run.polyline.closed);
+  const pts = run.polyline.points;
+  const closed = !!run.polyline.closed;
+  if (!runHasArcs(run)) return chordLengthMM(pts, closed);
+  const n = pts.length;
+  let total = 0;
+  for (let i = 0; i < segmentCount(run); i++) {
+    total += segmentWalkMM(pts[i], pts[(i + 1) % n], segmentTypeAt(run, i));
+  }
+  return total;
 }
 
-// segmentWalkMM measures one segment the way runLengthMM does — an arc by its
-// flattened samples, not by r*theta — so a target computed from runLengthMM
-// lands exactly where the walk says it will. The exact arc length is ~0.03%
-// longer, which is enough to leave a cut meant for a vertex one sample short
-// of it and straighten an arc that should have survived.
+// segmentWalkMM measures one segment the way runLengthMM does, so a target
+// computed from runLengthMM lands exactly where the cut walk says it will. A
+// line uses segLenMM rather than segmentLengthMM's Math.hypot, to stay
+// bit-identical to chordLengthMM on the line-only path.
 function segmentWalkMM(
   p0: [number, number],
   p1: [number, number],
   type: SegmentKind,
 ): number {
   if (!isArcKind(type)) return segLenMM(p1, p0);
-  return chordLengthMM([p0, ...flattenSegment(p0, p1, type)], false);
+  return segmentLengthMM(p0, p1, type);
 }
 
 // splitRunAtArcLength cuts one OPEN run at `targetMM` measured in GLASS
