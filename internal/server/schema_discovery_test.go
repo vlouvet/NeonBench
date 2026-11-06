@@ -449,6 +449,9 @@ func TestDesignDocSchemaGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden: %v", err)
 	}
+	// Windows CI checks out with core.autocrlf=true, so the golden arrives
+	// with CRLF line endings. Compare content, not line terminators.
+	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n"))
 	if !bytes.Equal(got, want) {
 		t.Errorf("the design-doc schema changed (GET /api/schema now reports something else).\n"+
 			"If that is intended: make sure web/src moved with it (DisallowUnknownFields makes every save 400 otherwise),\n"+
