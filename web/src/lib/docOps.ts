@@ -34,7 +34,7 @@ import {
   type HousingType,
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
-import { defaultDirection, runArcs } from './runArcs';
+import { blockoutMaskPositions, defaultDirection, runArcs } from './runArcs';
 import {
   arcFor,
   arcKindFlipped,
@@ -1652,6 +1652,74 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
   });
 }
 
+// remapMarksThroughRotation carries a run's live-walk marks onto a rotated
+// walk over the same vertices (Tier 3 #179). moveOpening is the caller, and
+// both its input and output are open runs, so on each side a live position IS
+// a polyline index (runArcs walks the whole polyline).
+//
+//   vertexTo(k)  new position of old vertex k. Every vertex survives.
+//   segmentTo(p) new position of the segment ARRIVING at old vertex p
+//                (p >= 1), or null when that segment is no longer glass.
+//
+// Annotations and bends sit ON a vertex, so they move with vertexTo. A mark at
+// the vertex that becomes the new start lands on index 0 — the same glass;
+// a bend there now reads as a tube end because it is one.
+//
+// Blockouts paint SEGMENTS: position j paints the segment arriving at j
+// (blockoutMaskPositions, the renderers' own rule). So each blockout is
+// expanded into the positions it paints, each is moved, and the result is
+// packed back into contiguous [start, end] spans — usually one, two when the
+// new opening falls inside the span, none when the span painted only the
+// segment that became the opening (it is dropped). Moving just the two stored
+// endpoints is wrong both ways: it cannot split a span, and it ignores that
+// the painted glass starts one vertex BEFORE start_live_index.
+//
+// A blockout that painted nothing before (only position 0, which paints
+// nothing on an open walk) is carried verbatim: there is no glass to keep it
+// on, and verbatim still paints nothing.
+//
+// Out-of-range annotation / bend indices are carried verbatim too — the
+// renderers already skip them, and inventing a position would be a guess.
+function remapMarksThroughRotation(
+  run: DesignRun,
+  vertexTo: (k: number) => number,
+  segmentTo: (p: number) => number | null,
+): Pick<DesignRun, 'blockouts' | 'annotations' | 'bends'> {
+  const n = run.polyline.points.length;
+  const point = (k: number) => (Number.isInteger(k) && k >= 0 && k < n ? vertexTo(k) : k);
+  const out: Pick<DesignRun, 'blockouts' | 'annotations' | 'bends'> = {};
+  if (run.annotations) {
+    out.annotations = run.annotations.map((a) => ({ ...a, live_index: point(a.live_index) }));
+  }
+  if (run.bends) {
+    out.bends = run.bends.map((b) => ({ ...b, live_index: point(b.live_index) }));
+  }
+  if (run.blockouts) {
+    const blockouts: Blockout[] = [];
+    for (const b of run.blockouts) {
+      const painted = blockoutMaskPositions(b, n, false).filter((p) => p > 0);
+      if (painted.length === 0) {
+        blockouts.push(b);
+        continue;
+      }
+      const moved = new Set<number>();
+      for (const p of painted) {
+        const q = segmentTo(p);
+        if (q !== null) moved.add(q);
+      }
+      const sorted = [...moved].sort((x, y) => x - y);
+      for (let i = 0; i < sorted.length;) {
+        let j = i;
+        while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+        blockouts.push({ ...b, start_live_index: sorted[i], end_live_index: sorted[j] });
+        i = j + 1;
+      }
+    }
+    out.blockouts = blockouts;
+  }
+  return out;
+}
+
 // moveOpening rotates an OPEN run's polyline so the live arc starts at
 // a chosen vertex while preserving the underlying physical shape
 // (Tier 3 #61 / NW #130). Used to re-position the electrode opening
@@ -1663,10 +1731,17 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
 // current direction (defaultDirection picks the shorter arc when not
 // set), then rotate the walk so it starts at `newStartVertexIndex`.
 // The rotated walk becomes the new polyline; electrodes land at
-// `[0, walked.length - 1]`. Live-arc indices for blockouts /
-// annotations / bends carry over unchanged because they're already
-// walk-relative — rotating the start vertex doesn't change which
-// vertex is "k hops in".
+// `[0, walked.length - 1]`.
+//
+// Blockouts, annotations and bends are stored as live-walk positions
+// ("k hops in"), and on an open run the live walk IS the polyline — so
+// rotating it changes which vertex is k hops in. Carrying those numbers
+// over unchanged (as this op did until Tier 3 #179) keeps the index and
+// moves the mark along the glass by however many vertices the opening
+// moved. They are remapped through the rotation instead, by
+// remapMarksThroughRotation below: every mark stays on the glass it was
+// on. On a plain open run one segment of glass becomes the new opening,
+// so paint on that one segment has nothing left to sit on and goes.
 //
 // A loop-shaped open run (isGeometricLoop) is special: it is the shape
 // breakOpen produces, ending on a duplicate of its start so every loop
@@ -1723,6 +1798,19 @@ export function moveOpening(
         rotTypes.push(segmentTypeAt(run, (start + j) % (n - 1)));
       }
     }
+    // Marks rotate the same way, as a loop of m = n-1 segments. Old vertex k
+    // (the duplicate n-1 is vertex 0) is new (k - start) mod m; the segment
+    // arriving at old vertex p is old loop segment p-1, which is new loop
+    // segment (p-1-start) mod m and so arrives at new position that + 1 —
+    // in 1..m, never 0, because the closing segment arrives at the duplicate.
+    const m = n - 1;
+    const marks = start === 0
+      ? {}
+      : remapMarksThroughRotation(
+        run,
+        (k) => ((k % m) - start + m) % m,
+        (p) => ((p - 1 - start + m) % m) + 1,
+      );
     return mapRun(doc, runId, (r) => {
       const polyline = { ...r.polyline, points: newPts };
       if (rotTypes) polyline.segment_types = rotTypes;
@@ -1730,6 +1818,7 @@ export function moveOpening(
         ...r,
         polyline,
         electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+        ...marks,
       };
     });
   }
@@ -1779,6 +1868,19 @@ export function moveOpening(
       rotTypes.push(from === n - 1 ? 'line' : segmentTypeAt(run, from));
     }
   }
+  // Marks follow their glass. Old vertex k is new (k - targetWalkPos) mod n.
+  // The segment arriving at old vertex p keeps arriving at that vertex's new
+  // position — except p === targetWalkPos, whose arriving segment is the one
+  // this op turns into the new opening: it is no longer glass, so there is
+  // nothing for paint on it to stay on.
+  const t = targetWalkPos;
+  const marks = t === 0
+    ? {}
+    : remapMarksThroughRotation(
+      run,
+      (k) => (k - t + n) % n,
+      (p) => (p === t ? null : (p - t + n) % n),
+    );
   return mapRun(doc, runId, (r) => {
     const polyline = { ...r.polyline, points: newPts };
     if (rotTypes) polyline.segment_types = rotTypes;
@@ -1786,6 +1888,7 @@ export function moveOpening(
       ...r,
       polyline,
       electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+      ...marks,
     };
   });
 }
