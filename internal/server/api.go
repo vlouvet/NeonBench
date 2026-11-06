@@ -66,4 +66,6 @@ func registerAPI(mux *http.ServeMux, db *sql.DB, dataDir string) {
 	mux.HandleFunc("GET /api/projects/{id}/design_versions/{vid}/export.ai", s.handleExportAI)
 	mux.HandleFunc("GET /api/projects/{id}/export.neonbench", s.handleExportBundle)
 	mux.HandleFunc("POST /api/projects/import", s.handleImportBundle)
+	// Which design-doc fields and relations this build accepts (Tier 3 #140).
+	mux.HandleFunc("GET /api/schema", s.handleSchema)
 }
