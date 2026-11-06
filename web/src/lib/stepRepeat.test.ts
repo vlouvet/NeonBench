@@ -346,7 +346,7 @@ describe('stepRepeat', () => {
   });
 
   it('gives every run in the finished doc a unique id', () => {
-    // Deliberately gappy id space: nextRunId fills holes before extending.
+    // Deliberately gappy id space: nextRunId mints above the highest id.
     const doc = docOf(rect('r1', 0, 0), rect('r3', 0, 40), rect('r7', 0, 80));
     const out = sr.stepRepeat(
       doc,
@@ -358,9 +358,8 @@ describe('stepRepeat', () => {
     expect(new Set(ids).size).toBe(ids.length);
     // The pre-existing ids are untouched.
     expect(ids.slice(0, 3)).toEqual(['r1', 'r3', 'r7']);
-    // The gaps get filled first — this is the Tier 3 #89 interaction, pinned
-    // so the day the allocator becomes high-water-mark this test says so.
-    expect(ids.slice(3, 6)).toEqual(['r2', 'r4', 'r5']);
+    // Copies extend above the top id (r8…), leaving the gaps unfilled.
+    expect(ids.slice(3, 6)).toEqual(['r8', 'r9', 'r10']);
   });
 
   it('puts each cell in its own new group when the source was grouped', () => {

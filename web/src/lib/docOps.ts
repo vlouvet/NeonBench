@@ -2009,27 +2009,30 @@ export function insertVertex(
   ]);
 }
 
-// nextRunId returns the lowest unused id of the form `${prefix}${n}` (n
-// starting at 1) on the doc. Defaults to prefix "r" so the first
-// allocated id is "r1", the next "r2", and so on. Independent of any
-// existing runs that don't follow this scheme — non-matching ids
-// (e.g. "text-1", "circle-2") are simply ignored when scanning for
-// collisions, so this helper neither renames them nor lets them eat
-// an integer slot.
+// nextRunId returns one more than the highest `${prefix}${n}` on the doc,
+// `r1` on a doc with none. Defaults to prefix "r". Independent of any
+// existing runs that don't
+// follow this scheme — non-matching ids (e.g. "text-1", "circle-2") are
+// simply ignored when scanning, so this helper neither renames them nor
+// lets them eat an integer slot.
 //
 // Used by splitRun (Tier 3 #25) to replace the old `<id>-a` / `<id>-b`
 // suffix scheme. The flat numeric form prevents nesting on repeated
 // splits (`<id>-a-a`, `<id>-a-b`, …) and keeps run ids legible.
 export function nextRunId(doc: DesignDoc, prefix: string = 'r'): string {
   const re = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\d+)$`);
-  const taken = new Set<number>();
+  // Never fill gaps: a batch split would shuffle its ids back into the holes
+  // it freed (#89). Deleting the top run lets its number be reused; gaps are
+  // the cheaper trade. Do not "fix" this back to lowest-free.
+  let max = 0;
   for (const r of doc.runs) {
     const m = re.exec(r.id);
-    if (m) taken.add(parseInt(m[1], 10));
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > max) max = n;
+    }
   }
-  let n = 1;
-  while (taken.has(n)) n++;
-  return `${prefix}${n}`;
+  return `${prefix}${max + 1}`;
 }
 
 // renameLegacyRunIds rewrites every run id matching the pre-Tier-3-#25

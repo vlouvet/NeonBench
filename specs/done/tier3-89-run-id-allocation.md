@@ -1,6 +1,6 @@
 # Tier 3 #89 — Run ids should not shuffle after a batch split
 
-> **Status:** active · drafted 2026-08-31 · branch `task/3-run-id-allocation` · follow-up from Tier 2 #75
+> **Status:** done · drafted 2026-08-31 · branch `task/3-run-id-allocation` · follow-up from Tier 2 #75
 
 ## Goal
 
