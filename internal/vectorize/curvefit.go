@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"sort"
 )
 
 // CatmullRomAlpha is the Catmull-Rom knot-parameterization exponent, pinned
@@ -24,6 +25,54 @@ const CatmullRomAlpha = 0.5
 // infinity), but an exactly-zero gap is a 0/0, so duplicates are dropped
 // before the fit rather than guarded inside it.
 const coincidentTolMM = 1e-9
+
+// What counts as a corner (Tier 3 #146): a vertex whose windowed turn —
+// the angle between the chord arriving from cornerSupportMM back along the
+// polyline and the chord leaving to cornerSupportMM ahead — is at least
+// cornerMinTurnDeg. Both numbers come from a sweep over traced artwork,
+// not from eyeballing; TestCornerThresholdSweep re-runs it and fails if
+// the chosen values drift out of the clean band.
+//
+// Measured windowed turns at the 8 mm support (open_neon.png traced at
+// 300 and 600 mm wide, plus rasterised smooth waves of minimum radius 8,
+// 12, 16 and 24 mm traced at 0.5 and 1.0 mm/px, 12 mm stroke):
+//
+//   - tracer noise and smooth curves, everywhere away from a real corner:
+//     at most 44.7° (open_neon @300; the tightest wave, R = 8 mm, reads
+//     42.9°; the O and the P bowl read at most 35°)
+//   - the weakest real corner: 61.9° (the E's chamfered bottom-left at the
+//     600 mm production-default trace); the P's stem/bowl corner reads 90°
+//
+// The threshold sweep at this support is clean — every real corner found,
+// nothing else — for every threshold from 45° to 60°; at 40° the waves and
+// the small trace start firing, at 65° the E's corners start being missed.
+// 55° sits 10.3° above the noisiest reading and 6.9° below the weakest
+// corner. It leans toward the corner side on purpose: a missed corner just
+// rounds, as every corner did before this existed, whereas a false corner
+// puts a kink into a script, which is a new defect.
+//
+// The support is the other half of the choice. It has to be long enough
+// that a one-pixel staircase step (a 90° vertex turn by itself) averages
+// out, and short enough that a tight smooth turn does not read as a
+// corner: a circular arc of radius R reads s/R radians, so 8 mm at 55°
+// treats a turn tighter than R ≈ 8.3 mm as a corner. Across supports of
+// 4, 6, 8, 10 and 12 mm the clean band was widest at 8 mm (4 mm: 40° only;
+// 6 mm: 40–50°; 10 mm: 55–65°; 12 mm: 65–70°).
+//
+// Known limit, measured: the tracer chamfers a corner of a thick stroke,
+// and the chamfer grows with the stroke in millimetres. Traced at 1200 mm
+// wide, open_neon's E and N corners become two 45° half-corners about
+// 9 mm apart — geometrically the same as a ~8 mm-radius curve — and stay
+// rounded exactly as before; only the crisp P stem/bowl corner is split.
+// No support/threshold pair separates those from the tight waves.
+//
+// Deliberately independent of internal/validate's sharp-bend threshold:
+// that rule judges what glass can be bent, this one what the picture draws.
+// Coupling one rule's knob to the other is the mistake Tier 1 #142 undid.
+const (
+	cornerSupportMM  = 8.0
+	cornerMinTurnDeg = 55.0
+)
 
 // Cubic is one cubic Bezier segment expressed the way SVG's `C` command
 // wants it: two control points and an endpoint. The start point is the
@@ -64,16 +113,50 @@ type CurvePath struct {
 // property that a two-point polyline, and any run of evenly-spaced
 // collinear points, fits to itself exactly. Closed polylines wrap instead,
 // with no phantom points and a cubic for the closing segment.
+//
+// Corners (Tier 3 #146): an interpolating spline cannot hold a tangent
+// discontinuity, so fitted straight through, a real 90° corner rounds off
+// by several millimetres. FitCurve therefore detects corner vertices
+// (detectCorners) and fits each span between them independently: the end
+// condition above is applied at a corner exactly as at an open end, so the
+// two spans meeting there are separate curves and the join is a genuine
+// tangent break. Inside a span the fit — and its G1 guarantee — is
+// unchanged, and a polyline with no corners fits exactly as it did before
+// corner detection existed. Every sample is still interpolated and there is
+// still one cubic per polyline segment, in the same order.
 func FitCurve(pl MMPolyline) CurvePath {
-	return fitCurveAlpha(pl, CatmullRomAlpha)
+	pts := dedupeAdjacent(pl.Points, pl.Closed)
+	closed := pl.Closed && len(pts) >= 3
+	corners := detectCorners(pts, closed, cornerSupportMM, cornerMinTurnDeg)
+	return fitSpans(pts, closed, CatmullRomAlpha, corners)
 }
 
-// fitCurveAlpha is FitCurve with the knot exponent left open, so tests can
-// build the uniform (alpha = 0) fit and show what it does. Production code
-// calls FitCurve; alpha is not a tunable knob.
+// fitCurveAlpha is the plain Catmull-Rom fit — no corner detection — with
+// the knot exponent left open, so tests can build the uniform (alpha = 0)
+// fit and show what it does. Production code calls FitCurve; alpha is not
+// a tunable knob.
+//
+// IF A CORNER IS ROUNDING, ALPHA IS NOT THE FIX. It is the visible
+// parameter and changing it here is a one-character edit, which is why
+// this is written down: alpha only sets the knot spacing, and the
+// parameterisation is continuous for every value of it, so no alpha can
+// produce a tangent break. Lowering it toward 0 reintroduces the cusp
+// overshoot at tight turns (TestCentripetalAvoidsCuspOnCloseSamples)
+// while leaving the corner exactly as round. Corners are handled by
+// segmenting the polyline — see detectCorners and cornerMinTurnDeg.
 func fitCurveAlpha(pl MMPolyline, alpha float64) CurvePath {
 	pts := dedupeAdjacent(pl.Points, pl.Closed)
 	closed := pl.Closed && len(pts) >= 3
+	return fitSpans(pts, closed, alpha, nil)
+}
+
+// fitSpans fits Catmull-Rom cubics through pts (already de-duplicated),
+// treating every vertex flagged in corners as a span boundary: at a corner
+// the neighbour on the far side is ignored and replaced by the same
+// reflected phantom an open end uses, so each span is fitted as if it were
+// its own open polyline. corners may be nil (no corners).
+func fitSpans(pts []MMPoint, closed bool, alpha float64, corners []bool) CurvePath {
+	isCorner := func(i int) bool { return corners != nil && corners[i] }
 	out := CurvePath{Closed: closed}
 	if len(pts) == 0 {
 		return out
@@ -107,6 +190,13 @@ func fitCurveAlpha(pl MMPolyline, alpha float64) CurvePath {
 			} else {
 				p3 = reflectPt(p2, p1) // phantom: 2*p2 - p1
 			}
+		}
+		// A corner ends the span: same phantom as an open end.
+		if isCorner(i) {
+			p0 = reflectPt(p1, p2)
+		}
+		if isCorner((i + 1) % n) {
+			p3 = reflectPt(p2, p1)
 		}
 		m1, m2 := catmullRomTangents(p0, p1, p2, p3, alpha)
 		out.Cubics = append(out.Cubics, Cubic{
@@ -146,6 +236,145 @@ func catmullRomTangents(p0, p1, p2, p3 MMPoint, alpha float64) (m1, m2 MMPoint) 
 		m2 = addPt(chord, scalePt(subPt(scalePt(subPt(p3, p2), 1/t23), scalePt(subPt(p3, p1), 1/(t12+t23))), t12))
 	}
 	return m1, m2
+}
+
+// arcLengths returns cum with cum[k] = the arc length from pts[0] to vertex
+// k; for a closed polyline it has one extra entry, the full loop length
+// back to pts[0].
+func arcLengths(pts []MMPoint, closed bool) []float64 {
+	n := len(pts)
+	segs := n - 1
+	if closed {
+		segs = n
+	}
+	if segs < 0 {
+		segs = 0
+	}
+	cum := make([]float64, segs+1)
+	for k := 0; k < segs; k++ {
+		a, b := pts[k], pts[(k+1)%n]
+		cum[k+1] = cum[k] + math.Hypot(b.X-a.X, b.Y-a.Y)
+	}
+	return cum
+}
+
+// windowedTurns returns, for every vertex of pts, the turn angle in
+// radians (unsigned, 0..π) between the chord arriving at it from the point
+// supportMM back along the polyline and the chord leaving it to the point
+// supportMM ahead. A vertex without a full supportMM of polyline on both
+// sides (near an open end, or on a closed loop shorter than 2*supportMM)
+// gets NaN: its turn cannot be told apart from tracer noise, so it is
+// never a corner.
+//
+// Why a windowed turn and not the turn at the vertex: the tracer's
+// centerline is a pixel staircase, and a one-pixel step is a 90° vertex
+// turn — on open_neon.png the traced polyline turns at 368 vertices, dozens
+// of them by exactly 90°, and only six of them are corners. Measured over a
+// support of a few millimetres a staircase averages out to its true
+// direction while a real corner still reads as its full angle.
+func windowedTurns(pts []MMPoint, closed bool, supportMM float64) []float64 {
+	n := len(pts)
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = math.NaN()
+	}
+	if n < 3 {
+		return out
+	}
+	cum := arcLengths(pts, closed)
+	total := cum[len(cum)-1]
+	if closed && total <= 2*supportMM {
+		return out
+	}
+	// at returns the point at arc position s (0 <= s <= total).
+	at := func(s float64) MMPoint {
+		k := sort.SearchFloat64s(cum, s) // first k with cum[k] >= s
+		if k == 0 {
+			return pts[0]
+		}
+		a, b := pts[k-1], pts[k%n]
+		span := cum[k] - cum[k-1]
+		if span <= 0 {
+			return b
+		}
+		t := (s - cum[k-1]) / span
+		return MMPoint{X: a.X + t*(b.X-a.X), Y: a.Y + t*(b.Y-a.Y)}
+	}
+	for i := 0; i < n; i++ {
+		s := cum[i]
+		back, fwd := s-supportMM, s+supportMM
+		if closed {
+			back = math.Mod(back+total, total)
+			fwd = math.Mod(fwd, total)
+		} else if back < 0 || fwd > total {
+			continue
+		}
+		in := subPt(pts[i], at(back))
+		outv := subPt(at(fwd), pts[i])
+		t1 := math.Atan2(in.Y, in.X)
+		t2 := math.Atan2(outv.Y, outv.X)
+		out[i] = math.Abs(math.Atan2(math.Sin(t2-t1), math.Cos(t2-t1)))
+	}
+	return out
+}
+
+// detectCorners marks the vertices of pts (already de-duplicated) where the
+// polyline has a real corner: a windowed turn (see windowedTurns) of at
+// least minTurnDeg, measured over supportMM each side. A corner smeared
+// across several samples — the tracer often chamfers one corner into two
+// or three small steps — would clear the threshold at each of them, so
+// only the strongest vertex within supportMM of arc length is kept: one
+// corner, one split. Open-polyline endpoints are never marked; they are
+// span ends already.
+//
+// The returned slice is nil when there are no corners, which fitSpans
+// treats exactly like the plain fit.
+func detectCorners(pts []MMPoint, closed bool, supportMM, minTurnDeg float64) []bool {
+	turns := windowedTurns(pts, closed, supportMM)
+	minTurn := minTurnDeg * math.Pi / 180
+	var cand []int
+	for i, a := range turns {
+		if !math.IsNaN(a) && a >= minTurn {
+			cand = append(cand, i)
+		}
+	}
+	if len(cand) == 0 {
+		return nil
+	}
+	// Strongest first; ties go to the lower index so the result does not
+	// depend on sort stability.
+	sort.Slice(cand, func(x, y int) bool {
+		if turns[cand[x]] != turns[cand[y]] {
+			return turns[cand[x]] > turns[cand[y]]
+		}
+		return cand[x] < cand[y]
+	})
+	n := len(pts)
+	cum := arcLengths(pts, closed)
+	total := cum[len(cum)-1]
+	arcDist := func(i, j int) float64 {
+		d := math.Abs(cum[i] - cum[j])
+		if closed {
+			d = math.Min(d, total-d)
+		}
+		return d
+	}
+	corners := make([]bool, n)
+	var kept []int
+	for _, c := range cand {
+		ok := true
+		for _, k := range kept {
+			if arcDist(c, k) < supportMM {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			kept = append(kept, c)
+			corners[c] = true
+		}
+	}
+	return corners
 }
 
 func knotSpan(a, b MMPoint, alpha float64) float64 {
