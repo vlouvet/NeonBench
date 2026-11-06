@@ -413,7 +413,11 @@ func Compute(doc *designdoc.Doc, spec Spec, y Yield, lab LabourModel, in Inputs)
 		}
 		blockoutMM += blockoutLengthMM(&run.Polyline, idx, run.Blockouts)
 		if run.IsChannelLetterFace {
-			returnStripMM += polylinePerimeterMM(run.Polyline.FlatPoints(), run.Polyline.Closed)
+			// r*theta, the same number the PDF prints as this face's strip
+			// length (printpdf.returnStripPerimeterMM). Summing the 5°
+			// flattening instead billed ~0.03% less strip than the page told
+			// the fabricator to cut (Tier 3 #178).
+			returnStripMM += run.Polyline.LengthMM()
 		}
 
 		// Glass ordered for this run includes the electrode tails at each
@@ -686,19 +690,6 @@ func blockoutLengthMM(pl *designdoc.Polyline, idx []int, bos []designdoc.Blockou
 	}
 	return total
 }
-
-func polylinePerimeterMM(pts [][2]float64, closed bool) float64 {
-	var total float64
-	for i := 1; i < len(pts); i++ {
-		total += dist(pts[i-1], pts[i])
-	}
-	if closed && len(pts) > 2 {
-		total += dist(pts[len(pts)-1], pts[0])
-	}
-	return total
-}
-
-func dist(a, b [2]float64) float64 { return math.Hypot(b[0]-a[0], b[1]-a[1]) }
 
 func ceilDiv(a, b int) int {
 	if a <= 0 || b <= 0 {

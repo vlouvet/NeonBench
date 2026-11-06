@@ -50,6 +50,14 @@ func polylinePerimeterMM(points [][2]float64, closed bool) float64 {
 	return total
 }
 
+// returnStripPerimeterMM is the strip length this page prints for a face:
+// every arc by r*theta. The takeoff bills the same number as return-strip
+// footage (takeoff.Compute); returnstrip_test.go pins the two together so the
+// page and the bill cannot drift apart again (Tier 3 #178).
+func returnStripPerimeterMM(run designdoc.Run) float64 {
+	return run.Polyline.LengthMM()
+}
+
 // distMM is the Euclidean distance between two mm-space points.
 func distMM(a, b [2]float64) float64 {
 	dx := b[0] - a[0]
@@ -149,7 +157,7 @@ func emitReturnStrip(pdf *gofpdf.Fpdf, opts Options, run designdoc.Run, depthMM 
 	closed := run.Polyline.Closed
 	// Arc-aware: the perimeter is the glass length, and the bbox has to see
 	// the flattened curve because an arc bulges outside its endpoints' hull.
-	perimeter := run.Polyline.LengthMM()
+	perimeter := returnStripPerimeterMM(run)
 	marks := returnStripBendMarks(&run.Polyline, closed)
 
 	// Cap height = bbox height of the polyline. Useful sanity-check
