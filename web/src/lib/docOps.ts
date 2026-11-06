@@ -34,7 +34,7 @@ import {
   type HousingType,
 } from './housingLibrary';
 import { groupByBaseline, type GroupOptions } from './raceway';
-import { blockoutMaskPositions, defaultDirection, runArcs } from './runArcs';
+import { blockoutMaskPositions, blockoutSegments, defaultDirection, runArcs } from './runArcs';
 import {
   arcFor,
   arcKindFlipped,
@@ -1576,18 +1576,26 @@ export function closeGeometricLoop(doc: DesignDoc, runId: string): DesignDoc {
 // land on the duplicated vertices: index 0 (the original `vertexIndex`)
 // and index n (the duplicate at the end of the new list).
 //
-// Live-arc indices for blockouts / annotations / bends carry over
-// untouched. Live indices are walk-relative (a step count along the
-// active arc), and the new open polyline traces exactly the same arc
-// the original closed loop did from the chosen vertex — just walked
-// from a different starting point. So a blockout that was 3 steps
-// "into" the live walk before is still 3 steps in after the break.
+// Blockouts / annotations / bends are live-walk positions ("k hops in"),
+// and the walk changes under them: it starts at the break vertex now, it is
+// open where it may have been closed, and where two electrodes made it part
+// of the loop (possibly walked backwards) it is the whole loop, forwards.
+// Carrying the numbers over (as this op did until Tier 3 #181) kept the
+// index and slid the mark along the glass. They are remapped through
+// breakOpenMarks below so every mark stays on the glass it was on. Breaking
+// open loses no glass — the walk ends on a duplicate of its start — so
+// nothing is dropped except marks that named no glass to begin with.
 //
 // Throws if the run is already open (no closed loop to break) or if
 // the vertex index is out of range.
 export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): DesignDoc {
   let run = doc.runs.find((r) => r.id === runId);
   if (!run) return doc;
+  // Marks are read off the run AS GIVEN, before the geometric-loop
+  // normalisation below: closeGeometricLoop re-reads the same positions on a
+  // different walk (closed, or split by electrodes it never looked at), so
+  // remapping from its output would compound its drift with ours.
+  const src = run;
   // Tier 1 #127 — a geometric loop is a closed run the flag forgot, so
   // normalise it and fall through to the identical code path rather than
   // growing a second set of semantics for it. The point count survives: an
@@ -1637,6 +1645,7 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
     rotTypes = [];
     for (let j = 0; j < n; j++) rotTypes.push(segmentTypeAt(run, (vertexIndex + j) % n));
   }
+  const marks = breakOpenMarks(src, n, vertexIndex);
   return mapRun(doc, runId, (r) => {
     const polyline = { ...r.polyline, points: newPts, closed: false };
     if (rotTypes) polyline.segment_types = rotTypes;
@@ -1644,6 +1653,7 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
       ...r,
       polyline,
       electrodes: [{ point_index: 0 }, { point_index: newPts.length - 1 }],
+      ...marks,
     };
     // Direction is meaningless once the run is open (runArcs walks the
     // full polyline) — drop it so a stale value can't surface later.
@@ -1652,10 +1662,60 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
   });
 }
 
+// breakOpenMarks carries `src`'s marks onto breakOpen's output walk (Tier 3
+// #181). The loop has m distinct vertices and breaks at loop vertex v; the
+// output is open, walks loop vertex (v + j) % m at position j for j = 0..m,
+// and position m is the duplicate of v. So:
+//
+//   loop vertex w             -> position (w - v) mod m   (0, never m)
+//   loop segment s (s -> s+1) -> arrives at ((s - v) mod m) + 1, in 1..m
+//
+// `src` is the run as handed to breakOpen. Its own live walk (runArcs) can
+// be the whole loop and CLOSED (no electrodes), part of it between two
+// electrodes in either direction, or the open walk of a geometric loop whose
+// last vertex m is a copy of vertex 0 — hence `% m` on every vertex. A walk
+// step names a loop segment by its two ends: forward x -> x+1 is segment x,
+// backward x -> x-1 is segment x-1.
+//
+// On a closed walk position 0 paints the closing segment only when the
+// renderers do (blockoutSegments merges paint across the seam only when both
+// ends of the walk are painted), so that is asked of blockoutSegments itself
+// rather than re-derived.
+function breakOpenMarks(
+  src: DesignRun,
+  m: number,
+  v: number,
+): Pick<DesignRun, 'blockouts' | 'annotations' | 'bends'> {
+  if (!src.blockouts && !src.annotations && !src.bends) return {};
+  const { live, liveClosed } = runArcs(src);
+  const count = live.length;
+  const loopV = (i: number) => i % m;
+  const vertexTo = (w: number) => (loopV(w) - v + m) % m;
+  const segmentArriving = (x: number, y: number) => {
+    const a = loopV(x);
+    const b = loopV(y);
+    const s = (a + 1) % m === b ? a : b;
+    return ((s - v + m) % m) + 1;
+  };
+  const first = live[0];
+  const last = live[count - 1];
+  const seamPainted = liveClosed && blockoutSegments(live, src.blockouts, true).some(
+    (seg) => seg.isBlockout
+      && seg.liveIndices.some((x, i) => i > 0 && seg.liveIndices[i - 1] === last && x === first),
+  );
+  return remapMarksThroughRotation(
+    src,
+    (p) => vertexTo(live[p]),
+    (p) => (p === 0 ? segmentArriving(last, first) : segmentArriving(live[p - 1], live[p])),
+    { count, closed: liveClosed, seamPainted, unresolved: 'drop' },
+  );
+}
+
 // remapMarksThroughRotation carries a run's live-walk marks onto a rotated
-// walk over the same vertices (Tier 3 #179). moveOpening is the caller, and
-// both its input and output are open runs, so on each side a live position IS
-// a polyline index (runArcs walks the whole polyline).
+// walk over the same vertices (Tier 3 #179). For moveOpening both its input
+// and output are open runs, so on each side a live position IS a polyline
+// index (runArcs walks the whole polyline). breakOpen (#181) passes `walk`
+// and position-to-glass maps of its own; see breakOpenMarks.
 //
 //   vertexTo(k)  new position of old vertex k. Every vertex survives.
 //   segmentTo(p) new position of the segment ARRIVING at old vertex p
@@ -1680,24 +1740,55 @@ export function breakOpen(doc: DesignDoc, runId: string, vertexIndex: number): D
 //
 // Out-of-range annotation / bend indices are carried verbatim too — the
 // renderers already skip them, and inventing a position would be a guess.
+//
+// `walk` describes the OLD live walk when it is not simply "the polyline,
+// open" (breakOpen, Tier 3 #181): its length, whether it is closed (so a
+// blockout span can wrap through the seam), whether the renderers paint the
+// closing segment (then position 0 paints it too and segmentTo(0) must
+// place it), and what to do with a mark that is not on it. moveOpening's
+// walk keeps its length, so verbatim stays off the glass; breakOpen's
+// output walk is LONGER than the old one, so a verbatim out-of-range index
+// could land on glass it never named — those are dropped instead.
+type MarkWalk = {
+  count: number;
+  closed: boolean;
+  seamPainted: boolean;
+  unresolved: 'carry' | 'drop';
+};
+
 function remapMarksThroughRotation(
   run: DesignRun,
   vertexTo: (k: number) => number,
   segmentTo: (p: number) => number | null,
+  walk: MarkWalk = {
+    count: run.polyline.points.length, closed: false, seamPainted: false, unresolved: 'carry',
+  },
 ): Pick<DesignRun, 'blockouts' | 'annotations' | 'bends'> {
-  const n = run.polyline.points.length;
-  const point = (k: number) => (Number.isInteger(k) && k >= 0 && k < n ? vertexTo(k) : k);
+  const n = walk.count;
+  const point = (k: number): number | null => {
+    if (Number.isInteger(k) && k >= 0 && k < n) return vertexTo(k);
+    return walk.unresolved === 'carry' ? k : null;
+  };
   const out: Pick<DesignRun, 'blockouts' | 'annotations' | 'bends'> = {};
   if (run.annotations) {
-    out.annotations = run.annotations.map((a) => ({ ...a, live_index: point(a.live_index) }));
+    out.annotations = [];
+    for (const a of run.annotations) {
+      const k = point(a.live_index);
+      if (k !== null) out.annotations.push({ ...a, live_index: k });
+    }
   }
   if (run.bends) {
-    out.bends = run.bends.map((b) => ({ ...b, live_index: point(b.live_index) }));
+    out.bends = [];
+    for (const b of run.bends) {
+      const k = point(b.live_index);
+      if (k !== null) out.bends.push({ ...b, live_index: k });
+    }
   }
   if (run.blockouts) {
     const blockouts: Blockout[] = [];
     for (const b of run.blockouts) {
-      const painted = blockoutMaskPositions(b, n, false).filter((p) => p > 0);
+      const painted = blockoutMaskPositions(b, n, walk.closed)
+        .filter((p) => p > 0 || walk.seamPainted);
       if (painted.length === 0) {
         blockouts.push(b);
         continue;
