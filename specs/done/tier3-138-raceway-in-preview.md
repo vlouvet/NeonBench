@@ -1,6 +1,6 @@
 # Tier 3 #138 — The 3D preview does not draw raceways
 
-> **Status:** active · drafted 2026-09-02 · branch `task/3-raceway-in-preview`
+> **Status:** done · drafted 2026-09-02 · branch `task/3-raceway-in-preview`
 > · source: [`docs/proof-workflow-gaps.md`](../../docs/proof-workflow-gaps.md) B3
 
 ## Goal
