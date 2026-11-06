@@ -1791,8 +1791,12 @@ describe('channel-letter polish ops (Tier 3 #26)', () => {
 // existing opening to a new vertex) without changing the underlying
 // physical shape of the tube. The test cases below verify that the
 // rewritten polyline traces the same arc, that electrodes land at the
-// right indices, and that live-arc-relative metadata (blockouts /
-// annotations / bends) carries over without manual remap.
+// right indices, and how live-arc-relative metadata (blockouts /
+// annotations / bends) is carried. moveOpening remaps it through the
+// rotation so marks stay on their glass (Tier 3 #179 — the geometric
+// invariant lives in moveOpeningMarks.test.ts). breakOpen still carries it
+// verbatim, which is only right when the walk starts where it did before
+// (vertexIndex 0 on an electrode-less loop, as the test below uses).
 describe('breakOpen', () => {
   function closedTriangleDoc(): DesignDoc {
     const runs: DesignRun[] = [
@@ -1924,7 +1928,14 @@ describe('moveOpening', () => {
     }
   });
 
-  it('preserves blockout live-arc indices because they are walk-relative', () => {
+  // This test used to assert the blockout came out unchanged at [2, 5],
+  // "because live indices are walk-relative". That pinned Tier 3 #179: the
+  // walk IS the polyline here, so after the rotation [2, 5] names different
+  // glass. [2, 5] paints the segments arriving at vertices 2..5, i.e. the
+  // glass from x=1 to x=5. Moving the opening to vertex 3 turns old segment
+  // 2->3 into the opening, so that glass is gone; old 1->2 now arrives at
+  // new 7, old 3->5 at new 1..2. Same glass, two spans.
+  it('remaps a blockout through the rotation, splitting it at the new opening', () => {
     const before = eightPointOpenDoc();
     const seeded: DesignDoc = {
       ...before,
@@ -1937,7 +1948,13 @@ describe('moveOpening', () => {
     };
     const after = ops.moveOpening(seeded, 'horseshoe', 3);
     const run = after.runs[0];
-    expect(run.blockouts).toEqual([{ start_live_index: 2, end_live_index: 5 }]);
+    expect(run.blockouts).toEqual([
+      { start_live_index: 1, end_live_index: 2 },
+      { start_live_index: 7, end_live_index: 7 },
+    ]);
+    // Read back as glass: new 0->2 is x 3..5, new 6->7 is x 1..2.
+    expect(run.polyline.points.slice(0, 3)).toEqual([[3, 0], [4, 0], [5, 0]]);
+    expect(run.polyline.points.slice(6, 8)).toEqual([[1, 0], [2, 0]]);
   });
 
   it('throws on a closed run or a run with fewer than two electrodes', () => {

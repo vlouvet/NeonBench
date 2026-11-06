@@ -172,6 +172,40 @@ export function nearestLiveArcIndex(
   return best;
 }
 
+// blockoutMaskPositions lists the live positions one blockout marks, in walk
+// order — the per-blockout half of blockoutSegments (and of Go's
+// splitByBlockouts), clamp and open/closed wrap rule included.
+//
+// What a marked position PAINTS is the segment ARRIVING at it: the walk
+// below opens each blockout sub-run on the vertex before the first marked
+// one, so position j (j >= 1) paints live j-1 -> j, and position 0 paints
+// nothing on an open walk (on a closed one it is the wrap segment). Anything
+// that remaps blockouts onto a re-ordered walk must move these segments,
+// not the two stored endpoints (moveOpening, Tier 3 #179).
+export function blockoutMaskPositions(
+  b: { start_live_index: number; end_live_index: number },
+  liveCount: number,
+  liveClosed: boolean,
+): number[] {
+  const n = liveCount;
+  if (n === 0) return [];
+  const s = clamp(b.start_live_index, n);
+  const e = clamp(b.end_live_index, n);
+  if (s === e) return [s];
+  const out: number[] = [];
+  let i = s;
+  for (;;) {
+    out.push(i);
+    if (i === e) break;
+    i++;
+    if (i >= n) {
+      if (!liveClosed) break;
+      i = 0;
+    }
+  }
+  return out;
+}
+
 // blockoutSegments mirrors the Go splitByBlockouts logic: walk the live
 // indices and emit alternating alive/blockout sub-runs. The renderer uses
 // this to overlay dashed segments on the live arc at the marked positions.
@@ -192,22 +226,7 @@ export function blockoutSegments(
   }
   const mask = new Array<boolean>(n).fill(false);
   for (const b of blockouts) {
-    const s = clamp(b.start_live_index, n);
-    const e = clamp(b.end_live_index, n);
-    if (s === e) {
-      mask[s] = true;
-      continue;
-    }
-    let i = s;
-    for (;;) {
-      mask[i] = true;
-      if (i === e) break;
-      i++;
-      if (i >= n) {
-        if (!liveClosed) break;
-        i = 0;
-      }
-    }
+    for (const i of blockoutMaskPositions(b, n, liveClosed)) mask[i] = true;
   }
   const out: BlockoutSegment[] = [];
   let cur: BlockoutSegment = { liveIndices: [], isBlockout: mask[0] };
