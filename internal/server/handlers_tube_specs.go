@@ -130,7 +130,7 @@ func (s *apiServer) handleUpdateTubeSpec(w http.ResponseWriter, r *http.Request)
 	}
 	var req updateTubeSpecReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if msg := validateTubeSpecPatch(req); msg != "" {
@@ -240,7 +240,7 @@ type createTubeSpecReq struct {
 func (s *apiServer) handleCreateTubeSpec(w http.ResponseWriter, r *http.Request) {
 	var req createTubeSpecReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	name := strings.TrimSpace(req.Name)

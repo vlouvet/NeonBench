@@ -210,7 +210,7 @@ func (s *apiServer) handleUpdateEstimateInputs(w http.ResponseWriter, r *http.Re
 
 	var in takeoff.Inputs
 	if err := decodeJSON(r, &in); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if msg := validateEstimateInputs(in); msg != "" {
@@ -316,7 +316,7 @@ func (s *apiServer) handlePatchRateCard(w http.ResponseWriter, r *http.Request) 
 	}
 	var req patchRateCardReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if msg := validateRateCardPatch(req); msg != "" {
@@ -406,7 +406,7 @@ func (s *apiServer) handlePatchRateCardItem(w http.ResponseWriter, r *http.Reque
 	}
 	var req patchRateCardItemReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 
