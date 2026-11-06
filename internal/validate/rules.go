@@ -3,6 +3,7 @@ package validate
 import (
 	"fmt"
 	"math"
+	"sort"
 )
 
 // resampleUniform resamples a polyline at uniform arc-length spacing, in
@@ -1009,15 +1010,25 @@ func checkMinLeadIn(polylines []Polyline, limits Limits) []Issue {
 	return issues
 }
 
-// checkSharpBendAngles flags interior vertices whose included angle is at
-// or below the configured threshold (default 85°). Hairpin double-back
-// apices — both the geometric heuristic and user-marked ones — are
-// exempted because a U-turn is, by definition, a 180°-flip whose apex
-// sweeps through angles well below the threshold.
+// checkSharpBendAngles flags corners whose included angle is at or below
+// the configured threshold (default 85°). Hairpin double-back apices —
+// both the geometric heuristic and user-marked ones — are exempted
+// because a U-turn is, by definition, a 180°-flip whose apex sweeps
+// through angles well below the threshold.
 //
-// Operates on resampled points (so the hairpin detector has the spacing
-// it expects) but reports issues at the resampled vertex coordinate, then
-// clusters so a tight curve doesn't produce a swarm of markers.
+// The angle at arc length s is the one P(s-step), P(s), P(s+step) makes,
+// measured on the drawn polyline. It used to be measured only at the
+// points of a uniform resample anchored at the run's start, which drops
+// the drawn vertices: a 60° corner on a 12 mm tube was flagged at 10, 11,
+// 15 and 20 mm along the run and missed at 12, 12.5 and 17.5 mm (Tier 3
+// #180). The stations are now derived from the vertices themselves (see
+// angleStations), so where a corner lands never decides whether it is
+// flagged. step is the same window the grid used, so a curve reads the
+// same angle it always did; only the phase dependence is gone.
+//
+// Each run's flags are ordered sharpest-first before clustering, so the
+// marker for a corner sits on its apex and reports the drawn angle rather
+// than whichever wider reading happened to come first along the run.
 func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 	thresholdDeg := effectiveSharpBendAngleDeg(limits)
 	if thresholdDeg <= 0 {
@@ -1025,8 +1036,8 @@ func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 	}
 	var issues []Issue
 	for _, pl := range polylines {
-		// Resample so the hairpin detector's K-step look-around has stable
-		// spacing: tied to the bend-radius limit when present, else a
+		// The measuring window and the hairpin detector's K-step
+		// look-around: tied to the bend-radius limit when present, else a
 		// sensible mm value that survives short straight legs.
 		//
 		// This USED to be shared with checkBendRadius and the comment here
@@ -1037,56 +1048,51 @@ func checkSharpBendAngles(polylines []Polyline, limits Limits) []Issue {
 		// shape of problem (its cluster radius below is 1.5 × the limit
 		// too) but it is a warning about interior ANGLE, which is
 		// scale-free in a way a radius is not, so it is left alone here
-		// rather than changed in a bend-radius PR. Filed as a follow-up;
-		// do not "restore consistency" by copying the old heuristic back.
+		// rather than changed in a bend-radius PR. Filed as a follow-up
+		// (Tier 3 #142); do not "restore consistency" by copying the old
+		// heuristic back.
 		step := 1.0
 		if limits.MinBendRadiusMM > 0 {
 			step = math.Max(0.5, math.Min(limits.MinBendRadiusMM/4, 5))
 		}
-		sampled := resampleUniform(pl, step)
-		pts := sampled.Points
-		n := len(pts)
-		if n < 3 {
+		// A run too short to hold three grid samples was never measured.
+		// That depends only on its length, not on where anything lands,
+		// so it is kept.
+		gridSamples := len(resampleUniform(pl, step).Points)
+		if gridSamples < 3 {
 			continue
 		}
+		run := newArcRun(pl)
 		hairpinD := runDiameterMM(pl, limits)
-		// Closed polyline: every vertex (including the seam at index 0
-		// and n-1) is interior. Open polyline: skip the two endpoints.
-		first, last := 1, n-1
-		if sampled.Closed {
-			first, last = 0, n
+		type flag struct {
+			ang float64
+			at  Point
 		}
-		for idx := first; idx < last; idx++ {
-			var aIdx, cIdx int
-			if sampled.Closed {
-				aIdx = (idx - 1 + n) % n
-				cIdx = (idx + 1) % n
-				// Skip the duplicated closing point, if any.
-				if idx == n-1 && pts[0] == pts[n-1] {
-					continue
-				}
-			} else {
-				aIdx = idx - 1
-				cIdx = idx + 1
-			}
-			ang := interiorAngleDeg(pts[aIdx], pts[idx], pts[cIdx])
+		var flags []flag
+		for _, s := range run.angleStations(step) {
+			p := run.at(s)
+			ang := interiorAngleDeg(run.at(s-step), p, run.at(s+step))
 			if ang > thresholdDeg {
 				continue
 			}
-			if isDoubleBackHairpin(pts, sampled.Closed, idx, step, hairpinD) {
+			if run.isDoubleBackAt(s, step, hairpinD, gridSamples) {
 				continue
 			}
-			if hasUserDoubleback(pts[idx], pl.DoublebackMarks, hairpinD) {
+			if hasUserDoubleback(p, pl.DoublebackMarks, hairpinD) {
 				continue
 			}
+			flags = append(flags, flag{ang, p})
+		}
+		sort.SliceStable(flags, func(i, j int) bool { return flags[i].ang < flags[j].ang })
+		for _, f := range flags {
 			issues = append(issues, Issue{
 				Rule:     RuleSharpBendAngle,
 				Severity: SeverityWarning,
 				Message: fmt.Sprintf(
 					"sharp bend %.0f° (≤ %.0f°) — concentrates stress at the apex; consider a wider sweep",
-					ang, thresholdDeg),
-				XMM: pts[idx].X,
-				YMM: pts[idx].Y,
+					f.ang, thresholdDeg),
+				XMM: f.at.X,
+				YMM: f.at.Y,
 			})
 		}
 	}
