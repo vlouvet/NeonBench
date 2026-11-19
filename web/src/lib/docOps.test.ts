@@ -2882,8 +2882,8 @@ describe('autoSplitOverlongTubes', () => {
   }
 
   // Arc-aware (Tier 3 #111): on the line-only docs below this is the same
-  // chord sum it always was, and on the arc docs it is the number the Go
-  // validator would report.
+  // chord sum it always was, and on the arc docs it is r*theta, which the Go
+  // validator never measures longer than at these sizes (Tier 3 #178).
   const lengthsOf = (doc: DesignDoc) => doc.runs.map((r) => ops.runLengthMM(r));
 
   it('splits 1500mm into 2 pieces of ~750mm against a 1000mm limit', () => {
@@ -3147,8 +3147,8 @@ describe('autoSplitOverlongTubes', () => {
     }
     // The first cut lands inside the arc at t = (L/2)/arcLen: the vertex is
     // the point ON the glass at that sweep fraction. The arc is measured as
-    // runLengthMM measures it, because that is the metric the walk places
-    // cuts in; r*theta is ~0.03% longer and would miss at 6 places.
+    // runLengthMM measures it (r*theta since Tier 3 #178), because that is the
+    // metric the walk places cuts in.
     const head = res.doc.runs[0];
     expect(head.polyline.segment_types).toEqual(['line']);
     const arcOnly: DesignRun = {
@@ -3270,19 +3270,21 @@ describe('chordLengthMM', () => {
 // validator measured the curve, so the auto-split and the overlong badge could
 // both call a run fixed that came back flagged.
 //
-// These are Go/TS AGREEMENT tests. The `GO_*` constants below were measured on
-// 2026-09-01 by pushing the same run through the real Go pipeline —
-// `designdoc.ToSVG` → `validate.ExtractMMPolylines` → `(*Polyline).Length()` —
-// not derived from the arc formula, because the two sides flatten with
-// different samplers (Go emits cubics and subdivides them adaptively: 33
-// points for the 100mm chord below; arcGeom walks the circle at 5°: 23). They
-// agree to about 3 parts in 10,000, which is what the tolerances allow. A
-// tolerance loose enough to admit the chord answer would make these vacuous,
-// so each one also asserts the chord answer is nowhere near.
+// Tier 3 #178 settled the measure: r*theta, exactly what Go's
+// `Polyline.LengthMM` reports to the takeoff, the PDF and the DXF. The
+// `R_THETA_*` constants are the shared fixtures arcLengthSplit.test.ts and
+// internal/designdoc/arclength_test.go pin too. The `GO_VALIDATOR_*` ones were
+// measured by pushing the same run through `designdoc.ToSVG` →
+// `validate.ExtractMMPolylines` → `(*Polyline).Length()`: the validator
+// flattens cubics to 0.05mm, so it lands a little UNDER r*theta, never over at
+// these sizes. A tolerance loose enough to admit the chord answer would make
+// these vacuous, so each one also asserts the chord answer is nowhere near.
 describe('runLengthMM (arc-aware run length)', () => {
-  const GO_OPEN_ARC_100_MM = 115.8964;
-  const GO_CLOSED_SQUARE_3ARCS_MM = 447.6891;
-  const GO_OPEN_ARC_900_MM = 1043.2042;
+  const R_THETA_OPEN_ARC_100_MM = 115.91190225020152;
+  const R_THETA_CLOSED_SQUARE_3ARCS_MM = 447.73570675060455;
+  const R_THETA_OPEN_ARC_900_MM = 1043.2071202518136;
+  const GO_VALIDATOR_OPEN_ARC_100_MM = 115.8964;
+  const GO_VALIDATOR_OPEN_ARC_900_MM = 1043.2042;
 
   const openArc = (segType: SegmentKind = 'arc'): DesignRun => ({
     id: 'r1',
@@ -3297,13 +3299,15 @@ describe('runLengthMM (arc-aware run length)', () => {
     },
   });
 
-  it('agrees with the Go validator on a single arc segment', () => {
+  it('measures a single arc segment by r*theta, at or above the Go validator', () => {
     const got = ops.runLengthMM(openArc());
-    expect(Math.abs(got - GO_OPEN_ARC_100_MM)).toBeLessThan(0.05);
+    expect(Math.abs(got - R_THETA_OPEN_ARC_100_MM)).toBeLessThan(1e-6);
+    expect(got).toBeGreaterThanOrEqual(GO_VALIDATOR_OPEN_ARC_100_MM);
+    expect(got - GO_VALIDATOR_OPEN_ARC_100_MM).toBeLessThan(0.02);
     // The failure this replaces: the chord is 15.9mm short of the glass, so a
     // tolerance that admitted it would be admitting the bug.
     expect(ops.chordLengthMM(openArc().polyline.points, false)).toBeCloseTo(100, 9);
-    expect(Math.abs(100 - GO_OPEN_ARC_100_MM)).toBeGreaterThan(1);
+    expect(Math.abs(100 - R_THETA_OPEN_ARC_100_MM)).toBeGreaterThan(1);
   });
 
   it('measures a flipped arc identically — the side moves glass, not length', () => {
@@ -3325,36 +3329,34 @@ describe('runLengthMM (arc-aware run length)', () => {
     expect(ops.runLengthMM(declared)).toBe(700);
   });
 
-  // flatRunPoints returns two DIFFERENT shapes for a closed run, and passing
-  // `closed` is right for both — for opposite reasons. Pin the shapes here so
-  // a change to either function can't silently drop or double-count the
-  // closing chord.
-  it('counts a closed run’s closing chord exactly once — with arcs and without', () => {
+  // A closed run's closing segment is a segment like any other: counted once,
+  // with arcs and without. The line-only path still goes through
+  // chordLengthMM, which adds the closing chord itself; the arc path walks
+  // segmentCount(run) segments, which includes it.
+  it('counts a closed run’s closing segment exactly once — with arcs and without', () => {
     const plain = closedSquare();
-    // No arcs: the live vertex array, which does NOT repeat points[0].
-    expect(flatRunPoints(plain)).toBe(plain.polyline.points);
     expect(ops.runLengthMM(plain)).toBeCloseTo(400, 9);
 
     const curved = closedSquare(['arc', 'arc', 'arc', 'line']);
-    const flat = flatRunPoints(curved);
-    // Has arcs: the flattened array already ENDS at points[0], so the closing
-    // chord it adds is zero-length.
-    expect(flat[flat.length - 1]).toEqual(curved.polyline.points[0]);
     const got = ops.runLengthMM(curved);
-    expect(Math.abs(got - GO_CLOSED_SQUARE_3ARCS_MM)).toBeLessThan(0.1);
-    // Neither of the two ways to get the closing chord wrong: 100mm dropped
-    // (measuring the flattened array as open) or 100mm counted twice.
-    expect(Math.abs(got - (GO_CLOSED_SQUARE_3ARCS_MM - 100))).toBeGreaterThan(50);
-    expect(Math.abs(got - (GO_CLOSED_SQUARE_3ARCS_MM + 100))).toBeGreaterThan(50);
+    expect(Math.abs(got - R_THETA_CLOSED_SQUARE_3ARCS_MM)).toBeLessThan(1e-6);
+    // Neither of the two ways to get the closing segment wrong: 100mm dropped
+    // or 100mm counted twice.
+    expect(Math.abs(got - (R_THETA_CLOSED_SQUARE_3ARCS_MM - 100))).toBeGreaterThan(50);
+    expect(Math.abs(got - (R_THETA_CLOSED_SQUARE_3ARCS_MM + 100))).toBeGreaterThan(50);
+    // A closing segment that is itself an arc is measured as one.
+    const allArcs = closedSquare(['arc', 'arc', 'arc', 'arc']);
+    expect(ops.runLengthMM(allArcs)).toBeCloseTo(4 * R_THETA_OPEN_ARC_100_MM, 9);
   });
 
-  it('agrees with the Go validator on a 900mm chord too', () => {
+  it('measures a 900mm chord by r*theta too, at or above the Go validator', () => {
     const long: DesignRun = {
       id: 'r1',
       polyline: { points: [[0, 0], [900, 0]], closed: false, segment_types: ['arc'] },
     };
     const got = ops.runLengthMM(long);
-    expect(Math.abs(got - GO_OPEN_ARC_900_MM) / GO_OPEN_ARC_900_MM).toBeLessThan(0.001);
+    expect(Math.abs(got - R_THETA_OPEN_ARC_900_MM)).toBeLessThan(1e-6);
+    expect(got).toBeGreaterThanOrEqual(GO_VALIDATOR_OPEN_ARC_900_MM);
     expect(got).toBeGreaterThan(1000); // the chord (900) is under; the glass is not
   });
 
@@ -5888,12 +5890,12 @@ describe('Tier 3 #119 — segment_types through the last three point-count ops',
   };
   const rotate = <T,>(xs: T[], k: number): T[] => xs.slice(k).concat(xs.slice(0, k));
 
-  // glassMM measures ONE segment the way the Go validator measures it: flatten
-  // first, then sum chords. Do NOT reach for segmentLengthMM here — that is
-  // the ideal circular arc, and the two differ by ~0.2% (115.8776 vs 115.9104
-  // on a 100mm chord), which is enough to fail every total-length assertion
-  // below by exactly that sampling difference. Bug #17 hit this; the spec for
-  // this task calls it out; this helper is where it stays fixed.
+  // glassMM measures ONE segment the way runLengthMM measures a run, so the
+  // total-length assertions below compare like with like. Since Tier 3 #178
+  // that is r*theta for an arc (115.9119 on a 100mm chord), the same number
+  // segmentLengthMM gives; before it, runLengthMM summed the 5° flattening
+  // (115.8776) and reaching for segmentLengthMM here failed every total by
+  // that gap (Bug #17). Going through runLengthMM keeps the two in step.
   const glassMM = (a: [number, number], b: [number, number], t: SegmentKind): number =>
     ops.runLengthMM({ id: 'probe', polyline: { points: [a, b], closed: false, segment_types: [t] } });
 
