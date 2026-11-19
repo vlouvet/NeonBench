@@ -4,9 +4,9 @@
 // up a `<Canvas>`.
 //
 // Two responsibilities:
-//   1. `bboxOfDoc` walks the design doc's runs and returns the axis-
-//      aligned bounding box of the (Y-flipped) tube paths in three.js
-//      world space. The Y-flip matches Phase 3 #2's convention (doc Y
+//   1. `bboxOfDoc` walks the design doc's runs and raceways and returns
+//      the axis-aligned bounding box of the (Y-flipped) tube paths and
+//      raceway boxes in three.js world space. The Y-flip matches Phase 3 #2's convention (doc Y
 //      points down, three Y points up) so the bbox lives in the same
 //      coordinate system as the rendered tubes.
 //   2. `cameraPositionForPreset` turns a (preset, bbox) pair into a
@@ -16,8 +16,9 @@
 
 import * as THREE from 'three';
 import type { DesignDoc } from '../api';
+import { racewayBoxes } from './raceways';
 
-/** Axis-aligned bounding box for the design's tubes in three.js world space. */
+/** Axis-aligned bounding box for the design's tubes and raceways in three.js world space. */
 export interface Bbox {
   min: THREE.Vector3;
   max: THREE.Vector3;
@@ -105,13 +106,30 @@ const Z_PADDING_MM = 0.5;
  *
  * The filter is keyed off the run's `group_id`. Runs without a
  * `group_id` are excluded when a filter is active (a non-grouped run
- * is by definition not part of any group).
+ * is by definition not part of any group). Raceways have no group of
+ * their own; see `bboxOfDoc` for which ones a filtered bbox includes.
  */
 export type GroupFilter = string | null | undefined;
 
 /**
- * Compute the axis-aligned bounding box of every tube path in the
- * design, in three.js world space (Y-flipped to match the renderer).
+ * Compute the axis-aligned bounding box of every tube path and every
+ * raceway box in the design, in three.js world space (Y-flipped to
+ * match the renderer).
+ *
+ * Tier 3 #183 — raceways count in X and Y, at exactly the rectangle
+ * Scene draws: `racewayBoxes` (the #138 placement helper) is the one
+ * source of truth for x_mm..x_mm+length_mm and for the guideline-
+ * anchored height with its shop-default fallback. Without this a
+ * raceway longer than the letters was cropped and the wall stopped
+ * short of it, and a raceway-only doc framed the 200 mm fallback at
+ * the origin. Their Z extent is deliberately NOT included: the box
+ * runs from −20 mm to −20 − depth (−223 mm at the shop default), and
+ * folding that in would pull the orbit target behind the glass and
+ * push every raceway sign's camera back. How deep the scene is in Z
+ * belongs with the wall-depth decision (Tier 3 #182), not here.
+ *
+ * A doc with no raceways (or none `racewayBoxes` would draw) returns
+ * exactly what it returned before #183 — the raceway pass adds nothing.
  *
  * Returns a sensible fallback bbox for empty / degenerate docs so the
  * camera-presets math doesn't NaN out. The fallback is a 200 mm cube
@@ -141,8 +159,11 @@ export function bboxOfDoc(
       : null;
 
   if (doc) {
-    for (const run of doc.runs) {
-      if (filterId !== null && run.group_id !== filterId) continue;
+    const runs =
+      filterId === null
+        ? doc.runs
+        : doc.runs.filter((run) => run.group_id === filterId);
+    for (const run of runs) {
       for (const [x, y] of run.polyline.points) {
         // Y-flip: doc +Y down → three +Y up. This must match
         // `polylineToCurve` in tube-geom.ts or the bbox sits in a
@@ -154,6 +175,27 @@ export function bboxOfDoc(
         if (tx > max.x) max.x = tx;
         if (ty > max.y) max.y = ty;
       }
+    }
+
+    // Tier 3 #183 — raceways, through the same helper Scene meshes them
+    // with. Group filter: a raceway has no group_id, so it joins a
+    // group's bbox exactly when Scene draws it under that focus, which
+    // is when at least one of the group's runs is mounted on it
+    // (`raceway_id`). Then the whole box counts, even the part that
+    // runs past the group's letters: Scene draws the whole box, and a
+    // frame that crops it is the bug this row fixes. A raceway carrying
+    // only other groups' letters is not drawn under the focus, so it
+    // must not widen the frame either. Membership is judged on the
+    // group's runs by `group_id` alone, the same rule the run loop
+    // above uses (group visibility is not consulted here for runs
+    // either).
+    for (const box of racewayBoxes(doc, runs, filterId)) {
+      const [cx, cy] = box.position;
+      const [sx, sy] = box.size;
+      if (cx - sx / 2 < min.x) min.x = cx - sx / 2;
+      if (cy - sy / 2 < min.y) min.y = cy - sy / 2;
+      if (cx + sx / 2 > max.x) max.x = cx + sx / 2;
+      if (cy + sy / 2 > max.y) max.y = cy + sy / 2;
     }
   }
 
