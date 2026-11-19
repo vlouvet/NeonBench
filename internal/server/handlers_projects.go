@@ -98,7 +98,7 @@ func (s *apiServer) handleListProjects(w http.ResponseWriter, r *http.Request) {
 func (s *apiServer) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 	var req createProjectReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if strings.TrimSpace(req.Name) == "" {
@@ -207,7 +207,7 @@ func (s *apiServer) handleUpdateProject(w http.ResponseWriter, r *http.Request) 
 	}
 	var req updateProjectReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if req.TubeSpecID != nil {
