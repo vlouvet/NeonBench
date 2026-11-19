@@ -152,7 +152,7 @@ func (s *apiServer) handleVectorize(w http.ResponseWriter, r *http.Request) {
 
 	var req vectorizeReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if req.AssetID == 0 {
@@ -555,7 +555,7 @@ func (s *apiServer) handleUpdateDesignVersion(w http.ResponseWriter, r *http.Req
 	}
 	var req updateDesignVersionReq
 	if err := decodeJSON(r, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeDecodeError(w, err)
 		return
 	}
 	if req.Label == nil {
